@@ -1,0 +1,13 @@
+# Upstream game engine. Tracked by pinned commit in docs/superpowers/specs/
+# until the submodule-vs-fork decision is made (see phase-1 spec, "Repo layout").
+OpenFrontIO/
+
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+runs/
+checkpoints/
+*.cpuprofile
+*.heapprofile
+*.heapsnapshot
