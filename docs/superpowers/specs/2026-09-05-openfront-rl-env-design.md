@@ -59,6 +59,10 @@ per environment. With 12–14 worker processes on 16 cores that is ~1000–1700 
 steps/sec, and an estimated 800–1200 after observation encoding. 10M steps lands around
 3 hours. Encoding cost, not simulation cost, is the thing to optimize.
 
+That 800–1200 figure is an estimate covering simulation plus observation encoding
+only. It **excludes per-step action-mask computation**, which is open question §10.1 and
+could be significant. It must not be quoted later as a measured end-to-end number.
+
 ### 2.3 Determinism is real
 
 Baltics, seed `rl-probe`, run twice: identical final state hash
@@ -74,6 +78,11 @@ From `src/core/Schemas.ts`, most intents carry a player ID rather than a tile:
 - `targetPlayer`, `allianceRequest`, `breakAlliance`, `embargo`, `donate_gold`,
   `donate_troops`, `emoji` → player-indexed
 - Only `spawn`, `boat.dst`, `build_unit.tile`, `move_warship.tile` need a tile
+
+`AttackIntentSchema.targetID` is `MappedID.nullable()`, and `AttackExecution.ts:73`
+resolves a null target to `mg.terraNullius()`. **A null target is how a player expands
+into unowned land** — the dominant action of the entire early game, not an edge case.
+The action space must be able to express it (§5.4).
 
 This makes a structured action space tractable. A naive flat space over 651k tiles
 would not be.
@@ -95,6 +104,33 @@ oracle in tests.
 
 Note that `map4x.bin` is a downsampled *terrain* map. It does not carry live ownership
 and cannot be used as an ownership raster.
+
+### 2.7 A human seat works headlessly — verified
+
+The measurements in §2.2 were all taken with `players: []`
+(`FullGamePerf.ts:239`) — zero human players. They proved the simulation runs fast and
+deterministically, but said nothing about whether an agent-controlled seat works at all,
+which every component in §5 assumes.
+
+A throwaway probe (`OpenFrontIO/tests/perf/fullgame/HumanSeatProbe.ts`) seats one
+`PlayerType.Human` player and drives it entirely through Intents in Turns. Results on
+World with 20 bots and default nations:
+
+| Check | Result |
+|---|---|
+| Human seat exists after the spawn phase | pass |
+| Agent alive with troops | pass — 25000 troops |
+| `SpawnIntent` claims territory | pass — 28 tiles |
+| `attack` with `targetID: null` expands into terra nullius | pass — 28 → 716 tiles |
+| Per-tick cost with a human present | 0.97ms, 1026 ticks/sec |
+
+`randomSpawn: false` is the default, so the agent must place itself via `SpawnIntent`
+during the spawn phase — this works, and the spawn tile is a normal action-space
+decision, not special-cased setup. The human seat costs roughly 5% throughput versus
+§2.2's 1075 ticks/sec, which is within noise for planning purposes.
+
+This probe is the natural basis for implementation task #1 and should be replaced by
+`env/GameEnv.ts` plus its tests, not kept.
 
 ---
 
@@ -192,10 +228,11 @@ class GameEnv {
 `ObservationEncoder`, `ActionCodec`, `Reward`.
 
 Constructed the way `FullGamePerf.ts` constructs its game: real `Config`, production map
-via `NodeGameMapLoader`, nations from the map manifest. The agent joins as a
-`PlayerType.Human` player and its actions become ordinary `Intent`s inside a `Turn` —
-the exact path the real browser client uses. This is what makes phase 3 transfer
-possible at all.
+via `NodeGameMapLoader`, nations from the map manifest — except that the human seat is
+passed to `createGame()` rather than left empty. The agent joins as a `PlayerType.Human`
+player and its actions become ordinary `Intent`s inside a `Turn` — the exact path the
+real browser client uses. This is what makes phase 3 transfer possible at all, and it is
+verified working in §2.7.
 
 **Episode boundaries.** The spawn phase runs first (~302 turns); the agent's `spawn`
 intent is issued during it. Nations do not eliminate each other within 3300 ticks, so
@@ -247,11 +284,13 @@ Ownership planes are maintained **incrementally** from `drainPackedTileUpdates()
 full re-rasterization of 651k tiles every step is the encoding bottleneck to avoid; the
 engine already hands us exactly the deltas we need.
 
-**Player slot table** — 16 slots, filled bordering-players-first then by strength. Per
-slot: troops, gold, tile count, alliance state, embargo state, traitor flag,
-shared-border flag, and a validity bit. Fixed size so the network shape is stable; slot
-identity is *not* stable across steps, which the policy must tolerate (this is standard
-for entity-slot encodings and is why the sort key is deterministic).
+**Player slot table** — 17 slots. **Slot 0 is reserved for terra nullius** (the null
+attack target); slots 1–16 hold real players, filled bordering-players-first then by
+strength. Per slot: troops, gold, tile count, alliance state, embargo state, traitor
+flag, shared-border flag, and a validity bit. Terra nullius fills only the fields that
+apply, with the rest zeroed. Fixed size so the network shape is stable; slot identity
+for players is *not* stable across steps, which the policy must tolerate (this is
+standard for entity-slot encodings and is why the sort key is deterministic).
 
 **Global scalars** — ~32 values: own troops, gold, tile count and share, current tick,
 phase flag, alive-player count, own rank.
@@ -267,7 +306,7 @@ Five heads, every one masked from engine queries:
 | Head | Size | Mask source |
 |---|---|---|
 | Intent type | ~14 | `GameRunner.playerActions()` |
-| Target player | 16 | slot occupancy + per-relation flags from `playerActions().interaction` |
+| Target | 17 (slot 0 = terra nullius) | slot occupancy + per-relation flags from `playerActions().interaction`; slot 0 masked on `player.canAttack()` against a neutral border tile |
 | Ratio bucket | 8 (5/10/20/30/50/70/90/100%) | always legal |
 | Spatial cell | 8192 (128×64) | terrain + ownership |
 | Unit type | `UnitType` count | `playerBuildables()` |
@@ -298,10 +337,14 @@ The phase-1 default, stated concretely so the implementation is unambiguous:
 
 ```
 r = 1.0 * Δ(own_land_tiles / total_land_tiles)
-  + 0.1 * Δ(own_troops / max_troops_any_player)
-  + 0.1 * Δ(own_gold  / max_gold_any_player)
+  + 0.1 * Δ(own_troops / TROOP_SCALE)
+  + 0.1 * Δ(own_gold   / GOLD_SCALE)
   + terminal: +1 win, -1 death, 0 tick-cap
 ```
+
+`TROOP_SCALE` and `GOLD_SCALE` are **fixed constants**, not per-step maxima over living
+players. A moving denominator would hand the agent negative reward whenever a rival's
+troops spiked, which is not a signal about its own play.
 
 These coefficients are a defensible starting point, not a tuned result — reward *design*
 is a phase-2 concern. What phase 1 owes is one unambiguous default and a clean seam
@@ -405,8 +448,9 @@ Phase 2 does not begin until these hold.
 
 ## 10. Open questions carried into implementation
 
-1. Cost of `buildableUnits()` per tile — decides dense spatial build masking versus a
-   candidate list (§5.4).
+1. Cost of `buildableUnits()` per tile. Decides dense spatial build masking versus a
+   candidate list (§5.4), and gates whether the §2.2 throughput estimate survives once
+   per-step masking is included.
 2. Whether the encoder can be written against public interfaces only — decides submodule
    versus fork (§3).
 3. Optimal M (envs per process) and W (processes) — to be tuned empirically against the
