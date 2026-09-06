@@ -1,0 +1,17 @@
+{
+  "name": "openfront-env",
+  "private": true,
+  "type": "module",
+  "description": "Phase-1 headless RL environment for OpenFrontIO. See docs/superpowers/specs/2026-09-05-openfront-rl-env-design.md.",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^24.12.0",
+    "tsx": "^4.22.4",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.5"
+  }
+}

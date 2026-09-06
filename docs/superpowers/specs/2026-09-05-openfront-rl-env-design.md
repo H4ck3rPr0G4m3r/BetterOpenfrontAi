@@ -61,9 +61,14 @@ per environment. With 12–14 worker processes on 16 cores that is ~1000–1700 
 steps/sec, and an estimated 800–1200 after observation encoding. 10M steps lands around
 3 hours. Encoding cost, not simulation cost, is the thing to optimize.
 
-That 800–1200 figure is an estimate covering simulation plus observation encoding
-only. It **excludes per-step action-mask computation**, which is open question §11.1 and
-could be significant. It must not be quoted later as a measured end-to-end number.
+That 800–1200 figure was an estimate; part of it is no longer one. Observation encoding
+is now measured directly (§5.3): ~7ms/call on World with 20 bots, which is added cost on
+top of the ~9.3ms/10-tick simulation budget, not a rounding error inside it — closer to
++75% than the "cheap encoding" the estimate assumed. Action-mask computation is
+**still excluded** — quantified in §11.1 as tens-of-microseconds-per-candidate for a
+bounded candidate list, but not yet measured end to end inside a real `GameEnv.step()`.
+The combined encode+mask+sim cost per step must not be quoted as measured until that
+integration measurement exists; treat the 800–1200 figure as superseded, not confirmed.
 
 ### 2.3 Determinism is real
 
@@ -282,9 +287,20 @@ zeroed with the land mask clear. Geometry stays isometric on every map at the co
 some wasted cells on non-2:1 maps. The spatial action head shares this grid, so
 letterbox padding cells are permanently masked out.
 
-Ownership planes are maintained **incrementally** from `drainPackedTileUpdates()`. A
-full re-rasterization of 651k tiles every step is the encoding bottleneck to avoid; the
-engine already hands us exactly the deltas we need.
+**Built as a full recompute, not the incremental design this section originally
+specified** — every plane is rebuilt from `map.tileStateBuffer()` / `map.isLand()`
+each call, no per-episode state, no dependency on `drainPackedTileUpdates()` (a
+destructive queue that would need exactly one owner). Incremental maintenance was the
+starting assumption; it was dropped once the full recompute was implemented and
+measured, not on a promise it would turn out fast. It's genuinely not free: **~7ms per
+call on World with 20 bots** (`ObservationEncoder.test.ts`'s throughput check), down
+from an initial ~13ms after two rounds of profiling-driven optimization (flat
+typed-array lookups instead of `Map`/string-keyed `Record`; hoisting the per-row raster
+cell out of the per-tile loop). The remaining cost is dominated by `map.isLand(t)` — an
+interface method called once per tile, up to ~2M times on World — which has no bulk
+buffer to read around the way `ownerID` does via `tileStateBuffer()`. This adds to the
+~9.3ms/10-tick simulation budget (§2.2) rather than replacing any of it; recorded here
+so it isn't silently assumed away the way the buildableUnits() cost briefly was (§11.1).
 
 **Player slot table** — 17 slots. **Slot 0 is reserved for terra nullius** (the null
 attack target); slots 1–16 hold real players, filled bordering-players-first then by
@@ -294,10 +310,29 @@ apply, with the rest zeroed. Fixed size so the network shape is stable; slot ide
 for players is *not* stable across steps, which the policy must tolerate (this is
 standard for entity-slot encodings and is why the sort key is deterministic).
 
-**Global scalars** — ~32 values: own troops, gold, tile count and share, current tick,
-phase flag, alive-player count, own rank.
+**Global scalars** — 12 values, implemented as a real, justified set rather than padded
+out to this section's original "~32" estimate: tick fraction, spawn-phase flag,
+alive-player fraction, own rank among alive players, own troop/gold/tile fractions, own
+alive/traitor/doomsday-clock flags, ally fraction, and embargoed-against-us fraction.
+More can be appended later without breaking anything that reads by field name — the
+interface's `size` is authoritative, not a number fixed in this document.
 
-**Interface:** `encode(game, agentPlayerID, out: Float32Array): void`
+**Interface:** `encode(game, agentPlayerID, out: Float32Array): void` — implemented in
+`env/src/ObservationEncoder.ts`, tests in `env/tests/ObservationEncoder.test.ts`
+(shape/finiteness, the raster-correctness oracle §8 calls out, the ownership-fraction
+partition invariant, agent-exclusion from its own opponent table, and the throughput
+check above).
+
+**A genuine pre-existing engine bug surfaced while writing these tests, unrelated to
+this code**: at higher bot counts (30-50) and certain seeds, `GameImpl.ts`'s
+`updateBorderStatus` throws `Cannot read properties of undefined (reading
+'_borderTiles')` during the spawn phase — a dangling `ownerID` with no resolvable
+`Player`. Reproducible at bots=20 too, just less often; not caused by anything in
+`env/`, since it's deep in engine code we never touch. Worth reporting upstream. It's
+also a concrete instance of exactly the failure mode §7 already designs for — a caught
+simulation exception ends the episode as a non-scoring `sim_error` rather than crashing
+the process — and a reason training-scale bot counts (§2.2 used 50) may see more
+`sim_error` terminals than a quick read of §7 would suggest.
 
 ### 5.4 `ActionCodec`
 
@@ -311,19 +346,44 @@ Five heads, every one masked from engine queries:
 | Target | 17 (slot 0 = terra nullius) | slot occupancy + per-relation flags from `playerActions().interaction`; slot 0 masked on `player.canAttack()` against a neutral border tile |
 | Ratio bucket | 8 (5/10/20/30/50/70/90/100%) | always legal |
 | Spatial cell | 8192 (128×64) | terrain + ownership |
-| Unit type | `UnitType` count | `playerBuildables()` |
+| Build site | ≤32 (bounded candidate list, not the raster) | see below |
 
-The spatial head selects a coarse **cell**, not a tile. A concrete `TileRef` is then
-resolved inside that cell by an engine query — `bestTransportShipSpawn()` for boats, best
-buildable tile for structures. This keeps the head at ~8k logits instead of 651k while
-preserving full expressiveness, because the engine's resolver is the same one the UI
-uses for human players.
+The spatial head selects a coarse **cell**, not a tile, for attacks and spawns. A
+concrete `TileRef` is resolved inside that cell by an engine query — best buildable tile
+via the same candidate mechanism as the build-site head. This keeps the head at ~8k
+logits instead of 651k while preserving full expressiveness, because the engine's
+resolver is the same one the UI uses for human players.
 
-**Known risk to measure before committing:** `player.buildableUnits(tile, units)` is
-per-tile, so masking builds across the full grid is O(cells) engine calls per step. The
-implementation plan must microbenchmark a single call first. If it is expensive, build
-actions switch to a candidate-list treatment (a short list of engine-proposed sites)
-instead of a dense spatial mask.
+**Build masking is a bounded candidate list, not a dense grid over the spatial
+head — measured, not assumed.** `player.buildableUnits(tile, units)` was benchmarked
+directly (`env/probes/BuildableUnitsBench.ts`, World map, 50 bots, ~4900 owned tiles):
+
+- Calling it with the default 11-type list across the full 8192-cell raster costs
+  ~1000ms — **~108× the ~9.3ms simulation budget of one 10-tick step.** Dense per-cell
+  build masking is not viable at any reasonable candidate density; this closes open
+  question §11.1 in favor of a bounded list.
+- Per-type cost is bimodal. Calling with a single type is what actually matters, since
+  each action head only needs to ask about the unit type it represents:
+  - **Cheap** (City, Defense Post, SAM Launcher, Missile Silo, Atom Bomb, Hydrogen Bomb,
+    MIRV, Warship): well under 100us/call even on a large (~4900-tile) territory.
+    Affordable for a candidate list of tens of tiles.
+  - **Port**: ~50-100us/call — affordable for a bounded list, not for the raster.
+  - **Factory**: ~6us/call when illegal (unowned tile), but **~840us/call when the
+    build is actually legal** — the cost is `RailNetwork.overlappingRailroads()` /
+    `computeGhostRailPaths()`, gated on `buildNew`, not on territory size. A candidate
+    list must cap Factory queries tightly (a handful of sites, not all border tiles).
+  - **TransportShip via `buildableUnits()`**: 60-290us/call — too expensive to use for
+    spatial masking. `GameRunner.bestTransportShipSpawn()` was benchmarked separately and
+    is the correct replacement: ~11us/call, about 25× cheaper. It is a purpose-built
+    query, not an assumption that it would be cheap because it exists.
+
+**Design:** the build-site head is a bounded candidate list (≤32 slots) built from
+`playerBorderTiles()` plus a small number of interior sites, masked with one
+single-unit-type `buildableUnits()` call per candidate per relevant unit type — not the
+default 11-type query. Boat/transport-ship destinations go through
+`bestTransportShipSpawn()` instead of `buildableUnits()`. This keeps every mask
+engine-verified and sound (§8); it is a change in which engine query is called and how
+many candidates are considered, not a relaxation of correctness.
 
 **Interface:**
 ```ts
@@ -442,7 +502,19 @@ recording steps/sec, crash count, and episode-length distribution.
 
 ## 9. Success criteria
 
-1. 1000 games run end to end without crashes or resource growth.
+1. 1000 games run end to end **with `sim_error` terminals (§7) counted and reported, not
+   silently eliminated as a pass/fail gate.** This criterion originally read "without
+   crashes or resource growth" — changed on evidence, not softened as a convenience. A
+   pre-existing engine bug (§5.3's `_borderTiles` crash) was measured at roughly 7/17
+   seeds (~40%) failing within spawn plus a 300-tick buffer on World with 20 bots
+   (`env/probes/SeedScan.ts`) — a small sample, and **a floor, not the true rate**: a
+   seed that passed that exact check still crashed after 10 more ticks in a later test
+   (`ObservationEncoder.test.ts`'s `encoder-safe-10`), so full 6000-tick episodes should
+   be expected to fail *more* often than 40%, not to match it. What phase 1 *can* commit
+   to: every `sim_error` ends its episode cleanly as a non-scoring terminal (§7, verified
+   by `GameEnv`'s tests) rather than crashing the worker process, and the acceptance run
+   reports the resulting rate honestly. A rate even this high is itself a reason to
+   prioritize the root-cause work in §11's new open question before scaling up training.
 2. Byte-identical results for a fixed seed and action sequence, across two runs.
 3. Measured and documented steps/sec for World, Baltics, and Europe.
 4. Random agent and scripted baseline both play complete games.
@@ -612,13 +684,32 @@ design does not decide it.
 
 ## 11. Open questions carried into implementation
 
-1. Cost of `buildableUnits()` per tile. Decides dense spatial build masking versus a
-   candidate list (§5.4), gates whether the §2.2 throughput estimate survives once
-   per-step masking is included, and becomes a hard real-time deadline in phase 3
-   (§10.4) rather than merely a throughput cost.
+1. ~~Cost of `buildableUnits()` per tile.~~ **Resolved** (`env/probes/BuildableUnitsBench.ts`,
+   World map, ~4900 owned tiles): dense per-cell masking costs ~108× the per-step
+   simulation budget and is not viable. §5.4 now specifies a bounded candidate-list
+   build-site head instead, with Factory capped tightly (~840us/call when legal) and
+   `TransportShip` masking replaced by `bestTransportShipSpawn()` (~11us/call, ~25×
+   cheaper than the equivalent `buildableUnits()` query). Still open: the exact
+   candidate-selection heuristic (how `playerBorderTiles()` output is thinned to ≤32
+   sites) is an implementation detail, not a design gate, and phase 3's real-time
+   deadline (§10.4) inherits this same bound.
 2. Whether the encoder can be written against public interfaces only — decides submodule
    versus fork (§3), and keeps phase 3's page-introspection fallback available (§10.7).
 3. Optimal M (envs per process) and W (processes) — to be tuned empirically against the
    16-core / 8GB-VRAM machine, not guessed.
 4. Whether headless Chromium obtains a Turnstile token by ordinary means (§10.6, step 2).
    Gates all of phase 3, and is answered by a probe, not by argument.
+5. **Root cause of the `_borderTiles` engine crash (§5.3, §9 criterion 1).** Traced to
+   `GameImpl.owner()` → `playerBySmallID()` returning `undefined` for a smallID present
+   in the tile-state plane — a dangling ownerID with no corresponding entry in
+   `_playersBySmallID`. Confirmed nations register there regardless of later spawn
+   failure (`this._nations.forEach((n) => this.addPlayer(n.playerInfo))` runs
+   unconditionally), which rules out the simplest theory. `_playersBySmallID` only ever
+   grows via `push()` and nothing in `GameImpl.ts` removes entries from it, which points
+   at the write side, not removal: `GameMapImpl.setOwnerID` only rejects an ID above the
+   4095 bit-width ceiling (`PLAYER_ID_MASK`), not one beyond the actual registered player
+   count, so an out-of-range-but-under-4096 ownerID would write cleanly and only surface
+   later as this crash. Where such a write would originate — bot code, nation code, or
+   elsewhere — wasn't run down further, since fixing engine internals is out of scope
+   while the submodule-vs-fork decision (#2) is still open. Worth an upstream bug report
+   either way; blocks criterion 1 until resolved one way or the other.

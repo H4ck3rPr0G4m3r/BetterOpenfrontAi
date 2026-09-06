@@ -1,0 +1,38 @@
+// Mirrors OpenFrontIO/tsconfig.json's compiler options and path aliases
+// exactly. Relative imports into ../OpenFrontIO/src/core pull the whole
+// transitive type graph into this program (TS doesn't stop at "include"
+// boundaries for imported files), and OpenFrontIO's client code uses TC39
+// accessor decorators that only type-check cleanly under this exact flag
+// combination — a blanket "strict": true here broke Modal.ts even though
+// we never touch it.
+//
+// GameRunner.ts — which GameEnv.ts imports directly — has a real runtime
+// dependency on src/client/hud/NameBoxCalculator.ts (not type-only), which
+// pulls a slice of the client tree into this program. That slice assumes
+// ambient globals OpenFrontIO's own tsconfig always has present (it
+// includes all of src/**, so Main.ts's `Window.showPage` augmentation and
+// Vite's client types are always in scope) but ours doesn't reach on its
+// own. Declared locally in ambient.d.ts instead of pulling in more of a
+// client tree we never execute.
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "paths": {
+      "resources/*": ["../OpenFrontIO/resources/*"],
+      "src/*": ["../OpenFrontIO/src/*"]
+    },
+    "sourceMap": true,
+    "allowUnusedLabels": false,
+    "experimentalDecorators": true,
+    "resolveJsonModule": true,
+    "strictNullChecks": true,
+    "useDefineForClassFields": false,
+    "strictPropertyInitialization": false,
+    "skipLibCheck": true,
+    "types": ["vitest/globals", "node"]
+  },
+  "include": ["src/**/*", "tests/**/*", "probes/**/*"],
+  "exclude": ["node_modules"]
+}
