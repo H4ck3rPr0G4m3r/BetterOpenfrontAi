@@ -423,6 +423,10 @@ phase 2 can use an off-the-shelf trainer.
 | Observation invariants | Shape stable, all values finite and within documented bounds |
 | Turn feeding | N-tick step advances `game.ticks()` by exactly N |
 | Throughput floor | Steps/sec above a recorded threshold, so regressions surface in CI |
+| Shadow-sim agreement (phase 3) | A second `GameRunner` fed the turn stream a first one produced reaches an identical hash at every hash turn |
+
+The shadow-sim agreement test needs no browser: it is the §10.3 invariant proved against
+a known-good local source, and it reuses the determinism test's machinery.
 
 The raster correctness test is the single most important one — the incremental encoder
 is the only place in phase 1 where we maintain state the engine also maintains, so it is
@@ -445,6 +449,12 @@ recording steps/sec, crash count, and episode-length distribution.
 5. All tests in §8 passing.
 
 Phase 2 does not begin until these hold.
+
+Phase 3 (§10) has no acceptance criteria yet, deliberately: the Turnstile probe
+(§10.6, step 2) gates everything after it, and writing criteria before that answer
+would be writing them for a phase that may need a different shape entirely. The
+probe and the version-parity check are the two things answerable now, and both are
+cheap — the same status `HumanSeatProbe.ts` had before §2.7 existed.
 
 ---
 
@@ -532,10 +542,14 @@ observation, not a crash.
 
 Two mechanisms that already exist turn this from silent into loud:
 
-1. **Version parity, checked before joining.** The server publishes its own commit at
-   `GET /desktop/version.json` as `{clientVersion, coreVersion}`
-   (`src/server/Master.ts:57`), deliberately reachable without a bot challenge. Refuse to
-   join when `coreVersion` does not match our pin.
+1. **Version parity, checked before joining.** The served page injects the server's own
+   commit as `window.BOOTSTRAP_CONFIG.gitCommit` (`src/server/RenderHtml.ts:19`, read by
+   `ClientEnv.gitCommit()`), so the shim reads it directly from the live page — the
+   commit of the bundle we are actually running against. Refuse to join on mismatch. Note
+   that `GET /desktop/version.json` is *not* the right source despite looking like one:
+   its `coreVersion` comes from the desktop shell release descriptor
+   (`src/server/DesktopRelease.ts:295`), which is a Steam-asset version with different
+   semantics from the web bundle's commit.
 2. **Hash agreement as a hard invariant.** Clients periodically send a state hash (`hash`
    intent, `src/core/Schemas.ts:1055`; turns carry one too), which the server uses for
    desync detection (`src/server/DesyncDetector.ts`). Our shim sees the real client's
