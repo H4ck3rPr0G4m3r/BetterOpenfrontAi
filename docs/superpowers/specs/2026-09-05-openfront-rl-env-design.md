@@ -3,6 +3,8 @@
 **Date:** 2026-09-05
 **Status:** Approved design, pending implementation plan
 **Scope:** Sub-project 1 of 4 — the headless environment and Python bridge. No learning.
+§10 additionally specifies phase 3 (live openfront.io lobbies), because two phase-1
+decisions only make sense against it.
 
 ---
 
@@ -19,7 +21,7 @@ environment; coupling env bugs to training bugs would make both undiagnosable.
 ### Non-goals for this phase
 
 - Training loops, reward tuning, curricula, self-play (phase 2)
-- Connecting to live multiplayer servers (phase 3)
+- Connecting to live multiplayer servers (phase 3 — designed in §10, not built here)
 - Any user-facing way to play against a checkpoint (phase 4)
 
 ---
@@ -60,7 +62,7 @@ steps/sec, and an estimated 800–1200 after observation encoding. 10M steps lan
 3 hours. Encoding cost, not simulation cost, is the thing to optimize.
 
 That 800–1200 figure is an estimate covering simulation plus observation encoding
-only. It **excludes per-step action-mask computation**, which is open question §10.1 and
+only. It **excludes per-step action-mask computation**, which is open question §11.1 and
 could be significant. It must not be quoted later as a measured end-to-end number.
 
 ### 2.3 Determinism is real
@@ -446,12 +448,163 @@ Phase 2 does not begin until these hold.
 
 ---
 
-## 10. Open questions carried into implementation
+## 10. Phase 3 — real lobbies through a headless browser
+
+Not phase-1 scope. It is specified here because two phase-1 decisions are only correct
+if this is the target: the encoder's interface discipline (§3) and the action cadence
+(§5.2).
+
+**Goal:** the trained agent plays on the official openfront.io servers, in the same
+public lobbies as everyone else — so it can be tested against strong human players, and
+so you can play alongside or against it in a normal game.
+
+### 10.1 Why a headless browser rather than a raw WebSocket client
+
+Official joins are gated by Cloudflare Turnstile (`src/server/JoinVerify.ts`,
+`src/server/Worker.ts:488`): the first join of a `persistentID` must carry a token or is
+rejected. `Roster.ts` caches admitted persistentIDs so reconnects skip the re-check, but
+the first one is unavoidable. A hand-rolled Node WebSocket client has no way to produce
+that token. A real browser loading the real page does, through the ordinary widget the
+site shows every player.
+
+Everything else follows from that. The browser is not a UI convenience — it is the
+authenticated transport. It loads openfront.io's own bundle and runs their join flow,
+their auth, their Turnstile, their asset loading, and holds a legitimately admitted
+session.
+
+**Explicit non-goal: no anti-detection work.** No fingerprint spoofing, no stealth
+plugins, no Turnstile solvers. Either headless Chromium passes the ordinary challenge or
+it does not. If it does not, the correct next step is to ask the operators — OpenFront
+already ships an `ADMIN_BOT_API_KEY` path for sanctioned bots
+(`src/server/AdminBotRoutes.ts`), so a bot seat is a conversation they have had before,
+not an unthinkable request.
+
+### 10.2 Architecture
+
+Three ways into a running page were considered:
+
+| Approach | Verdict |
+|---|---|
+| Synthetic mouse/key events on the canvas | Most faithful, most fragile — needs screen↔tile mapping and UI-state tracking against a minified bundle |
+| Hook the client `EventBus` (`SendAttackIntentEvent` etc.) | Clean, but requires serving our own bundle; only viable self-hosted |
+| **Shim `window.WebSocket` before the bundle loads** | **Chosen** |
+
+The shim is installed with Playwright's `addInitScript`, which runs before any page
+script. It wraps `window.WebSocket`, captures the instance the client opens to the game
+worker (`src/client/Transport.ts:393`), and exposes both directions to Node:
+
+- **Inbound:** every server frame is forwarded out of the page. Turns arrive here — the
+  full intent list of every player, which is all the state the simulation needs.
+- **Outbound:** we `send()` zbin-encoded intents on that same socket.
+
+Intents sent this way are indistinguishable from the client's own, because the server
+stamps `clientID` onto the intent itself rather than trusting the payload
+(`src/server/IntentAuthorization.ts`). The visible client also stays perfectly
+consistent: the server relays our intent back inside a Turn like everyone else's, and
+the page's own worker executes it. The rendered game is never a lie about what the agent
+did. Set `binaryType = "arraybuffer"` on the captured socket and marshal frames across
+the page boundary via `exposeBinding` — trivial at a 100ms cadence, but worth pinning
+down rather than discovering.
+
+Observation comes from a **shadow simulation** in Node: the same `GameRunner` +
+`Executor` as `GameEnv`, constructed from the lobby's `GameStartInfo` and fed the
+intercepted Turn stream. Determinism (§2.3) is what makes this work — same start info,
+same turns, same state. `ObservationEncoder` and `ActionCodec` then run unchanged.
+
+```
+openfront.io  ──ws──►  headless Chromium (real client, real Turnstile)
+                            │  WebSocket shim (addInitScript)
+                            ▼
+                       Node driver
+                        ├── shadow GameRunner   ← intercepted Turns
+                        ├── ObservationEncoder / ActionCodec   (phase 1, unchanged)
+                        └── policy checkpoint → intent → shim → socket
+```
+
+### 10.3 The load-bearing risk: shadow-sim divergence
+
+This is phase 3's equivalent of the human-seat assumption (§2.7), except it fails
+silently rather than loudly. The shadow sim is only correct if our pinned engine matches
+what openfront.io is actually running — same execution logic, same config constants,
+same map data. Terrain does not come over the socket; it comes from their CDN, while we
+load `resources/maps/` at our pinned commit. A mismatch produces a confidently wrong
+observation, not a crash.
+
+Two mechanisms that already exist turn this from silent into loud:
+
+1. **Version parity, checked before joining.** The server publishes its own commit at
+   `GET /desktop/version.json` as `{clientVersion, coreVersion}`
+   (`src/server/Master.ts:57`), deliberately reachable without a bot challenge. Refuse to
+   join when `coreVersion` does not match our pin.
+2. **Hash agreement as a hard invariant.** Clients periodically send a state hash (`hash`
+   intent, `src/core/Schemas.ts:1055`; turns carry one too), which the server uses for
+   desync detection (`src/server/DesyncDetector.ts`). Our shim sees the real client's
+   hashes on the wire. **Every hash turn, the shadow sim's hash must equal the client's,
+   or the episode aborts.** The agent stops acting the moment it can no longer prove it
+   is looking at the real game.
+
+Getting this wrong is the difference between "the bot played badly" and "the bot was
+playing a different game."
+
+### 10.4 The clock is no longer ours
+
+Phase 1's `TurnFeeder` owns the clock: `step()` blocks until 10 ticks are simulated. In
+a real lobby the server owns it. Turns arrive at ~100ms and cannot be paused, so phase 3
+is a deadline-bound reactive loop — decode turn, advance shadow sim, encode, mask, infer,
+emit, all inside one turn interval, with defined behavior on overrun (drop the action;
+never land it late against stale state).
+
+This raises the priority of open question §11.1: masking cost that merely reduces
+training throughput becomes a hard real-time deadline here.
+
+### 10.5 Rate limits
+
+`src/server/ClientMsgRateLimiter.ts` allows 10 intents/second, 150 intents/minute, 2000
+bytes per intent, and 5MB total per client. The per-second and per-minute limits
+throttle; the size limits kick. Phase 1's cadence of one action per 10 ticks is ~60
+intents/minute at a 100ms tick — comfortable, but not so comfortable that a multi-intent
+action or a burst-happy policy can be ignored. The driver enforces its own budget below
+the server's rather than discovering the ceiling by being kicked mid-game.
+
+### 10.6 Staging
+
+1. **Self-hosted server, real client, real headless browser.** The whole loop, with no
+   policy questions and no strangers involved. A development stepping stone, not the
+   deliverable.
+2. **Turnstile probe.** Load openfront.io headless and check whether a token materializes
+   at all. Cheap, and it gates everything after it — phase 3's `HumanSeatProbe.ts`.
+3. **Official private lobby**, agent plus invited humans. Covers "play with it myself
+   with others" end to end.
+4. **Official public lobby.** The real test against strong players.
+
+Steps 3 and 4 put the agent in games with people who did not opt into playing a bot.
+That is your call to make, and step 4 is worth raising with the operators first; this
+design does not decide it.
+
+### 10.7 What phase 3 needs from phase 1
+
+- **The observation encoder written against the public `Game` / `Player` / `GameMap`
+  interfaces.** The shadow sim runs a real `GameImpl`, so this is not strictly required —
+  but `GameView implements GameMap` and exposes `tileStateBuffer()`
+  (`src/client/view/GameView.ts:1357`), so interface discipline keeps page introspection
+  available as a fallback if the shadow sim proves unmaintainable. Cheap insurance, and
+  it is the same discipline §3 wants for the submodule-versus-fork decision.
+- **Action-codec symmetry.** The codec must emit real `Intent` objects, not env-internal
+  shorthand, so one encoder feeds `TurnFeeder` in training and the socket shim in a live
+  game.
+- **Determinism** (§2.3), on which the shadow sim entirely depends.
+
+---
+
+## 11. Open questions carried into implementation
 
 1. Cost of `buildableUnits()` per tile. Decides dense spatial build masking versus a
-   candidate list (§5.4), and gates whether the §2.2 throughput estimate survives once
-   per-step masking is included.
+   candidate list (§5.4), gates whether the §2.2 throughput estimate survives once
+   per-step masking is included, and becomes a hard real-time deadline in phase 3
+   (§10.4) rather than merely a throughput cost.
 2. Whether the encoder can be written against public interfaces only — decides submodule
-   versus fork (§3).
+   versus fork (§3), and keeps phase 3's page-introspection fallback available (§10.7).
 3. Optimal M (envs per process) and W (processes) — to be tuned empirically against the
    16-core / 8GB-VRAM machine, not guessed.
+4. Whether headless Chromium obtains a Turnstile token by ordinary means (§10.6, step 2).
+   Gates all of phase 3, and is answered by a probe, not by argument.
