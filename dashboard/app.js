@@ -502,11 +502,15 @@ async function boot() {
     const poll = setInterval(async () => {
       const detail = await api("GET", `/api/jobs/${job.id}`);
       const rows = parseEvalResult(detail.log_tail || []);
-      if (rows.length) {
-        $("eval-result").innerHTML = rows
-          .map((r) => `${r.name}: return ${r.ret}, length ${r.len}, win ${r.win}, ${r.terms}`)
-          .join("<br>");
-      }
+      const box = $("eval-result");
+      box.innerHTML = "";
+      rows.forEach((r) => {
+        const div = document.createElement("div");
+        div.textContent =
+          `${r.name}: return ${r.ret}, length ${r.len}, win ${r.win}, ${r.terms}`;
+        box.append(div);
+      });
+      if (!rows.length) box.textContent = "no result lines yet";
       if (detail.status !== "running") clearInterval(poll);
     }, 3000);
   });

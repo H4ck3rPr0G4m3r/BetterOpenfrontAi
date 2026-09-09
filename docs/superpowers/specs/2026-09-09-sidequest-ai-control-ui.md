@@ -139,3 +139,16 @@ http://127.0.0.1:8765/. Simulated predictor answers instantly with no
 engine. Real-engine live and training runs boot node workers exactly
 like the terminal scripts do; the first boot compiles the engine and is
 slow, and the live phase line says so while it happens.
+
+## 12. Review round (PR #4)
+
+A review agent read the full diff and returned 4 blockers, all in
+`control_server.py`: a bypassable path-prefix check, SSE subscribers
+never removed, unrestricted checkpoint paths into `MaskablePPO.load`,
+and a char-count log offset that drifts on CRLF logs. All four fixed,
+plus the should-fix items that fit without new architecture (eval.json
+reproducibility, override whitelist, job eviction and record deletion,
+shaping-delta test, spawn-path tests, finite-weight validation,
+XSS-safe eval rendering, min-ratio persisted and honored) and the nits.
+One item stays manual: a real-engine multi-worker PPO rollout to
+confirm the `get_attr("num_envs")` length correction against SB3.

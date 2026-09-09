@@ -1,13 +1,15 @@
 """Tests for the side-quest control server. Fast and bounded by design.
 
 No node worker boots here: the live path runs against the in-process
-fake worker (predictor "simulated"), and every wait carries a deadline
-so a regression fails in seconds instead of hanging the suite. That
-rule is load-bearing: this server once wedged a terminal with an
-unbounded poll loop, and these tests must never do the same.
+fake worker (predictor "simulated"), job spawns are stubbed out, and
+every wait carries a deadline so a regression fails in seconds instead
+of hanging the suite. That rule is load-bearing: this server once
+wedged a terminal with an unbounded poll loop, and these tests must
+never do the same.
 """
 
 import json
+import shutil
 import threading
 import time
 import urllib.error
@@ -15,6 +17,7 @@ import urllib.request
 from http.server import ThreadingHTTPServer
 
 import pytest
+import yaml
 
 import control_server
 from control_server import Handler
@@ -145,3 +148,119 @@ def test_live_simulated_streams_steps(base_url):
         status, stopped = _request("POST", f"{base_url}/api/live/stop", {})
         assert status == 200
         assert stopped["running"] is False
+
+
+def test_live_unsubscribe_removes_subscriber():
+    inbox = control_server.LIVE.subscribe()
+    try:
+        assert inbox in control_server.LIVE._subscribers
+    finally:
+        control_server.LIVE.unsubscribe(inbox)
+    assert inbox not in control_server.LIVE._subscribers
+
+
+def test_job_spawn_writes_reproducible_configs(base_url, monkeypatch):
+    launched = []
+
+    def fake_launch(self, job, argv):
+        launched.append((job.id, argv))
+
+    monkeypatch.setattr(control_server.JobManager, "_launch", fake_launch)
+    created = []
+    try:
+        status, train = _request(
+            "POST",
+            f"{base_url}/api/jobs/train",
+            {
+                "base": "smoke.yaml",
+                "run_name": "spawn-test",
+                "total_timesteps": 64,
+                "behavior": {
+                    "name": "spawn-test",
+                    "aggression": 80,
+                    "disabled_builds": ["Factory"],
+                },
+            },
+        )
+        assert status == 201
+        created.append(train["id"])
+        run_dir = control_server.RUNS_DIR / train["id"]
+        cfg = yaml.safe_load((run_dir / "config.yaml").read_text(encoding="utf-8"))
+        assert cfg["behavior"]["disabled_builds"] == ["Factory"]
+        assert cfg["behavior"]["min_attack_ratio"] == 4
+        assert cfg["run"]["total_timesteps"] == 64
+        assert cfg["run"]["run_name"] == "spawn-test"
+
+        status, ev = _request(
+            "POST",
+            f"{base_url}/api/jobs/eval",
+            {
+                "model": "checkpoints/openfront_ppo/fake.zip",
+                "base": "smoke.yaml",
+                "episodes": 2,
+                "seed": "s",
+                "baseline": True,
+                "behavior": {"name": "spawn-test"},
+            },
+        )
+        assert status == 201
+        created.append(ev["id"])
+        espec = json.loads(
+            (control_server.RUNS_DIR / ev["id"] / "eval.json").read_text(encoding="utf-8")
+        )
+        assert espec["model"].replace("\\", "/").endswith(
+            "checkpoints/openfront_ppo/fake.zip"
+        )
+        assert espec["episodes"] == 2
+        assert espec["seed"] == "s"
+        assert espec["baseline"] is True
+        assert [job_id for job_id, _ in launched] == created
+    finally:
+        for job_id in created:
+            control_server.JOBS._jobs.pop(job_id, None)
+            shutil.rmtree(control_server.RUNS_DIR / job_id, ignore_errors=True)
+
+
+def test_path_traversal_rejected(base_url):
+    # All of these resolve outside train/ and must fail closed with 400.
+    # (A single "../" from configs/ lands back inside train/, so the
+    # inputs below climb two levels.)
+    status, _ = _request("GET", f"{base_url}/api/checkpoints?dir=../../env")
+    assert status == 400
+    status, _ = _request("GET", f"{base_url}/api/metrics?tb_dir=../../env&run=x")
+    assert status == 400
+    status, _ = _request(
+        "POST", f"{base_url}/api/jobs/train", {"base": "../../env/package.json"}
+    )
+    assert status == 400
+    status, _ = _request(
+        "POST",
+        f"{base_url}/api/jobs/eval",
+        {"model": "../../env/package.json", "base": "smoke.yaml"},
+    )
+    assert status == 400
+
+
+def test_override_whitelist_rejected(base_url, monkeypatch):
+    monkeypatch.setattr(control_server.JobManager, "_launch", lambda self, job, argv: None)
+    created = []
+    try:
+        status, _ = _request(
+            "POST",
+            f"{base_url}/api/jobs/train",
+            {"base": "smoke.yaml", "config_override": {"env": {"maps_dir": "/tmp/x"}}},
+        )
+        assert status == 400
+        status, _ = _request(
+            "POST",
+            f"{base_url}/api/jobs/train",
+            {"base": "smoke.yaml", "config_override": {"run": {"checkpoint_dir": "/tmp/x"}}},
+        )
+        assert status == 400
+    finally:
+        for job_id in list(control_server.JOBS._jobs):
+            if job_id.startswith("train-"):
+                created.append(job_id)
+        for job_id in created:
+            control_server.JOBS._jobs.pop(job_id, None)
+            shutil.rmtree(control_server.RUNS_DIR / job_id, ignore_errors=True)

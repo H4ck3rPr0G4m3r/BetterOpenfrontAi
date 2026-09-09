@@ -573,6 +573,9 @@ export class ActionCodecImpl implements ActionCodec {
     }
 
     const target = out.target;
+    // Occupancy-only by design: disabling every target-consuming intent
+    // does not close slots, since the target head is don't-care for the
+    // intents that remain (noop ignores it).
     target[0] = hasUnownedNeighbor ? 1 : 0;
     for (let i = 1; i < NUM_TARGET_SLOTS; i++) {
       target[i] = ctx.slots[i] !== null ? 1 : 0;

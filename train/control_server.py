@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import os
 import queue
 import re
 import subprocess
@@ -75,6 +76,66 @@ def read_json(handler: BaseHTTPRequestHandler, limit: int = 1_000_000):
     return json.loads(handler.rfile.read(length).decode("utf-8"))
 
 
+def resolve_under(root: Path, *parts: str) -> Path:
+    """Join untrusted path parts onto root, rejecting escapes.
+
+    A string-prefix check is not enough: siblings such as
+    ``train/configs-evil`` share the ``train/configs`` prefix, and an
+    absolute part discards the root entirely. Resolving first and then
+    requiring containment is exact.
+    """
+    target = root.joinpath(*parts).resolve()
+    if not target.is_relative_to(root.resolve()):
+        raise ValueError(f"path escapes {root}")
+    return target
+
+
+# Client-supplied run config may only touch these keys. Paths in
+# particular (maps_dir, checkpoint_dir, tensorboard_log) stay
+# server-side: letting them point anywhere would drive writes and
+# checkpoint loads outside train/.
+OVERRIDE_ALLOW: dict[str, set[str] | None] = {
+    "env": {
+        "map",
+        "bots",
+        "ticks_per_step",
+        "tick_cap",
+        "num_workers",
+        "envs_per_worker",
+        "strict_illegal_actions",
+        "socket_timeout",
+        "seed",
+    },
+    "ppo": None,
+    "policy": None,
+    "run": {"total_timesteps", "checkpoint_freq", "run_name", "device"},
+}
+
+
+def sanitize_override(raw: dict) -> dict:
+    """Keep only whitelisted config-override keys (see OVERRIDE_ALLOW)."""
+    if not isinstance(raw, dict):
+        raise ValueError("config_override must be a mapping")
+    unknown_sections = set(raw) - set(OVERRIDE_ALLOW)
+    if unknown_sections:
+        raise ValueError(f"override sections not allowed: {sorted(unknown_sections)}")
+    out: dict = {}
+    for section, allowed in OVERRIDE_ALLOW.items():
+        part = raw.get(section, {}) or {}
+        if not isinstance(part, dict):
+            raise ValueError(f"override section {section} must be a mapping")
+        if allowed is None:
+            out[section] = copy.deepcopy(part)
+        else:
+            unknown = set(part) - allowed
+            if unknown:
+                raise ValueError(
+                    f"override keys not allowed in {section}: {sorted(unknown)}"
+                )
+            out[section] = copy.deepcopy(part)
+    return out
+
+
 # --------------------------------------------------------------------------
 # jobs: train / eval subprocesses
 
@@ -101,21 +162,20 @@ class JobManager:
 
     def start_train(self, body: dict) -> Job:
         base_name = str(body.get("base", "default.yaml"))
-        base_path = (TRAIN_DIR / "configs" / base_name).resolve()
-        if not str(base_path).startswith(str(TRAIN_DIR / "configs")):
-            raise ValueError("base config must live in train/configs")
+        base_path = resolve_under(TRAIN_DIR, "configs", base_name)
         with open(base_path, encoding="utf-8") as handle:
             cfg = yaml.safe_load(handle)
         preset = BehaviorPreset.from_dict(body.get("behavior", {"name": "custom"}))
         behavior_cfg = {
             "aggression": preset.aggression,
+            "min_attack_ratio": preset.min_attack_ratio,
             "disabled_intents": list(preset.disabled_intents),
             "disabled_builds": list(preset.disabled_builds),
             "reward_weights": list(preset.reward_weights)
             if preset.reward_weights
             else None,
         }
-        cfg = deep_merge(cfg, body.get("config_override", {}) or {})
+        cfg = deep_merge(cfg, sanitize_override(body.get("config_override", {}) or {}))
         cfg["behavior"] = behavior_cfg
         run = cfg.setdefault("run", {})
         if body.get("run_name"):
@@ -128,13 +188,17 @@ class JobManager:
         model = str(body.get("model", ""))
         if not model:
             raise ValueError("eval needs a model checkpoint path")
+        # Checkpoints load through pickle, so the path stays contained in
+        # train/ rather than trusting client input.
+        model_path = str(resolve_under(TRAIN_DIR, model))
         base_name = str(body.get("base", "default.yaml"))
-        base_path = (TRAIN_DIR / "configs" / base_name).resolve()
+        base_path = resolve_under(TRAIN_DIR, "configs", base_name)
         with open(base_path, encoding="utf-8") as handle:
             cfg = yaml.safe_load(handle)
         preset = BehaviorPreset.from_dict(body.get("behavior", {"name": "custom"}))
         cfg["behavior"] = {
             "aggression": preset.aggression,
+            "min_attack_ratio": preset.min_attack_ratio,
             "disabled_intents": list(preset.disabled_intents),
             "disabled_builds": list(preset.disabled_builds),
             "reward_weights": list(preset.reward_weights)
@@ -144,11 +208,26 @@ class JobManager:
         job = self._spawn("eval", [], cfg, write_config_only=True)
         episodes = int(body.get("episodes", 10))
         seed = str(body.get("seed", "eval"))
+        use_baseline = bool(body.get("baseline"))
+        stochastic = bool(body.get("stochastic"))
+        # Everything needed to reproduce this eval from the terminal lives
+        # next to the generated config, not just in CLI flags.
+        eval_spec = {
+            "model": model_path,
+            "episodes": episodes,
+            "seed": seed,
+            "min_attack_ratio": preset.min_attack_ratio,
+            "baseline": use_baseline,
+            "stochastic": stochastic,
+            "behavior": cfg["behavior"],
+        }
+        with open(RUNS_DIR / job.id / "eval.json", "w", encoding="utf-8") as handle:
+            json.dump(eval_spec, handle, indent=2)
         argv = [
             sys.executable,
             "eval.py",
             "--model",
-            model,
+            model_path,
             "--config",
             job.config_path,
             "--episodes",
@@ -158,9 +237,9 @@ class JobManager:
             "--min-attack-ratio",
             str(preset.min_attack_ratio),
         ]
-        if body.get("baseline"):
+        if use_baseline:
             argv.append("--baseline")
-        if body.get("stochastic"):
+        if stochastic:
             argv.append("--stochastic")
         self._launch(job, argv)
         return job
@@ -186,10 +265,19 @@ class JobManager:
         )
         with self._lock:
             self._jobs[job_id] = job
+            self._evict_locked()
         if not write_config_only:
             argv = [*argv, "--config", str(config_path)]
             self._launch(job, argv)
         return job
+
+    def _evict_locked(self, keep: int = 50) -> None:
+        """Drop oldest terminal records past the cap. Running jobs stay."""
+        if len(self._jobs) <= keep:
+            return
+        terminal = [jid for jid, job in self._jobs.items() if job.status != "running"]
+        for jid in terminal[: len(self._jobs) - keep]:
+            del self._jobs[jid]
 
     def _launch(self, job: Job, argv: list) -> None:
         log = open(job.log_path, "w", encoding="utf-8")
@@ -224,6 +312,16 @@ class JobManager:
                 job.status = "stopped"
                 job.ended = now_iso()
         return job
+
+    def remove(self, job_id: str) -> None:
+        """Forget a terminal job record. Run files stay on disk."""
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                raise KeyError(job_id)
+            if job.status == "running":
+                raise ValueError("job still running, stop it first")
+            del self._jobs[job_id]
 
     def get(self, job_id: str) -> Job | None:
         with self._lock:
@@ -301,9 +399,7 @@ def save_preset(body: dict) -> dict:
 
 
 def list_checkpoints(subdir: str) -> list[dict]:
-    root = (TRAIN_DIR / subdir).resolve()
-    if not str(root).startswith(str(TRAIN_DIR)):
-        raise ValueError("checkpoint dir must live under train/")
+    root = resolve_under(TRAIN_DIR, subdir)
     if not root.is_dir():
         return []
     out = []
@@ -324,9 +420,7 @@ def list_checkpoints(subdir: str) -> list[dict]:
 def read_metrics(tb_dir: str, run: str) -> dict:
     from tensorboard.backend.event_processing import event_accumulator
 
-    root = (TRAIN_DIR / tb_dir).resolve()
-    if not str(root).startswith(str(TRAIN_DIR)):
-        raise ValueError("tensorboard dir must live under train/")
+    root = resolve_under(TRAIN_DIR, tb_dir)
     matches = sorted(root.glob(f"**/{run}/events*")) or sorted(root.glob("**/events*"))
     if not matches:
         return {"scalars": {}, "note": "no event files found"}
@@ -334,6 +428,8 @@ def read_metrics(tb_dir: str, run: str) -> dict:
     latest = max(matches, key=lambda p: p.stat().st_mtime)
     acc = event_accumulator.EventAccumulator(
         str(latest.parent),
+        # Zero keeps every point; charts downsample after load. Fine for
+        # local runs, but watch memory on very long ones.
         size_guidance={event_accumulator.SCALARS: 0},
     )
     acc.Reload()
@@ -448,6 +544,11 @@ class LiveSession:
         with self._lock:
             self._subscribers.append(inbox)
         return inbox
+
+    def unsubscribe(self, inbox: queue.Queue) -> None:
+        with self._lock:
+            if inbox in self._subscribers:
+                self._subscribers.remove(inbox)
 
     def _publish(self, step: dict) -> None:
         with self._lock:
@@ -593,7 +694,10 @@ class LiveSession:
             from sb3_contrib import MaskablePPO
 
             self._set_phase("booting", "loading checkpoint")
-            model = MaskablePPO.load(str(spec["model"]), device="cpu")
+            # Same containment as eval jobs: checkpoints unpickle.
+            model = MaskablePPO.load(
+                str(resolve_under(TRAIN_DIR, str(spec["model"]))), device="cpu"
+            )
         baseline = ScriptedBaselineAgent()
         min_ratio = int(behavior["min_attack_ratio"])
         episode = 0
@@ -741,15 +845,25 @@ class Handler(BaseHTTPRequestHandler):
         path = url.path
         try:
             if path.startswith("/api/jobs/"):
-                job = JOBS.stop(path[len("/api/jobs/") :])
-                self.send_json(JOBS.describe(job))
+                job_id = path[len("/api/jobs/") :]
+                job = JOBS.get(job_id)
+                if job is None:
+                    self.send_error_json(404, f"unknown job {job_id}")
+                elif job.status == "running":
+                    self.send_json(JOBS.describe(JOBS.stop(job_id)))
+                else:
+                    JOBS.remove(job_id)
+                    self.send_json({"deleted": job_id})
             elif path.startswith("/api/presets/"):
                 name = path[len("/api/presets/") :]
                 safe = re.sub(r"[^a-z0-9-]+", "-", name.lower()).strip("-")
-                target = (PRESETS_DIR / f"{safe}.json").resolve()
-                if not str(target).startswith(str(PRESETS_DIR.resolve())):
+                if not safe:
                     raise ValueError("bad preset name")
-                target.unlink(missing_ok=True)
+                target = resolve_under(PRESETS_DIR, f"{safe}.json")
+                if not target.is_file():
+                    self.send_error_json(404, f"unknown preset {name}")
+                    return
+                target.unlink()
                 self.send_json({"deleted": name})
             else:
                 self.send_error_json(404, "not found")
@@ -774,8 +888,8 @@ class Handler(BaseHTTPRequestHandler):
     def serve_dashboard(self, path: str) -> None:
         if path == "/":
             path = "/index.html"
-        target = (DASHBOARD_DIR / path.lstrip("/")).resolve()
-        if not str(target).startswith(str(DASHBOARD_DIR.resolve())) or not target.is_file():
+        target = resolve_under(DASHBOARD_DIR, path.lstrip("/"))
+        if not target.is_file():
             self.send_error_json(404, "not found")
             return
         content_types = {
@@ -811,17 +925,22 @@ class Handler(BaseHTTPRequestHandler):
                 keep = [line.rstrip("\n") for line in lines[-MAX_LOG_TAIL:]]
                 for line in keep:
                     self._sse({"line": line, "status": job.status})
-                offset = sum(len(line) + 1 for line in lines)
+                # Byte offset, not a char count: on Windows the log has
+                # CRLF endings, so summing len(line)+1 drifts and replays
+                # lines. The follow-up reads below are binary for the same
+                # reason.
+                offset = os.path.getsize(job.log_path)
             except OSError:
                 self._sse({"line": "(no log output yet)", "status": job.status})
             last_beat = time.monotonic()
             while follow:
                 time.sleep(0.5)
                 try:
-                    with open(job.log_path, encoding="utf-8", errors="replace") as handle:
+                    with open(job.log_path, "rb") as handle:
                         handle.seek(offset)
-                        chunk = handle.read()
+                        raw = handle.read()
                         offset = handle.tell()
+                    chunk = raw.decode("utf-8", errors="replace")
                 except OSError:
                     chunk = ""
                 for line in chunk.splitlines():
@@ -856,6 +975,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._sse({"step": step, "running": LIVE.running})
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass
+        finally:
+            LIVE.unsubscribe(inbox)
 
     def _sse(self, payload: dict) -> None:
         raw = f"data: {json.dumps(payload)}\n\n".encode("utf-8")
@@ -876,6 +997,18 @@ def main(argv: list[str] | None = None) -> None:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
+    finally:
+        # Do not orphan workers on Ctrl-C: stop jobs and the live session.
+        for summary in JOBS.summaries():
+            if summary["status"] == "running":
+                try:
+                    JOBS.stop(summary["id"])
+                except Exception:
+                    pass
+        try:
+            LIVE.stop()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

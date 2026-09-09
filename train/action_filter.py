@@ -15,6 +15,7 @@ zero bridge change. This module owns the rest:
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -120,6 +121,9 @@ class BehaviorPreset:
             weights = tuple(float(v) for v in weights)
             if len(weights) != 5:
                 raise ValueError("reward_weights needs 5 values: land,troop,gold,win,death")
+            for value in weights:
+                if not math.isfinite(value):
+                    raise ValueError(f"reward_weights must be finite, got {value}")
         env_overrides = dict(raw.get("env_overrides", {}))
         ppo_overrides = dict(raw.get("ppo_overrides", {}))
         return BehaviorPreset(

@@ -11,6 +11,7 @@ import {
   normalizeBehavior,
 } from "../src/BehaviorConfig";
 import { Reward } from "../src/Reward";
+import { TurnFeeder } from "../src/TurnFeeder";
 import type { Action, MaskBuffers } from "../src/types";
 import { parseWorkerArgs } from "../src/bridge/worker_main";
 import { AGENT_ID, buildPostSpawnGame } from "./helpers/buildWorldGame";
@@ -161,6 +162,41 @@ describe("reward weight overrides", () => {
     const custom2 = new Reward({ weights: { death: -3 } });
     custom2.init(runner.game, AGENT_ID);
     expect(custom2.step(runner.game, AGENT_ID, "death")).toBeCloseTo(-3, 10);
+  });
+
+  it("scales shaping deltas by the weight override, not just the bonus", async () => {
+    const { runner } = await buildTestRunner("behavior-reward-shaping");
+    const game = runner.game;
+    const agent = game.player(AGENT_ID);
+    const total = game.map().numLandTiles();
+    const before = agent.numTilesOwned();
+
+    // Only land counts: troops jump on spawn and would pollute the delta.
+    const custom = new Reward({
+      weights: { land: 2, troop: 0, gold: 0, win: 0, death: 0 },
+    });
+    custom.init(game, AGENT_ID);
+
+    const feeder = new TurnFeeder(runner);
+    const map = game.map();
+    let spawnTile = -1;
+    for (let i = 0; i < map.width() * map.height(); i++) {
+      if (map.isLand(i) && !map.hasOwner(i)) {
+        spawnTile = i;
+        break;
+      }
+    }
+    feeder.step(1, [
+      { clientID: "client0", playerID: AGENT_ID, type: "spawn", tile: spawnTile },
+    ] as any);
+    while (game.inSpawnPhase()) feeder.step(1, []);
+
+    const after = agent.numTilesOwned();
+    expect(after).toBeGreaterThan(before);
+    expect(custom.step(game, AGENT_ID, null)).toBeCloseTo(
+      2 * ((after - before) / total),
+      10,
+    );
   });
 });
 

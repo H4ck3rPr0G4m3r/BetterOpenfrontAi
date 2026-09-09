@@ -54,7 +54,14 @@ export const DEFAULT_WORKER_OPTIONS: WorkerMainOptions = {
  * training data far from where it was misconfigured.
  */
 export function parseWorkerArgs(argv: string[]): WorkerMainOptions {
-  const options: WorkerMainOptions = { ...DEFAULT_WORKER_OPTIONS };
+  // Fresh copies of the mutable defaults: the spread below would share
+  // the array/object references with DEFAULT_WORKER_OPTIONS.
+  const options: WorkerMainOptions = {
+    ...DEFAULT_WORKER_OPTIONS,
+    disabledIntents: [...DEFAULT_WORKER_OPTIONS.disabledIntents],
+    disabledBuilds: [...DEFAULT_WORKER_OPTIONS.disabledBuilds],
+    rewardWeights: { ...DEFAULT_WORKER_OPTIONS.rewardWeights },
+  };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     const next = (): string => {

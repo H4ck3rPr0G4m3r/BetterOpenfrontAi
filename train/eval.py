@@ -157,11 +157,16 @@ def main(argv: list[str] | None = None) -> dict:
     raw_behavior = cfg.get("behavior", {}) or {}
     min_ratio = args.min_attack_ratio
     if min_ratio is None:
-        # The behavior section carries no ratio floor of its own, so fall
-        # back to the aggression mapping when the config names one.
+        # A preset may pin its own floor; otherwise fall back to the
+        # aggression mapping when the config names one.
+        min_ratio = raw_behavior.get("min_attack_ratio", None)
+    if min_ratio is None:
         from action_filter import aggression_to_ratio_floor
 
         min_ratio = aggression_to_ratio_floor(int(raw_behavior.get("aggression", 50)))
+    min_ratio = int(min_ratio)
+    if not 0 <= min_ratio < 8:
+        parser.error("--min-attack-ratio must be 0..7")
     seeds = [f"{args.seed}-{i}" for i in range(args.episodes)]
     result = evaluate(
         args.model,
