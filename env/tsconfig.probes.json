@@ -1,0 +1,44 @@
+{
+  // tsx-only tsconfig for probes (never used by `tsc --noEmit`, which stays
+  // on tsconfig.json).
+  //
+  // Why this exists: tsx forwards a tsconfig's compilerOptions to esbuild
+  // only for files matching that config's `include`. env/tsconfig.json
+  // deliberately covers just src/tests/probes, so engine sources under
+  // ../OpenFrontIO fell back to esbuild defaults — native class fields with
+  // *define* semantics. Any engine class whose field initializers read
+  // constructor parameter properties (e.g. NationNukeBehavior's
+  // atomBombPerceivedCost = this.cost(...), which reads this.game) then
+  // crashes at construction: "Cannot read properties of undefined (reading
+  // 'unitInfo')" on the first post-spawn nation tick of EVERY nation game.
+  // Vitest is unaffected (it forwards the options unconditionally), which is
+  // why the test suite stayed green while every tsx probe crashed.
+  //
+  // Usage (from env/): TSX_TSCONFIG_PATH=tsconfig.probes.json npx tsx probes/<Name>.ts
+  //
+  // The `include` below must cover the engine sources too: tsx only forwards
+  // compilerOptions for files matching `include` (default `**/*` is rooted at
+  // this file's directory, so ../OpenFrontIO would silently fall back to
+  // esbuild defaults without the explicit entry).
+  //
+  // Worktree caveat: inside a worktree where OpenFrontIO is a junction, node
+  // realpaths engine files to the main checkout, so the ../OpenFrontIO
+  // pattern no longer string-matches and tsx probes crash there anyway.
+  // Measurements that need nations run fine under vitest in any checkout
+  // (it forwards the options unconditionally) — prefer a vitest timing test
+  // over a tsx probe for anything load-bearing.
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "experimentalDecorators": true,
+    "resolveJsonModule": true,
+    "useDefineForClassFields": false,
+    "skipLibCheck": true,
+    "paths": {
+      "resources/*": ["../OpenFrontIO/resources/*"],
+      "src/*": ["../OpenFrontIO/src/*"]
+    }
+  },
+  "include": ["./src/**/*", "./tests/**/*", "./probes/**/*", "../OpenFrontIO/src/**/*"]
+}

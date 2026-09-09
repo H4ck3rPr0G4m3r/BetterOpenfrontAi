@@ -40,6 +40,8 @@ export interface ActionCodec {
 export interface Info {
   terminalReason: TerminalReason;
   ticks: number;
+  /** Next-step legality masks, computed from the post-step state (§5.6). */
+  masks: MaskBuffers;
 }
 
 export interface StepResult {

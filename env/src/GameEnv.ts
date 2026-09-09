@@ -1,4 +1,3 @@
-import path from "path";
 import { Config } from "../../OpenFrontIO/src/core/configuration/Config";
 import { Executor } from "../../OpenFrontIO/src/core/execution/ExecutionManager";
 import {
@@ -17,14 +16,14 @@ import {
 } from "../../OpenFrontIO/src/core/game/GameUpdates";
 import { createGame } from "../../OpenFrontIO/src/core/game/GameImpl";
 import { createNationsForGame } from "../../OpenFrontIO/src/core/game/NationCreation";
-import { loadTerrainMap } from "../../OpenFrontIO/src/core/game/TerrainMapLoader";
+import { loadFreshTerrainMap } from "./Terrain";
 import { GameRunner } from "../../OpenFrontIO/src/core/GameRunner";
 import { PseudoRandom } from "../../OpenFrontIO/src/core/PseudoRandom";
 import { GameConfig, GameStartInfo } from "../../OpenFrontIO/src/core/Schemas";
 import { simpleHash } from "../../OpenFrontIO/src/core/Util";
-import { NodeGameMapLoader } from "../../OpenFrontIO/tests/perf/fullgame/NodeGameMapLoader";
 import { Reward, TerminalReason } from "./Reward";
 import { TurnFeeder } from "./TurnFeeder";
+import { createMaskBuffers } from "./ActionCodec";
 import {
   Action,
   ActionCodec,
@@ -46,12 +45,11 @@ const AGENT_CLIENT_ID = "client0";
  * §2.7).
  *
  * Phase-1 simplification, flagged rather than hidden: `reset()` picks the
- * agent's spawn tile with a fixed heuristic (first neutral land tile with
- * four neutral neighbours) instead of exposing it as an action. Real spawn
- * placement is a legitimate thing to learn eventually, but ActionCodec
- * doesn't exist yet and gating GameEnv's own lifecycle on that design isn't
- * worth it — swapping this for an action-driven spawn is a local change
- * inside reset(), not a GameEnv interface change.
+ * agent's spawn tile by seeded sampling (not a policy action) among neutral
+ * land tiles with four neutral neighbours. Real spawn placement is a
+ * legitimate thing to learn eventually, but gating GameEnv's own lifecycle on
+ * that design isn't worth it. Swapping this for an action-driven spawn is a
+ * local change inside reset(), not a GameEnv interface change.
  */
 export class GameEnv {
   private runner!: GameRunner;
@@ -59,6 +57,7 @@ export class GameEnv {
   private fatalError: string | undefined;
   private winnerAgentID: PlayerID | undefined;
   private ticksAtSpawnEnd = 0;
+  private lastSeed = "";
   private readonly reward: Reward;
 
   constructor(
@@ -74,6 +73,7 @@ export class GameEnv {
     console.debug = () => {};
     this.fatalError = undefined;
     this.winnerAgentID = undefined;
+    this.lastSeed = seed;
 
     const gameConfig: GameConfig = {
       gameMap: this.config.map,
@@ -98,13 +98,13 @@ export class GameEnv {
     };
 
     const coreConfig = new Config(gameConfig, null, false);
-    const mapLoader = new NodeGameMapLoader(
-      path.resolve(this.config.mapsDir),
-    );
-    const terrain = await loadTerrainMap(
+    // Fresh terrain every reset: the engine's loadTerrainMap() caches the
+    // LIVE GameMap by map:size with no eviction, so reusing it would build
+    // episode N on episode 1's dirt (see Terrain.ts).
+    const terrain = await loadFreshTerrainMap(
       gameConfig.gameMap,
       gameConfig.gameMapSize,
-      mapLoader,
+      this.config.mapsDir,
     );
     const random = new PseudoRandom(simpleHash(seed));
     const nations = createNationsForGame(
@@ -171,19 +171,35 @@ export class GameEnv {
       throw new Error("step() called after a terminal episode; call reset() first");
     }
 
+    // decode() stays outside the try below on purpose: it never throws on
+    // in-range heads (illegal combinations decode to []), so a throw here is
+    // a caller bug (out-of-range head), not a simulation failure, and must
+    // keep failing fast rather than masquerading as sim_error.
     const intents = this.codec.decode(action, this.runner.game, AGENT_ID);
-    const result = this.feeder.step(this.config.ticksPerStep, intents as any);
+    try {
+      const result = this.feeder.step(this.config.ticksPerStep, intents as any);
 
-    const terminal = this.computeTerminal(result.ok);
-    const obs = this.encodeObservation();
-    const reward = this.reward.step(this.runner.game, AGENT_ID, terminal);
+      const terminal = this.computeTerminal(result.ok);
+      const obs = this.encodeObservation();
+      const reward = this.reward.step(this.runner.game, AGENT_ID, terminal);
+      const masks = createMaskBuffers();
+      this.codec.masks(this.runner.game, AGENT_ID, masks);
 
-    return {
-      obs,
-      reward,
-      done: terminal !== null,
-      info: { terminalReason: terminal, ticks: this.runner.game.ticks() },
-    };
+      return {
+        obs,
+        reward,
+        done: terminal !== null,
+        info: { terminalReason: terminal, ticks: this.runner.game.ticks(), masks },
+      };
+    } catch (e) {
+      // GameRunner catches tick errors into ErrorUpdate (handled above via
+      // fatalError), but NOT everything it runs: the per-tick view-data pass
+      // (placeName over every player) throws raw past executeNextTick's
+      // try/catch, as do engine queries on state a caught error already left
+      // inconsistent. A raw throw must end the episode as sim_error, never
+      // escape into the training batch or kill the worker (§7).
+      return this.simError(e);
+    }
   }
 
   close(): void {
@@ -209,6 +225,36 @@ export class GameEnv {
       return "tick_cap";
     }
     return null;
+  }
+
+  /**
+   * Convert a raw engine throw into a non-scoring sim_error terminal (§7).
+   * Latches fatalError so further step() calls fail fast until reset(), and
+   * returns zeroed obs/masks — all-masked is the only honest mask for a
+   * state we no longer trust. Reward is still routed through Reward.step()
+   * for the terminal term, falling back to 0 if even reading state throws.
+   */
+  private simError(e: unknown): StepResult {
+    const detail = e instanceof Error ? (e.stack ?? e.message) : String(e);
+    this.fatalError = `raw engine throw: ${detail}`;
+    console.warn(`GameEnv sim_error, seed ${this.lastSeed}: ${detail}`);
+
+    let reward = 0;
+    try {
+      reward = this.reward.step(this.runner.game, AGENT_ID, "sim_error");
+    } catch {
+      reward = 0;
+    }
+    return {
+      obs: new Float32Array(this.encoder.size),
+      reward,
+      done: true,
+      info: {
+        terminalReason: "sim_error",
+        ticks: this.runner.game.ticks(),
+        masks: createMaskBuffers(),
+      },
+    };
   }
 
   private encodeObservation(): Observation {
