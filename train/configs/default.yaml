@@ -1,0 +1,38 @@
+# Full training defaults. Phase 1 measurements: ~50-60 steps/sec per env
+# early game, 12-14 workers land around 650-850 steps/sec, so 1M steps take
+# roughly 25-30 minutes of sim time before inference overhead.
+env:
+  map: World
+  bots: 20
+  ticks_per_step: 10
+  tick_cap: 6000
+  num_workers: 8
+  envs_per_worker: 2
+  strict_illegal_actions: true
+  socket_timeout: 180.0
+  seed: 0
+
+ppo:
+  n_steps: 128
+  batch_size: 512
+  n_epochs: 4
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_range: 0.2
+  ent_coef: 0.01
+  vf_coef: 0.5
+  max_grad_norm: 0.5
+  learning_rate: 0.0003
+
+policy:
+  features_dim: 512
+  net_arch_pi: [256]
+  net_arch_vf: [256]
+
+run:
+  total_timesteps: 1000000
+  checkpoint_freq: 50000
+  checkpoint_dir: checkpoints/openfront_ppo
+  tensorboard_log: runs/openfront_ppo
+  run_name: ppo_default
+  device: auto

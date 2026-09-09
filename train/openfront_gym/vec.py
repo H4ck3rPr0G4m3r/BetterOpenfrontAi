@@ -213,7 +213,7 @@ class OpenFrontVecEnv(gymnasium.vector.VectorEnv):
         if name == "action_masks":
             return self.env_method(name)
         if name == "num_envs":
-            return [self.num_envs] * self.num_workers
+            return [self.num_envs] * self.num_envs
         raise AttributeError(f"unknown attr {name}")
 
     def close(self) -> None:
