@@ -75,12 +75,17 @@ describe("StepCost", () => {
     }
 
     const steps = 10;
-    const t0 = performance.now();
+    let stepMs = 0;
     for (let i = 0; i < steps; i++) {
-      const r = env.step(sampleMasked());
+      // Sampled outside the clock: sampling runs a full masks() pass plus
+      // allocation, which is action-selection cost, not step cost.
+      const action = sampleMasked();
+      const t1 = performance.now();
+      const r = env.step(action);
+      stepMs += performance.now() - t1;
       if (r.done) throw new Error("bench seed ended early");
     }
-    const meanStepMs = (performance.now() - t0) / steps;
+    const meanStepMs = stepMs / steps;
 
     // Per-component slices on the same live state.
     const obsOut = new Float32Array(encoder.size);
@@ -94,8 +99,11 @@ describe("StepCost", () => {
     for (let i = 0; i < iters; i++) codec.masks(env.game, AGENT_ID, maskBuf);
     const masksMs = (performance.now() - t) / iters;
 
+    // One fixed action, decoded repeatedly: sampling inside the loop would
+    // charge a second masks() pass per iteration to "decode".
+    const decodeProbe = sampleMasked();
     t = performance.now();
-    for (let i = 0; i < iters; i++) codec.decode(sampleMasked(), env.game, AGENT_ID);
+    for (let i = 0; i < iters; i++) codec.decode(decodeProbe, env.game, AGENT_ID);
     const decodeMs = (performance.now() - t) / iters;
 
     const simMs = Math.max(0, meanStepMs - encodeMs - masksMs - decodeMs);
@@ -106,8 +114,8 @@ describe("StepCost", () => {
         `masks=${masksMs.toFixed(2)}ms decode=${decodeMs.toFixed(3)}ms`,
     );
 
-    // Generous gate: ~2.4x the measured early-game value at authorship
-    // (16.5ms/step), there to catch regressions, not to bless a budget.
+    // Generous gate: ~2.2x the measured early-game value at authorship
+    // (~18ms/step), there to catch regressions, not to bless a budget.
     // Mid-game steps cost more (richer agent, more legal Factory queries),
     // and masked-random actions vary run to run — hence the headroom.
     expect(meanStepMs).toBeLessThan(40);

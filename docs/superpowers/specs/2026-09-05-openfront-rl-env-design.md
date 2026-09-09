@@ -58,19 +58,20 @@ which skips `execManager.nationExecutions()` entirely, leaving tribes that barel
 
 **Derived budget.** At 10 sim ticks per agent decision, World gives ~107 decisions/sec
 per environment before encoding. With 12–14 worker processes on 16 cores that is ~1000–1700 raw
-steps/sec; after encoding and masking the measured figure is ~700–850 (see below).
+steps/sec; after encoding and masking the measured figure is ~650–850 (see below).
 Encoding cost, not simulation cost, is the thing to optimize.
 
 That 800–1200 figure was an estimate; it is now superseded by a direct
 measurement inside a real `GameEnv.step()` (`env/tests/StepCost.test.ts`,
-World, 20 bots, masked-random actions): **~16.5ms per step, about 60
-steps/sec per environment**, split roughly evenly between simulation
-(~8.1ms) and observation encoding (~7.4ms), with masks at ~0.5ms and decode
-at ~0.5ms. The mask figure is early-game (a poor agent has little legal to
+World, 20 bots, masked-random actions): **roughly 16–20ms per step early-game,
+about 50–60 steps/sec per environment**, split between simulation
+(~9–11ms) and observation encoding (~7ms), with masks at ~0.5ms and decode
+negligible (~0.02ms; an earlier 0.5ms figure was action-sampling overhead
+leaking into the decode loop, fixed). The mask figure is early-game (a poor agent has little legal to
 build, so most candidate queries fail fast); richer mid-game states cost
 more, and the test's 40ms gate exists to catch regressions, not to bless a
 budget. Full masked-random episodes average slower (~20–30ms/step as unit
-counts and combat grow), so 12–14 workers land around 700–850 steps/sec and
+counts and combat grow), so 12–14 workers land around 650–850 steps/sec and
 10M steps around 3.5–4 hours — below the old estimate, honestly measured.
 Encoding cost, not simulation cost, remains the thing to optimize.
 

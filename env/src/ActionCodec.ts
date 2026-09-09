@@ -387,6 +387,10 @@ export class ActionCodecImpl implements ActionCodec {
     const dst = resolveWaterDst(ctx, action.spatialCell);
     const map = ctx.game.map();
     if (dst < 0 || dst >= map.width() * map.height()) return [];
+    // Patrol tiles are water by definition. A land fallback would name ships
+    // that all silently ignore the order — a no-op intent decode must not
+    // emit, same contract as the attack guards above.
+    if (map.isLand(dst)) return [];
     // Sail only the warships sharing the destination's water — others would
     // silently ignore the order. When none match, send them all anyway: the
     // schema needs a nonempty array and the execution skips mismatches.

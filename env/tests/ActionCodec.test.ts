@@ -247,6 +247,7 @@ describe("ActionCodec decode", () => {
     ).toEqual([]);
     expect(codec.decode(baseAction({ intentType: IntentType.CancelAttack }), game, AGENT_ID)).toEqual([]);
     expect(codec.decode(baseAction({ intentType: IntentType.UpgradeStructure }), game, AGENT_ID)).toEqual([]);
+    expect(codec.decode(baseAction({ intentType: IntentType.MoveWarship }), game, AGENT_ID)).toEqual([]);
     expect(codec.decode(baseAction({ intentType: IntentType.Noop }), game, AGENT_ID)).toEqual([]);
   });
 
