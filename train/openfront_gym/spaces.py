@@ -30,9 +30,9 @@ HEAD_SIZES = (
     MASK_SPATIAL_CELLS,
     MASK_BUILD_SITES,
 )
-HEAD_OFFSETS = (0, 14, 31, 39, 8231)
+HEAD_OFFSETS = tuple(sum(HEAD_SIZES[:index]) for index in range(len(HEAD_SIZES)))
 
-assert HEAD_OFFSETS[-1] + HEAD_SIZES[-1] == MASK_TOTAL  # noqa: S101
+assert sum(HEAD_SIZES) == MASK_TOTAL  # noqa: S101
 
 
 class IntentType:

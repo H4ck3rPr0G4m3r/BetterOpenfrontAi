@@ -26,6 +26,13 @@ function makeConfig(overrides: Partial<EnvConfig> = {}): EnvConfig {
 }
 
 describe("GameEnv", () => {
+  it("refuses ticks and masks before the first reset", async () => {
+    const env = new GameEnv(makeConfig(), new StubObservationEncoder(), new NoopActionCodec());
+
+    expect(() => env.ticks).toThrow();
+    expect(() => env.currentMasks()).toThrow();
+  });
+
   it("reset() spawns the agent and returns a correctly-sized observation", async () => {
     const encoder = new StubObservationEncoder();
     const env = new GameEnv(makeConfig(), encoder, new NoopActionCodec());

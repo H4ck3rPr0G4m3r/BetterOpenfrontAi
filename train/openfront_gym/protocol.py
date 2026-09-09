@@ -132,6 +132,8 @@ class HelloInfo:
 def encode_frame(seq: int, msg_type: int, body: bytes) -> bytes:
     if not 0 <= seq <= 0xFFFFFFFF:
         raise ProtocolError(ProtocolErrorCode.BAD_MESSAGE, "seq out of u32 range")
+    if not isinstance(msg_type, int) or not 0 <= msg_type <= 0xFF:
+        raise ProtocolError(ProtocolErrorCode.BAD_MESSAGE, "msg_type out of u8 range")
     return struct.pack("<I", 4 + 1 + len(body)) + struct.pack("<I", seq) + bytes([msg_type]) + body
 
 
@@ -196,7 +198,10 @@ def _decode_seed_list(body: bytes, offset: int, count: int, allow_empty: bool):
             )
         if offset + length > len(body):
             raise ProtocolError(ProtocolErrorCode.BAD_LENGTH, "seed bytes truncated")
-        seed = body[offset : offset + length].decode("utf-8")
+        try:
+            seed = body[offset : offset + length].decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ProtocolError(ProtocolErrorCode.BAD_MESSAGE, "seed is not valid UTF-8") from exc
         if not allow_empty and seed == "":
             raise ProtocolError(ProtocolErrorCode.BAD_MESSAGE, "seed must not be empty")
         seeds.append(seed)
@@ -229,6 +234,8 @@ def decode_hello_body(body: bytes) -> HelloInfo:
 
 def encode_reset_body(version: int, seeds) -> bytes:
     seeds = list(seeds)
+    if not 1 <= len(seeds) <= 1024:
+        raise ProtocolError(ProtocolErrorCode.BAD_MESSAGE, f"bad num_envs {len(seeds)}")
     return struct.pack("<II", version, len(seeds)) + _encode_seed_list(seeds, False)
 
 
@@ -248,8 +255,13 @@ def decode_reset_body(body: bytes):
 
 def _check_action(action) -> None:
     for key in ACTION_KEYS:
-        value = action[key]
-        if not isinstance(value, int) or not 0 <= value <= 0xFFFF:
+        try:
+            value = action[key]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise ProtocolError(
+                ProtocolErrorCode.BAD_MESSAGE, f"action is missing head {key!r}"
+            ) from exc
+        if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= 0xFFFF:
             raise ProtocolError(ProtocolErrorCode.BAD_MESSAGE, f"{key} out of u16 range")
 
 
@@ -425,6 +437,8 @@ def decode_step_reply_body(body: bytes, num_envs: int, obs_size: int):
 
 
 def encode_error_body(code: int, message: str) -> bytes:
+    if not isinstance(code, int) or isinstance(code, bool) or not 0 <= code <= 0xFF:
+        raise ProtocolError(ProtocolErrorCode.BAD_MESSAGE, f"bad error code {code}")
     raw = message.encode("utf-8")
     if len(raw) > 0xFFFF:
         raise ProtocolError(ProtocolErrorCode.BAD_MESSAGE, "error message too long")
@@ -437,7 +451,12 @@ def decode_error_body(body: bytes):
     (length,) = struct.unpack_from("<H", body, 1)
     if 3 + length != len(body):
         raise ProtocolError(ProtocolErrorCode.BAD_LENGTH, "error body length mismatch")
-    return body[0], body[3:].decode("utf-8")
+    try:
+        return body[0], body[3:].decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ProtocolError(
+            ProtocolErrorCode.BAD_MESSAGE, "error message is not valid UTF-8"
+        ) from exc
 
 
 def send_frame(sock: socket.socket, seq: int, msg_type: int, body: bytes) -> None:

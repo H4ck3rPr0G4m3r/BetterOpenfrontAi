@@ -65,6 +65,17 @@ describe("Protocol framing", () => {
     expect([...frame.body]).toEqual([9, 8, 7, 6]);
   });
 
+  it("rejects out-of-range message types at encode time", () => {
+    expect(() => encodeFrame(1, 256, new Uint8Array(0))).toThrow(ProtocolError);
+    expect(() => encodeFrame(1, -1, new Uint8Array(0))).toThrow(ProtocolError);
+  });
+
+  it("rejects non-UTF8 seeds and error text instead of replacing bytes", () => {
+    const badSeed = new Uint8Array([1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0xff]);
+    expect(() => decodeResetBody(badSeed)).toThrow(ProtocolError);
+    const badError = new Uint8Array([4, 1, 0, 0xff]);
+    expect(() => decodeErrorBody(badError)).toThrow(ProtocolError);
+  });
   it("matches the cross language anchor vector", () => {
     // Mirrored byte for byte in train/tests/test_protocol.py. If this
     // changes, the Python side must change with it.
@@ -120,6 +131,7 @@ describe("Protocol bodies", () => {
   });
 
   it("rejects empty reset seeds and trailing bytes", () => {
+    expect(() => encodeResetBody(SCHEMA_VERSION, [])).toThrow(ProtocolError);
     expect(() => encodeResetBody(SCHEMA_VERSION, [""])).toThrow(ProtocolError);
     const good = encodeResetBody(SCHEMA_VERSION, ["a", "b"]);
     const bad = new Uint8Array(good.length + 1);

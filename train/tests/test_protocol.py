@@ -76,6 +76,21 @@ class ProtocolTest(unittest.TestCase):
             list(encode_frame(7, MessageType.CLOSE, b"")), [5, 0, 0, 0, 7, 0, 0, 0, 3]
         )
 
+    def test_frame_rejects_bad_message_type(self):
+        with self.assertRaises(ProtocolError):
+            encode_frame(1, 256, b"")
+        with self.assertRaises(ProtocolError):
+            encode_frame(1, -1, b"")
+
+    def test_decode_rejects_non_utf8_text(self):
+        import struct as _struct
+
+        bad_seed = _struct.pack("<II", 1, 1) + _struct.pack("<H", 1) + b"\xff"
+        with self.assertRaises(ProtocolError):
+            decode_reset_body(bad_seed)
+        with self.assertRaises(ProtocolError):
+            decode_error_body(bytes([4]) + _struct.pack("<H", 1) + b"\xff")
+
     def test_frame_reader_splits_and_joins(self):
         first = encode_frame(1, MessageType.RESET, bytes([1]))
         second = encode_frame(2, MessageType.STEP, bytes([2, 3]))
@@ -99,6 +114,8 @@ class ProtocolTest(unittest.TestCase):
     def test_reset_rejects_empty_seed(self):
         with self.assertRaises(ProtocolError):
             encode_reset_body(SCHEMA_VERSION, [""])
+        with self.assertRaises(ProtocolError):
+            encode_reset_body(SCHEMA_VERSION, [])
 
     def test_step_round_trip(self):
         actions = [_action(), _action(intent_type=0, spatial_cell=8191)]
@@ -108,6 +125,15 @@ class ProtocolTest(unittest.TestCase):
         self.assertEqual(version, SCHEMA_VERSION)
         self.assertEqual(decoded, actions)
         self.assertEqual(next_seeds, ["", "custom-next"])
+
+    def test_step_rejects_malformed_actions(self):
+        incomplete = _action()
+        del incomplete["target"]
+        with self.assertRaises(ProtocolError):
+            encode_step_body(SCHEMA_VERSION, [incomplete], [""])
+        out_of_range = _action(intent_type=70000)
+        with self.assertRaises(ProtocolError):
+            encode_step_body(SCHEMA_VERSION, [out_of_range], [""])
 
     def test_reset_reply_round_trip(self):
         body = encode_reset_reply_body(
@@ -156,6 +182,12 @@ class ProtocolTest(unittest.TestCase):
         self.assertEqual(
             decode_error_body(encode_error_body(4, "version drift")), (4, "version drift")
         )
+
+    def test_error_body_rejects_bad_code(self):
+        with self.assertRaises(ProtocolError):
+            encode_error_body(256, "too big")
+        with self.assertRaises(ProtocolError):
+            encode_error_body(-1, "negative")
 
 
 if __name__ == "__main__":

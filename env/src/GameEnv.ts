@@ -233,6 +233,9 @@ export class GameEnv {
    * sim_error reply contract.
    */
   currentMasks(): MaskBuffers {
+    if (this.runner === undefined) {
+      throw new Error("currentMasks read before reset()");
+    }
     const masks = createMaskBuffers();
     try {
       this.codec.masks(this.runner.game, AGENT_ID, masks);

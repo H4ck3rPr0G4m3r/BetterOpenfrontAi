@@ -103,7 +103,10 @@ class OpenFrontVecEnv(gymnasium.vector.VectorEnv):
         return self._base_seeds[start : start + self.envs_per_worker]
 
     def reset(self, *, seed=None, options=None):
-        super().reset(seed=seed)
+        # The Gymnasium base only takes int seeds. Lists of per-env seeds
+        # are this wrapper's own feature, normalized below, so they must
+        # not reach the base call.
+        super().reset(seed=seed if isinstance(seed, int) or seed is None else None)
         if seed is not None:
             if isinstance(seed, int):
                 self._base_seeds = [f"{seed}-{i}" for i in range(self.num_envs)]

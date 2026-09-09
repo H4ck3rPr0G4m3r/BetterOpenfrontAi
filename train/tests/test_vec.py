@@ -122,6 +122,20 @@ class VecEnvTest(unittest.TestCase):
         finally:
             fakes[0].stop()
 
+    def test_reset_accepts_per_env_seeds(self):
+        fakes = [FakeWorker(num_envs=2, obs_size=8)]
+        fakes[0].start()
+        try:
+            vec = OpenFrontVecEnv(1, 2, worker_factory=factory_for(fakes, 2))
+            first, _ = vec.reset(seed=["alpha", "beta"])
+            second, _ = vec.reset(seed=["alpha", "beta"])
+            np.testing.assert_array_equal(first, second)
+            third, _ = vec.reset(seed=["alpha", "gamma"])
+            self.assertFalse(np.array_equal(first, third))
+            vec.close()
+        finally:
+            fakes[0].stop()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -12,6 +12,12 @@ class SpacesTest(unittest.TestCase):
         )
         self.assertEqual(sum(spaces.HEAD_SIZES), 8263)
 
+    def test_head_offsets_derive_from_sizes(self):
+        offset = 0
+        for found, size in zip(spaces.HEAD_OFFSETS, spaces.HEAD_SIZES):
+            self.assertEqual(found, offset)
+            offset += size
+
     def test_action_space_shape(self):
         space = spaces.make_action_space()
         self.assertEqual(tuple(space.nvec), spaces.HEAD_SIZES)

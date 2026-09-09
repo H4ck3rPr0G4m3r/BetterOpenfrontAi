@@ -181,7 +181,15 @@ export interface DecodedFrame {
 }
 
 const textEncoder = new TextEncoder();
-const textDecoder = new TextDecoder();
+const utf8Strict = new TextDecoder("utf-8", { fatal: true });
+
+function decodeUtf8(bytes: Uint8Array, what: string): string {
+  try {
+    return utf8Strict.decode(bytes);
+  } catch {
+    throw new ProtocolError(ProtocolErrorCode.BadMessage, `${what} is not valid UTF-8`);
+  }
+}
 
 function checkU32(value: number, name: string): void {
   if (!Number.isInteger(value) || value < 0 || value > 0xffffffff) {
@@ -195,9 +203,16 @@ function checkU16(value: number, name: string): void {
   }
 }
 
+function checkU8(value: number, name: string): void {
+  if (!Number.isInteger(value) || value < 0 || value > 0xff) {
+    throw new ProtocolError(ProtocolErrorCode.BadMessage, `${name} out of u8 range`);
+  }
+}
+
 /** Wrap seq, type and body in the length prefix. */
 export function encodeFrame(seq: number, msgType: number, body: Uint8Array): Uint8Array {
   checkU32(seq, "seq");
+  checkU8(msgType, "msgType");
   const payloadLen = 4 + 1 + body.length;
   const out = new Uint8Array(4 + payloadLen);
   const view = new DataView(out.buffer, out.byteOffset, out.byteLength);
@@ -317,7 +332,7 @@ function decodeSeedList(
     if (offset + len > bytes.length) {
       throw new ProtocolError(ProtocolErrorCode.BadLength, "seed bytes truncated");
     }
-    const seed = textDecoder.decode(bytes.slice(offset, offset + len));
+    const seed = decodeUtf8(bytes.slice(offset, offset + len), "seed");
     if (!allowEmpty && seed.length === 0) {
       throw new ProtocolError(ProtocolErrorCode.BadMessage, "seed must not be empty");
     }
@@ -363,7 +378,9 @@ export function decodeHelloBody(body: Uint8Array): HelloInfo {
 
 export function encodeResetBody(version: number, seeds: string[]): Uint8Array {
   checkU32(version, "version");
-  checkU32(seeds.length, "numEnvs");
+  if (seeds.length < 1 || seeds.length > 1024) {
+    throw new ProtocolError(ProtocolErrorCode.BadMessage, `bad numEnvs ${seeds.length}`);
+  }
   const seedBytes = encodeSeedList(seeds, false);
   const out = new Uint8Array(8 + seedBytes.length);
   const view = new DataView(out.buffer, out.byteOffset, out.byteLength);
@@ -742,5 +759,5 @@ export function decodeErrorBody(body: Uint8Array): { code: number; message: stri
   if (3 + len !== body.length) {
     throw new ProtocolError(ProtocolErrorCode.BadLength, "error body length mismatch");
   }
-  return { code: body[0], message: textDecoder.decode(body.slice(3)) };
+  return { code: body[0], message: decodeUtf8(body.slice(3), "error message") };
 }

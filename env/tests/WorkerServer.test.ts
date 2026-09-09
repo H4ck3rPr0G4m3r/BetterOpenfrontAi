@@ -46,10 +46,13 @@ class FakeEnv implements WorkerEnv {
   /** Terminal per step call, consumed in order. Missing entries mean continue. */
   script: ScriptedTerminal[] = [];
   rangeLimit = 13;
+  /** When set, reset waits for this gate, to stage reconnect races. */
+  gate: (() => Promise<void>) | null = null;
 
   constructor(readonly obsSize: number = OBS) {}
 
   async reset(seed: string): Promise<Float32Array> {
+    if (this.gate !== null) await this.gate();
     this.resets.push(seed);
     this.resetCount += 1;
     this.ticksValue = 302;
@@ -366,6 +369,64 @@ describe("WorkerServer", () => {
       expect(step.terminalCodes[1]).toBe(0);
       expect(envA.resets).toEqual(["a", "a#auto1"]);
       expect(envB.resets).toEqual(["b"]);
+      client.socket.destroy();
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("drops a dead client's queued chunks instead of desyncing the next client", async () => {
+    const env = new FakeEnv();
+    let releaseGate!: () => void;
+    const gateOpen = new Promise<void>((resolve) => {
+      releaseGate = resolve;
+    });
+    env.gate = () => gateOpen;
+    const server = await startServer(1, () => env);
+    try {
+      const { host, port } = serverPort(server);
+      const first = await TestClient.connect(port, host);
+      // Two resets: the first blocks inside the env, the second queues
+      // behind it on the shared processing chain.
+      first.sendRaw(encodeFrame(1, MessageType.Reset, encodeResetBody(SCHEMA_VERSION, ["a"])));
+      first.sendRaw(encodeFrame(2, MessageType.Reset, encodeResetBody(SCHEMA_VERSION, ["b"])));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      first.socket.destroy();
+      await first.waitClose();
+      // Let the server observe the disconnect before the next client
+      // arrives, so the test stages queued chunks, not connection refusal.
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      const second = await TestClient.connect(port, host);
+      releaseGate();
+      // The stale second reset must not poison this session: the new
+      // client starts at seq 1 and gets a clean reply.
+      const reply = await second.reset(1, ["c"]);
+      expect(reply.msgType).toBe(MessageType.ResetReply);
+      const reset = decodeResetReplyBody(reply.body, 1, OBS);
+      expect(env.resets[env.resets.length - 1]).toBe("c");
+      expect([...reset.obs[0]].every((v) => v === env.resetCount)).toBe(true);
+      second.socket.destroy();
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("keeps derived auto-reset seeds within the byte limit for wide seeds", async () => {
+    const env = new FakeEnv();
+    env.script = ["win"];
+    const server = await startServer(1, () => env);
+    try {
+      const { host, port } = serverPort(server);
+      const client = await TestClient.connect(port, host);
+      // 64 four-byte chars: 256 bytes, valid for RESET, but 262 with the
+      // auto suffix, so the derived seed must be trimmed by byte length.
+      const wideSeed = "😀".repeat(64);
+      expect(Buffer.byteLength(wideSeed, "utf8")).toBe(256);
+      await client.reset(1, [wideSeed]);
+      const reply = await client.step(2, [noopAction()], [""]);
+      expect(decodeStepReplyBody(reply.body, 1, OBS).done).toEqual([true]);
+      expect(Buffer.byteLength(env.resets[1], "utf8")).toBeLessThanOrEqual(256);
       client.socket.destroy();
     } finally {
       await server.close();

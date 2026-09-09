@@ -109,7 +109,6 @@ export class WorkerServer {
 
   private server: net.Server | null = null;
   private client: net.Socket | null = null;
-  private reader = new FrameReader();
   private expectedSeq = 1;
   private slots: EnvSlot[] = [];
   private processing: Promise<void> = Promise.resolve();
@@ -201,12 +200,23 @@ export class WorkerServer {
       return;
     }
     this.client = socket;
-    this.reader = new FrameReader();
     this.expectedSeq = 1;
+    // The session is captured per connection. Chunks are queued behind
+    // async resets and steps, so a chunk must never be processed against
+    // whatever client and reader happen to be current when its turn comes:
+    // a disconnected socket's leftovers would otherwise desync the next
+    // client's session.
+    const session = { socket, reader: new FrameReader() };
     socket.on("data", (chunk: Buffer) => {
-      this.processing = this.processing.then(() => this.onData(chunk)).catch((err) => {
-        this.logger.error(`bridge dispatch failed: ${err instanceof Error ? err.message : String(err)}`);
-      });
+      if (this.client !== socket) return;
+      const bytes = new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+      this.processing = this.processing
+        .then(() => this.onData(session, bytes))
+        .catch((err) => {
+          this.logger.error(
+            `bridge dispatch failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        });
     });
     socket.on("close", () => {
       if (this.client === socket) this.client = null;
@@ -228,12 +238,15 @@ export class WorkerServer {
     socket.write(encodeFrame(0, MessageType.Hello, hello));
   }
 
-  private async onData(chunk: Buffer): Promise<void> {
-    const socket = this.client;
-    if (socket === null) return;
+  private async onData(
+    session: { socket: net.Socket; reader: FrameReader },
+    chunk: Uint8Array,
+  ): Promise<void> {
+    const { socket, reader } = session;
+    if (this.client !== socket) return;
     let payloads: Uint8Array[];
     try {
-      payloads = this.reader.push(new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength));
+      payloads = reader.push(chunk);
     } catch (err) {
       this.fail(socket, this.expectedSeq, ProtocolErrorCode.BadLength, describeError(err));
       return;
@@ -452,8 +465,13 @@ function pushHistory(slot: EnvSlot, action: Action): void {
 function pickResetSeed(slot: EnvSlot, nextSeed: string): string {
   if (nextSeed !== "") return nextSeed;
   const suffix = `#auto${slot.episodes}`;
-  const room = MAX_SEED_BYTES - suffix.length;
-  const base = slot.baseSeed.length > room ? slot.baseSeed.slice(0, room) : slot.baseSeed;
+  const encoder = new TextEncoder();
+  let base = slot.baseSeed;
+  // Byte length, not string length: non-ASCII seeds are wider in UTF-8
+  // than .length suggests. Trimming whole code points keeps the seed valid.
+  while (encoder.encode(base).length > MAX_SEED_BYTES - suffix.length && base !== "") {
+    base = [...base].slice(0, -1).join("");
+  }
   return `${base}${suffix}`;
 }
 
