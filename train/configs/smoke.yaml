@@ -1,0 +1,38 @@
+# Cheap smoke config: finishes in about a minute against the fake
+# worker, used by tests and local checks. Never point it at a live map
+# and expect learning.
+env:
+  map: World
+  bots: 20
+  ticks_per_step: 10
+  tick_cap: 6000
+  num_workers: 1
+  envs_per_worker: 1
+  strict_illegal_actions: true
+  socket_timeout: 30.0
+  seed: 0
+
+ppo:
+  n_steps: 8
+  batch_size: 4
+  n_epochs: 1
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_range: 0.2
+  ent_coef: 0.01
+  vf_coef: 0.5
+  max_grad_norm: 0.5
+  learning_rate: 0.0003
+
+policy:
+  features_dim: 128
+  net_arch_pi: [64]
+  net_arch_vf: [64]
+
+run:
+  total_timesteps: 32
+  checkpoint_freq: 32
+  checkpoint_dir: checkpoints/smoke
+  tensorboard_log: null
+  run_name: smoke
+  device: cpu
