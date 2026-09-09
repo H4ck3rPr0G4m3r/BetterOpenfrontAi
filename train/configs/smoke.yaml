@@ -12,6 +12,12 @@ env:
   socket_timeout: 30.0
   seed: 0
 
+behavior:
+  aggression: 50
+  disabled_intents: []
+  disabled_builds: []
+  reward_weights: null
+
 ppo:
   n_steps: 8
   batch_size: 4

@@ -15,6 +15,11 @@ import {
 } from "./ObservationEncoder";
 import { assignTargetSlots, borderingSmallIDs, slotPlayer } from "./TargetSlots";
 import type { Action, ActionCodec, MaskBuffers } from "./types";
+import {
+  BehaviorConfig,
+  NormalizedBehavior,
+  normalizeBehavior,
+} from "./BehaviorConfig";
 
 /**
  * The five action heads (spec §5.4), with exact sizes. Head values index
@@ -286,9 +291,27 @@ function goldFraction(gold: bigint, ratio: number): bigint {
  * must never fire from a masked-out combo).
  */
 export class ActionCodecImpl implements ActionCodec {
+  private readonly behavior: NormalizedBehavior;
+
+  constructor(behavior?: BehaviorConfig) {
+    this.behavior = normalizeBehavior(behavior);
+  }
+
+  /**
+   * Bounded candidates minus disabled build types. Both masks() and
+   * decodeBuild() go through here so site-slot indices always agree.
+   */
+  private candidates(ctx: CodecContext): BuildCandidate[] {
+    const disabled = this.behavior.disabledBuilds;
+    if (disabled.size === 0) return buildCandidates(ctx);
+    return buildCandidates(ctx).filter((c) => !disabled.has(c.type as string));
+  }
+
   decode(action: Action, game: Game, playerID: PlayerID): Intent[] {
     checkAction(action);
     if (action.intentType === IntentType.Noop) return [];
+    // Disabled intents never fire, even if an unmasked caller submits one.
+    if (this.behavior.disabledIntents.has(action.intentType)) return [];
 
     const ctx = buildContext(game, playerID);
     // The episode is over; nothing below can legally progress it.
@@ -365,7 +388,7 @@ export class ActionCodecImpl implements ActionCodec {
   }
 
   private decodeBuild(ctx: CodecContext, action: Action, upgrade: boolean): Intent[] {
-    const candidates = buildCandidates(ctx);
+    const candidates = this.candidates(ctx);
     if (action.buildSite >= candidates.length) return [];
     const candidate = candidates[action.buildSite];
     const query = ctx.agent.buildableUnits(candidate.tile, [candidate.type])[0];
@@ -493,8 +516,9 @@ export class ActionCodecImpl implements ActionCodec {
     });
 
     // Build pass: one single-type query per candidate; shared by the
-    // intent-type marginals and the build-site mask.
-    const candidates = alive ? buildCandidates(ctx) : [];
+    // intent-type marginals and the build-site mask. Disabled build types
+    // are already excluded from the list, so the marginals agree with it.
+    const candidates = alive ? this.candidates(ctx) : [];
     const buildable = new Array<boolean>(MAX_BUILD_SITES).fill(false);
     const upgradeable = new Array<boolean>(MAX_BUILD_SITES).fill(false);
     let anyBuildable = false;
@@ -542,6 +566,11 @@ export class ActionCodecImpl implements ActionCodec {
       ? 1
       : 0;
     intent[IntentType.CancelAttack] = ctx.agent.outgoingAttacks().length > 0 ? 1 : 0;
+    // Capability limits from the AI control UI: disabled intents stay shut
+    // no matter what the engine would allow. Noop is never in the set.
+    for (const disabled of this.behavior.disabledIntents) {
+      intent[disabled] = 0;
+    }
 
     const target = out.target;
     target[0] = hasUnownedNeighbor ? 1 : 0;

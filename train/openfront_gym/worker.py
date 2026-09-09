@@ -40,6 +40,13 @@ class WorkerConfig:
     socket_timeout: float = 180.0
     spawn_timeout: float = 120.0
     connect_retry_interval: float = 0.5
+    # Side-quest AI control UI, enforced engine-side (see
+    # env/src/BehaviorConfig.ts). Empty means no limits.
+    disabled_intents: tuple = ()
+    disabled_builds: tuple = ()
+    # (land, troop, gold, win, death) shaping override, or None for the
+    # phase-1 default.
+    reward_weights: tuple | None = None
 
 
 def default_env_root() -> Path:
@@ -71,6 +78,12 @@ def worker_argv(config: WorkerConfig, port: int) -> list[str]:
     ]
     if config.maps_dir is not None:
         argv += ["--maps-dir", config.maps_dir]
+    for intent in config.disabled_intents:
+        argv += ["--disable-intent", str(intent)]
+    for build in config.disabled_builds:
+        argv += ["--disable-build", str(build)]
+    if config.reward_weights is not None:
+        argv += ["--reward-weights", ",".join(str(v) for v in config.reward_weights)]
     return argv
 
 
@@ -250,9 +263,14 @@ def connect_worker(
         proc, log_path = spawn_worker(config, port, env_root)
     try:
         return WorkerClient.connect("127.0.0.1", port, config, proc=proc, log_path=log_path)
-    except Exception:
+    except Exception as exc:
         if proc is not None:
             proc.terminate()
+        # The stderr log is the only witness to a boot failure. Staple its
+        # path to the exception so callers (e.g. the control server) can
+        # surface the tail instead of a bare timeout.
+        if log_path is not None and not hasattr(exc, "worker_log_path"):
+            exc.worker_log_path = log_path  # noqa: B010
         raise
 
 

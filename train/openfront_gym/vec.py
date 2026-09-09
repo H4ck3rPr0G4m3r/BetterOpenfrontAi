@@ -44,6 +44,10 @@ class OpenFrontVecEnv(gymnasium.vector.VectorEnv):
         env_root: Path | str | None = None,
         seeds: Sequence[str | int] | None = None,
         worker_factory: Callable[[int], WorkerClient] | None = None,
+        disabled_intents: Sequence[int] = (),
+        disabled_builds: Sequence[str] = (),
+        reward_weights: Sequence[float] | None = None,
+        spawn_timeout: float = 120.0,
     ):
         if num_workers < 1 or envs_per_worker < 1:
             raise ValueError("num_workers and envs_per_worker must be positive")
@@ -59,6 +63,10 @@ class OpenFrontVecEnv(gymnasium.vector.VectorEnv):
             num_envs=envs_per_worker,
             strict_illegal_actions=strict_illegal_actions,
             socket_timeout=socket_timeout,
+            disabled_intents=tuple(disabled_intents),
+            disabled_builds=tuple(disabled_builds),
+            reward_weights=tuple(reward_weights) if reward_weights is not None else None,
+            spawn_timeout=float(spawn_timeout),
         )
         self._env_root = Path(env_root) if env_root is not None else None
         self._worker_factory = worker_factory
@@ -199,6 +207,13 @@ class OpenFrontVecEnv(gymnasium.vector.VectorEnv):
     def action_masks(self) -> np.ndarray:
         """Stacked flat bool masks, one row per env, in head order."""
         return self._masks.copy()
+
+    def worker_log_paths(self) -> list[str | None]:
+        """Stderr log file per worker, for surfacing boot failures."""
+        paths = []
+        for client in self._clients:
+            paths.append(client.log_path if client is not None else None)
+        return paths
 
     def env_method(self, name: str, *args, **kwargs) -> list:
         """Subset of the SB3 VecEnv protocol, enough for mask retrieval."""

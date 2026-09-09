@@ -1,0 +1,10 @@
+{
+  "name": "no-factories",
+  "description": "No Factory builds. Lean economy, same army. Out-produce it.",
+  "aggression": 50,
+  "disabled_intents": [],
+  "disabled_builds": ["Factory"],
+  "reward_weights": null,
+  "env_overrides": {},
+  "ppo_overrides": {}
+}

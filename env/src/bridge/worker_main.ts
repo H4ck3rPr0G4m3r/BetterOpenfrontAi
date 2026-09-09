@@ -1,6 +1,12 @@
 import path from "path";
 import { GameMapType } from "../../../OpenFrontIO/src/core/game/Game";
 import { ActionCodecImpl } from "../ActionCodec";
+import {
+  BehaviorConfig,
+  DEFAULT_REWARD_WEIGHTS,
+  KNOWN_BUILD_TYPES,
+  RewardWeights,
+} from "../BehaviorConfig";
 import { GameEnv } from "../GameEnv";
 import { ObservationEncoder } from "../ObservationEncoder";
 import { Reward } from "../Reward";
@@ -18,6 +24,12 @@ export interface WorkerMainOptions {
   ticksPerStep: number;
   tickCap: number;
   strictIllegalActions: boolean;
+  /** Side-quest AI control UI: intent types to keep shut. */
+  disabledIntents: number[];
+  /** Side-quest AI control UI: buildable unit types to exclude. */
+  disabledBuilds: string[];
+  /** Side-quest AI control UI: shaping override, defaults are phase 1. */
+  rewardWeights: RewardWeights;
 }
 
 export const DEFAULT_WORKER_OPTIONS: WorkerMainOptions = {
@@ -31,6 +43,9 @@ export const DEFAULT_WORKER_OPTIONS: WorkerMainOptions = {
   ticksPerStep: 10,
   tickCap: 6000,
   strictIllegalActions: true,
+  disabledIntents: [],
+  disabledBuilds: [],
+  rewardWeights: { ...DEFAULT_REWARD_WEIGHTS },
 };
 
 /**
@@ -93,6 +108,35 @@ export function parseWorkerArgs(argv: string[]): WorkerMainOptions {
       case "--lenient":
         options.strictIllegalActions = false;
         break;
+      case "--disable-intent": {
+        const value = integer(next(), "disable-intent");
+        if (value < 1 || value > 13) {
+          throw new Error(`disable-intent must be 1..13, got ${value}`);
+        }
+        options.disabledIntents = [...options.disabledIntents, value];
+        break;
+      }
+      case "--disable-build": {
+        const name = next();
+        if (!(KNOWN_BUILD_TYPES as readonly string[]).includes(name)) {
+          throw new Error(`unknown build type ${name}`);
+        }
+        options.disabledBuilds = [...options.disabledBuilds, name];
+        break;
+      }
+      case "--reward-weights": {
+        const parts = next().split(",");
+        if (parts.length !== 5) {
+          throw new Error("--reward-weights needs land,troop,gold,win,death");
+        }
+        const values = parts.map((raw) => Number(raw));
+        if (values.some((v) => !Number.isFinite(v))) {
+          throw new Error(`--reward-weights must be finite numbers, got ${parts}`);
+        }
+        const [land, troop, gold, win, death] = values;
+        options.rewardWeights = { land, troop, gold, win, death };
+        break;
+      }
       case "--help":
       case "-h":
         printUsage();
@@ -124,13 +168,22 @@ Usage: tsx src/bridge/worker_main.ts --port 5001 [options]
   --ticks-per-step N default 10
   --tick-cap N       default 6000
   --strict           illegal actions fail loudly (default)
-  --lenient          count illegal actions and retry as noop`);
+  --lenient          count illegal actions and retry as noop
+  --disable-intent N keep one intent type shut, repeatable, 1..13 (side quest)
+  --disable-build T  exclude one build type, repeatable, e.g. Factory
+  --reward-weights L,T,G,W,D
+                     shaping override as land,troop,gold,win,death`);
 }
 
 async function main(): Promise<void> {
   const options = parseWorkerArgs(process.argv.slice(2));
   const encoder = new ObservationEncoder();
-  const codec = new ActionCodecImpl();
+  const behavior: BehaviorConfig = {
+    disabledIntents: options.disabledIntents,
+    disabledBuilds: options.disabledBuilds,
+    rewardWeights: options.rewardWeights,
+  };
+  const codec = new ActionCodecImpl(behavior);
   const config: EnvConfig = {
     map: options.map,
     mapsDir: options.mapsDir,
@@ -140,7 +193,7 @@ async function main(): Promise<void> {
   };
   const server = new WorkerServer({
     numEnvs: options.numEnvs,
-    createEnv: () => new GameEnv(config, encoder, codec, new Reward()),
+    createEnv: () => new GameEnv(config, encoder, codec, new Reward({ weights: behavior.rewardWeights })),
     obsSize: encoder.size,
     strictIllegalActions: options.strictIllegalActions,
     listen:

@@ -1,4 +1,8 @@
 import type { Game, PlayerID } from "../../OpenFrontIO/src/core/game/Game";
+import {
+  DEFAULT_REWARD_WEIGHTS,
+  RewardWeights,
+} from "./BehaviorConfig";
 
 /** Why an episode ended, for the terminal term of the reward (§5.5). */
 export type TerminalReason = "win" | "death" | "tick_cap" | "sim_error" | null;
@@ -20,6 +24,8 @@ export const GOLD_SCALE = 10_000_000;
 export interface RewardConfig {
   troopScale?: number;
   goldScale?: number;
+  /** Partial shaping override; missing fields keep phase-1 defaults. */
+  weights?: Partial<RewardWeights>;
 }
 
 /**
@@ -29,6 +35,7 @@ export interface RewardConfig {
 export class Reward {
   private readonly troopScale: number;
   private readonly goldScale: number;
+  private readonly weights: RewardWeights;
   private prevLandFraction = 0;
   private prevTroopFraction = 0;
   private prevGoldFraction = 0;
@@ -43,6 +50,7 @@ export class Reward {
   constructor(config: RewardConfig = {}) {
     this.troopScale = config.troopScale ?? TROOP_SCALE;
     this.goldScale = config.goldScale ?? GOLD_SCALE;
+    this.weights = { ...DEFAULT_REWARD_WEIGHTS, ...config.weights };
   }
 
   /** Call once after `reset()`, before the first `step()`, to seed the
@@ -63,9 +71,9 @@ export class Reward {
     const goldFraction = Number(agent.gold()) / this.goldScale;
 
     const shaping =
-      1.0 * (landFraction - this.prevLandFraction) +
-      0.1 * (troopFraction - this.prevTroopFraction) +
-      0.1 * (goldFraction - this.prevGoldFraction);
+      this.weights.land * (landFraction - this.prevLandFraction) +
+      this.weights.troop * (troopFraction - this.prevTroopFraction) +
+      this.weights.gold * (goldFraction - this.prevGoldFraction);
 
     this.prevLandFraction = landFraction;
     this.prevTroopFraction = troopFraction;
@@ -81,9 +89,9 @@ export class Reward {
   private terminalBonus(terminal: TerminalReason): number {
     switch (terminal) {
       case "win":
-        return 1;
+        return this.weights.win;
       case "death":
-        return -1;
+        return this.weights.death;
       case "tick_cap":
       case "sim_error":
       case null:

@@ -20,6 +20,7 @@ import numpy as np
 from sb3_contrib import MaskablePPO
 
 from agents.scripted_agent import ScriptedBaselineAgent
+from action_filter import apply_aggression_batch, behavior_from_config
 from openfront_gym.vec import OpenFrontVecEnv
 from openfront_policy import OpenFrontPolicy  # noqa: F401, registers the custom policy for load
 
@@ -72,21 +73,24 @@ def run_episodes(
     }
 
 
-def policy_predictor(model: MaskablePPO):
+def policy_predictor(model: MaskablePPO, min_attack_ratio: int = 0):
     def predict(obs, masks, deterministic: bool):
         actions, _ = model.predict(np.asarray(obs), deterministic=deterministic, action_masks=np.asarray(masks))
-        return np.asarray(actions)
+        return apply_aggression_batch(np.asarray(actions), min_attack_ratio)
 
     return predict
 
 
-def baseline_predictor() -> ScriptedBaselineAgent:
+def baseline_predictor(min_attack_ratio: int = 0):
     agent = ScriptedBaselineAgent()
-    return lambda obs, masks, deterministic: agent.act_batch(np.asarray(obs), np.asarray(masks))
+    return lambda obs, masks, deterministic: apply_aggression_batch(
+        agent.act_batch(np.asarray(obs), np.asarray(masks)), min_attack_ratio
+    )
 
 
 def build_vec(cfg: dict) -> OpenFrontVecEnv:
     env_cfg = cfg.get("env", {})
+    behavior = behavior_from_config(cfg)
     return OpenFrontVecEnv(
         1,
         1,
@@ -98,6 +102,7 @@ def build_vec(cfg: dict) -> OpenFrontVecEnv:
         strict_illegal_actions=bool(env_cfg.get("strict_illegal_actions", True)),
         socket_timeout=float(env_cfg.get("socket_timeout", 180.0)),
         seeds=None,
+        **behavior,
     )
 
 
@@ -109,19 +114,24 @@ def evaluate(
     device: str = "cpu",
     with_baseline: bool = False,
     deterministic: bool = True,
+    min_attack_ratio: int = 0,
+    behavior_cfg: dict | None = None,
 ) -> dict:
     model = MaskablePPO.load(model_path, device=device)
-    vec = build_vec({"env": env_cfg})
+    full_cfg = {"env": env_cfg, "behavior": behavior_cfg or {}}
+    vec = build_vec(full_cfg)
     try:
-        stats = run_episodes(policy_predictor(model), vec, episodes, seeds, deterministic)
+        stats = run_episodes(
+            policy_predictor(model, min_attack_ratio), vec, episodes, seeds, deterministic
+        )
     finally:
         vec.close()
     result = {"policy": stats}
     if with_baseline:
-        baseline_vec = build_vec({"env": env_cfg})
+        baseline_vec = build_vec(full_cfg)
         try:
             result["baseline"] = run_episodes(
-                baseline_predictor(), baseline_vec, episodes, seeds, True
+                baseline_predictor(min_attack_ratio), baseline_vec, episodes, seeds, True
             )
         finally:
             baseline_vec.close()
@@ -139,10 +149,19 @@ def main(argv: list[str] | None = None) -> dict:
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--baseline", action="store_true")
     parser.add_argument("--stochastic", action="store_true")
+    parser.add_argument("--min-attack-ratio", type=int, default=None)
     args = parser.parse_args(argv)
 
     with open(args.config, encoding="utf-8") as handle:
         cfg = yaml.safe_load(handle)
+    raw_behavior = cfg.get("behavior", {}) or {}
+    min_ratio = args.min_attack_ratio
+    if min_ratio is None:
+        # The behavior section carries no ratio floor of its own, so fall
+        # back to the aggression mapping when the config names one.
+        from action_filter import aggression_to_ratio_floor
+
+        min_ratio = aggression_to_ratio_floor(int(raw_behavior.get("aggression", 50)))
     seeds = [f"{args.seed}-{i}" for i in range(args.episodes)]
     result = evaluate(
         args.model,
@@ -152,6 +171,8 @@ def main(argv: list[str] | None = None) -> dict:
         device=args.device,
         with_baseline=args.baseline,
         deterministic=not args.stochastic,
+        min_attack_ratio=min_ratio,
+        behavior_cfg=raw_behavior,
     )
     for name, stats in result.items():
         print(

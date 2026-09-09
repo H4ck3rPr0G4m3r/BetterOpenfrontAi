@@ -25,6 +25,7 @@ from sb3_contrib import MaskablePPO
 from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback
 
 from openfront_gym.vec import OpenFrontVecEnv
+from action_filter import behavior_from_config
 from openfront_policy import OpenFrontPolicy
 from sb3_adapter import SB3OpenFrontVec
 
@@ -81,6 +82,7 @@ def resolve_device(name: str) -> str:
 
 def build_vec(cfg: dict) -> SB3OpenFrontVec:
     env_cfg = cfg["env"]
+    behavior = behavior_from_config(cfg)
     inner = OpenFrontVecEnv(
         num_workers=int(env_cfg.get("num_workers", 1)),
         envs_per_worker=int(env_cfg.get("envs_per_worker", 1)),
@@ -92,6 +94,7 @@ def build_vec(cfg: dict) -> SB3OpenFrontVec:
         strict_illegal_actions=bool(env_cfg.get("strict_illegal_actions", True)),
         socket_timeout=float(env_cfg.get("socket_timeout", 180.0)),
         seeds=None,
+        **behavior,
     )
     vec = SB3OpenFrontVec(inner)
     if env_cfg.get("seed", None) is not None:
