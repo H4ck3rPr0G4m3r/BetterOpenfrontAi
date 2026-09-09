@@ -10,7 +10,9 @@
  * Lives outside OpenFrontIO/ on purpose — that tree may become a pinned
  * submodule, and throwaway probes shouldn't accumulate inside it.
  *
- * Usage: npx tsx env/probes/BuildableUnitsBench.ts [--map world] [--bots 50]
+ * Usage: TSX_TSCONFIG_PATH=tsconfig.probes.json npx tsx probes/BuildableUnitsBench.ts [--map world] [--bots 50]
+ * (from env/; the env var is load-bearing — see SeedScan.ts's header and
+ * tsconfig.probes.json for why nation games miscompile without it).
  */
 import path from "path";
 import { fileURLToPath } from "url";

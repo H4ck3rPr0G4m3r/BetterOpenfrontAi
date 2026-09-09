@@ -1,6 +1,7 @@
 import { Structures } from "../../OpenFrontIO/src/core/game/Game";
 import type { Game, Player, PlayerID } from "../../OpenFrontIO/src/core/game/Game";
 import { GOLD_SCALE, TROOP_SCALE } from "./Reward";
+import { assignTargetSlots } from "./TargetSlots";
 import type { ObservationEncoder as ObservationEncoderInterface } from "./types";
 
 export const RASTER_WIDTH = 128;
@@ -65,6 +66,26 @@ const TICK_CAP_REFERENCE = 6000;
 export const OBSERVATION_SIZE = RASTER_SIZE + PLAYER_TABLE_SIZE + NUM_GLOBALS;
 
 /**
+ * Letterbox mapping shared with the action codec's spatial head (spec §5.4):
+ * one scale factor `s = max(width/128, height/64)` on both axes, map centred
+ * in the 128x64 grid. A single source of truth so encoder cells and codec
+ * cells always mean the same tiles.
+ */
+export function letterboxTransform(
+  mapWidth: number,
+  mapHeight: number,
+): { scale: number; offsetX: number; offsetY: number } {
+  const scale = Math.max(mapWidth / RASTER_WIDTH, mapHeight / RASTER_HEIGHT);
+  const scaledW = mapWidth / scale;
+  const scaledH = mapHeight / scale;
+  return {
+    scale,
+    offsetX: Math.floor((RASTER_WIDTH - scaledW) / 2),
+    offsetY: Math.floor((RASTER_HEIGHT - scaledH) / 2),
+  };
+}
+
+/**
  * Encodes a `Game` snapshot into a fixed-size observation (spec §5.3).
  *
  * Full recompute from `map.ownerID()` / `map.isLand()` every call — no
@@ -90,11 +111,7 @@ export class ObservationEncoder implements ObservationEncoderInterface {
     const map = game.map();
     const w = map.width();
     const h = map.height();
-    const scale = Math.max(w / RASTER_WIDTH, h / RASTER_HEIGHT);
-    const scaledW = w / scale;
-    const scaledH = h / scale;
-    const offsetX = Math.floor((RASTER_WIDTH - scaledW) / 2);
-    const offsetY = Math.floor((RASTER_HEIGHT - scaledH) / 2);
+    const { scale, offsetX, offsetY } = letterboxTransform(w, h);
 
     // Per-player lookups, computed once (O(numPlayers), not O(tiles)) as
     // flat typed arrays indexed directly by smallID — a dense small integer
@@ -258,22 +275,15 @@ export class ObservationEncoder implements ObservationEncoderInterface {
       totalLandTiles > 0 ? Math.max(0, unownedTiles) / totalLandTiles : 0;
     out[0 * NUM_SLOT_FIELDS + SlotField.Valid] = unownedTiles > 0 ? 1 : 0;
 
-    const others = game
-      .players()
-      .filter((p) => p.smallID() !== agent.smallID() && p.isAlive());
-    others.sort((a, b) => {
-      const aBorders = borderingSmallIDs.has(a.smallID()) ? 0 : 1;
-      const bBorders = borderingSmallIDs.has(b.smallID()) ? 0 : 1;
-      if (aBorders !== bBorders) return aBorders - bBorders;
-      return b.numTilesOwned() - a.numTilesOwned();
-    });
-
+    // Slot order shared with the action codec's target head: assign once,
+    // read here and there, so the policy's slot i is the codec's slot i.
+    const slots = assignTargetSlots(game, agent, borderingSmallIDs);
     const maxOtherSlots = NUM_SLOTS - 1;
     for (let i = 0; i < maxOtherSlots; i++) {
-      const p = others[i];
+      const p = slots[i + 1];
       const slot = i + 1;
       const base = slot * NUM_SLOT_FIELDS;
-      if (p === undefined) {
+      if (p === null) {
         out[base + SlotField.Valid] = 0;
         continue;
       }

@@ -57,18 +57,23 @@ which skips `execManager.nationExecutions()` entirely, leaving tribes that barel
 (0 units, 0 deaths after 1800 ticks). It was measuring an idle simulation.
 
 **Derived budget.** At 10 sim ticks per agent decision, World gives ~107 decisions/sec
-per environment. With 12–14 worker processes on 16 cores that is ~1000–1700 raw
-steps/sec, and an estimated 800–1200 after observation encoding. 10M steps lands around
-3 hours. Encoding cost, not simulation cost, is the thing to optimize.
+per environment before encoding. With 12–14 worker processes on 16 cores that is ~1000–1700 raw
+steps/sec; after encoding and masking the measured figure is ~650–850 (see below).
+Encoding cost, not simulation cost, is the thing to optimize.
 
-That 800–1200 figure was an estimate; part of it is no longer one. Observation encoding
-is now measured directly (§5.3): ~7ms/call on World with 20 bots, which is added cost on
-top of the ~9.3ms/10-tick simulation budget, not a rounding error inside it — closer to
-+75% than the "cheap encoding" the estimate assumed. Action-mask computation is
-**still excluded** — quantified in §11.1 as tens-of-microseconds-per-candidate for a
-bounded candidate list, but not yet measured end to end inside a real `GameEnv.step()`.
-The combined encode+mask+sim cost per step must not be quoted as measured until that
-integration measurement exists; treat the 800–1200 figure as superseded, not confirmed.
+That 800–1200 figure was an estimate; it is now superseded by a direct
+measurement inside a real `GameEnv.step()` (`env/tests/StepCost.test.ts`,
+World, 20 bots, masked-random actions): **roughly 16–20ms per step early-game,
+about 50–60 steps/sec per environment**, split between simulation
+(~9–11ms) and observation encoding (~7ms), with masks at ~0.5ms and decode
+negligible (~0.02ms; an earlier 0.5ms figure was action-sampling overhead
+leaking into the decode loop, fixed). The mask figure is early-game (a poor agent has little legal to
+build, so most candidate queries fail fast); richer mid-game states cost
+more, and the test's 40ms gate exists to catch regressions, not to bless a
+budget. Full masked-random episodes average slower (~20–30ms/step as unit
+counts and combat grow), so 12–14 workers land around 650–850 steps/sec and
+10M steps around 3.5–4 hours — below the old estimate, honestly measured.
+Encoding cost, not simulation cost, remains the thing to optimize.
 
 ### 2.3 Determinism is real
 
@@ -241,6 +246,14 @@ player and its actions become ordinary `Intent`s inside a `Turn` — the exact p
 real browser client uses. This is what makes phase 3 transfer possible at all, and it is
 verified working in §2.7.
 
+Every `reset()` reloads terrain from disk through env's own small loader rather than
+the engine's `loadTerrainMap()`, whose module-level cache returns the LIVE map — with
+the previous game's ownership still on it — to every caller after the first. Reusing it
+would build episode 2+ on episode 1's dirt in every worker process (pre-owned tiles, a
+shrunken spawn pool, shifted spawn picks, eventually dangling ownerIDs), and it made
+same-seed rebuilds nondeterministic in tests before it was found. Same bins, same
+manifest, no cache.
+
 **Episode boundaries.** The spawn phase runs first (~302 turns); the agent's `spawn`
 intent is issued during it. Nations do not eliminate each other within 3300 ticks, so
 episodes need a tick cap (default 6000 post-spawn) with value bootstrapping rather than
@@ -342,17 +355,44 @@ Five heads, every one masked from engine queries:
 
 | Head | Size | Mask source |
 |---|---|---|
-| Intent type | ~14 | `GameRunner.playerActions()` |
-| Target | 17 (slot 0 = terra nullius) | slot occupancy + per-relation flags from `playerActions().interaction`; slot 0 masked on `player.canAttack()` against a neutral border tile |
+| Intent type | 14 (enumerated below) | one marginal per kind: alive/troops/pending-state |
+| Target | 17 (slot 0 = terra nullius) | slot occupancy (slot 0 open exactly when unowned land borders the agent); per-intent relation checks live in decode, not here |
 | Ratio bucket | 8 (5/10/20/30/50/70/90/100%) | always legal |
-| Spatial cell | 8192 (128×64) | terrain + ownership |
-| Build site | ≤32 (bounded candidate list, not the raster) | see below |
+| Spatial cell | 8192 (128×64, the encoder's letterboxed grid) | terrain + ownership: land not owned by the agent (boat), water (warship patrol); padding always shut |
+| Build site | ≤32 (bounded candidate list, not the raster) | one single-type `buildableUnits()` per candidate (see below) |
 
-The spatial head selects a coarse **cell**, not a tile, for attacks and spawns. A
-concrete `TileRef` is resolved inside that cell by an engine query — best buildable tile
-via the same candidate mechanism as the build-site head. This keeps the head at ~8k
-logits instead of 651k while preserving full expressiveness, because the engine's
-resolver is the same one the UI uses for human players.
+The 14 intent types are noop (pass), attack, boat (destination resolved inside the
+spatial cell; the mask probes boatable cells shore-first for a launchable one and
+respects the boat cap), build_unit and upgrade_structure (both address the build-site head;
+build needs `canBuild`, upgrade needs `canUpgrade`), move_warship (warships sharing the
+destination's water to the cell's water tile), targetPlayer, allianceRequest,
+allianceReject, breakAlliance, embargo (start/stop decided from current state, not a
+second head), donate_gold, donate_troops (amounts from the ratio head), and
+cancel_attack (the first outgoing attack). With 90+ players on World, 16 visible
+opponent slots means most players stay invisible; bordering-first then strongest
+keeps the tactically relevant ones. Out of scope for v1: emoji, quick_chat,
+delete_unit, embargo_all, allianceExtension — no mechanical effect or edge value in
+FFA training. Nukes and explicit transport builds are out of the build-site head for
+the same reason (boat covers naval invasion); the head offers City, DefensePost, Port,
+SAMLauncher, MissileSilo, Factory, and Warship.
+
+The relation flags conceptually come from `playerActions().interaction`, but the codec
+calls the underlying player methods (`canTarget`, `canSendAllianceRequest`,
+`canDonateGold/Troops`, `canAttackPlayer`, ...) directly: routing through
+`playerActions()` would pay a full default-type-list `buildableUnits()` per query for
+data the codec never uses.
+
+The spatial head selects a coarse **cell**, not a tile, for boat destinations and
+warship patrol tiles, which keeps the head at ~8k logits instead of 651k. Boat
+destinations resolve by scanning inside the cell (enemy land, then unowned land, else
+the cell centre); warship patrols take the cell's water, else the centre. When no
+warship shares the destination's water, the intent still names all active warships —
+the schema needs a nonempty array, and the execution skips the mismatched ones.
+Attacks do not consume the spatial head after
+all: the attack intent carries no tile (spec §2.4), and the engine attacks from every
+border at once, so there is nothing for a cell to resolve — attack actions leave the
+head don't-care. Spawn left the action space earlier still (reset-time heuristic,
+§5.1).
 
 **Build masking is a bounded candidate list, not a dense grid over the spatial
 head — measured, not assumed.** `player.buildableUnits(tile, units)` was benchmarked
@@ -385,11 +425,30 @@ default 11-type query. Boat/transport-ship destinations go through
 engine-verified and sound (§8); it is a change in which engine query is called and how
 many candidates are considered, not a relaxation of correctness.
 
+The candidate heuristic, concretely: up to 10 spread-sampled border tiles plus up to 4
+interior sites (one strided pass over owned tiles, no per-tile engine calls), each site
+contributing 3 unit types on a rotating offset so all 7 types appear across the list,
+truncated to 32 slots. Slot order is deterministic (sorted numerics) but slot identity
+is not stable across steps — borders move — which the policy tolerates the same way it
+tolerates the player table's reshuffling. Measured inside a real step at ~0.5ms
+early-game; richer states with more legal Factory queries cost more (see §2.2).
+
 **Interface:**
 ```ts
 decode(action: Action, game: Game, playerID: PlayerID): Intent[]
 masks(game: Game, playerID: PlayerID, out: MaskBuffers): void
 ```
+
+`decode()` never throws on in-range heads. Out-of-range head values throw `RangeError`
+(a caller bug, fail fast), but an in-range combination that is illegal in the current
+state returns `[]`: the per-head masks are marginal — each value is open when *some*
+combination using it is legal — so they cannot express cross-head conditions, and
+`decode()` re-validates the actual combination instead of emitting an intent the
+engine would no-op or half-execute (attacking an ally, for example, embargoes them
+before the execution stands down, so that combo must never fire from a masked-out
+slot). Target slots are shared with the encoder's player table by construction (one
+ordering function, two callers), and the next step's masks ride every `GameEnv.step()`
+reply per §5.6.
 
 ### 5.5 `Reward`
 
@@ -441,8 +500,7 @@ phase 2 can use an off-the-shelf trainer.
 2. For each env, `ActionCodec.decode()` produces zero or more `Intent`s.
 3. `TurnFeeder` pushes one `Turn` carrying those intents, then nine empty turns,
    calling `executeNextTick()` after each.
-4. `ObservationEncoder` folds each tick's `drainPackedTileUpdates()` into the running
-   raster, then writes slots and globals into the output buffer.
+4. `ObservationEncoder` rebuilds the raster from the full tile-state plane, then writes slots and globals into the output buffer.
 5. `Reward` computes the scalar from the pre/post state snapshot.
 6. Terminal check: agent dead, win, or tick cap. If terminal, reset and encode the new
    initial observation in place.
@@ -459,6 +517,12 @@ phase 2 can use an off-the-shelf trainer.
   ends the episode with reward 0, and resets. A crashed episode must never silently
   poison a training batch, and the seed plus action history must be enough to reproduce
   it exactly.
+- **Raw engine throws.** Not every engine failure arrives as `ErrorUpdate`:
+  `GameRunner`'s own per-tick view-data pass (name placement over every player) runs
+  outside its try/catch and throws raw, as can engine queries on state a caught error
+  already damaged. `GameEnv.step()` converts any raw throw into the same non-scoring
+  `sim_error` terminal — latched until `reset()`, zeroed observation, all-masked —
+  with the seed in the log line. The worker lives; the batch stays clean.
 - **Illegal action submitted.** Should be impossible given masking, so it is treated as
   a bug rather than smoothed over: raise in test/dev builds, count and drop in
   production runs. A rising drop counter is a mask-correctness regression signal.
@@ -482,6 +546,13 @@ phase 2 can use an off-the-shelf trainer.
 | Mask completeness | A sample of masked-out actions is genuinely illegal per the engine |
 | Observation invariants | Shape stable, all values finite and within documented bounds |
 | Turn feeding | N-tick step advances `game.ticks()` by exactly N |
+| Intent decoding | Realistic head combinations decode to schema-exact intents (attack troops = ratio × troops, null targetID for slot 0, engine-resolved build tiles) |
+| Illegal-combo drops | In-range but illegal combinations decode to `[]`; out-of-range heads throw `RangeError` |
+| Mask soundness | Favorable unmasked intents (attack, target/diplomacy, boat and build where available, cancel) decode and execute a live turn without throwing |
+| Mask completeness | Masked-out values are genuinely unusable: past the candidate count, unoccupied slots, nothing pending, letterbox padding |
+| Slot agreement | Codec target slots match encoder player-table slots player-for-player |
+| Sim_error hardening | A raw throw inside `step()` ends the episode as `sim_error` with zeroed obs/masks and latches until `reset()` |
+| Step cost | Full `GameEnv.step()` with real encoder and codec under a recorded ms threshold |
 | Throughput floor | Steps/sec above a recorded threshold, so regressions surface in CI |
 | Shadow-sim agreement (phase 3) | A second `GameRunner` fed the turn stream a first one produced reaches an identical hash at every hash turn |
 
@@ -504,17 +575,24 @@ recording steps/sec, crash count, and episode-length distribution.
 
 1. 1000 games run end to end **with `sim_error` terminals (§7) counted and reported, not
    silently eliminated as a pass/fail gate.** This criterion originally read "without
-   crashes or resource growth" — changed on evidence, not softened as a convenience. A
-   pre-existing engine bug (§5.3's `_borderTiles` crash) was measured at roughly 7/17
-   seeds (~40%) failing within spawn plus a 300-tick buffer on World with 20 bots
-   (`env/probes/SeedScan.ts`) — a small sample, and **a floor, not the true rate**: a
-   seed that passed that exact check still crashed after 10 more ticks in a later test
-   (`ObservationEncoder.test.ts`'s `encoder-safe-10`), so full 6000-tick episodes should
-   be expected to fail *more* often than 40%, not to match it. What phase 1 *can* commit
-   to: every `sim_error` ends its episode cleanly as a non-scoring terminal (§7, verified
-   by `GameEnv`'s tests) rather than crashing the worker process, and the acceptance run
-   reports the resulting rate honestly. A rate even this high is itself a reason to
-   prioritize the root-cause work in §11's new open question before scaling up training.
+   crashes or resource growth" — changed on evidence, not softened as a convenience.
+   A correction to the earlier evidence, then the current numbers. The ~40% figure
+   quoted here before (7/17 seeds failing within spawn plus a 300-tick buffer) was
+   measured on DIRTY maps: the engine's `loadTerrainMap()` caches the live map with no
+   eviction, so every scanned game after the first in the process reused its
+   predecessor's ownership — pre-owned tiles, shifted spawns, and dangling ownerIDs
+   aimed straight at the border bookkeeping. The crash rate it reported measured the
+   test harness's reuse bug more than the engine. On clean maps (fresh terrain per
+   build, which `GameEnv.reset()` now guarantees — see §5.1): 80 consecutive World/20-bot
+   builds through spawn plus buffer ran with zero crashes, and 3 full masked-random
+   episodes ran to natural deaths with zero `sim_error` over roughly 7000 ticks. Two
+   genuine pre-existing engine crash signatures remain on record — the `_borderTiles`
+   dangling-owner crash (§5.3, §11 question 5) and a `NameBoxCalculator` degenerate-box
+   crash on borderless players, which throws raw past `GameRunner`'s catch (hence the
+   §7 hardening) — but neither has been observed on a clean map yet. What phase 1
+   *can* commit to: every `sim_error`, however rare, ends its episode cleanly as a
+   non-scoring terminal (§7, verified by `GameEnv`'s tests) rather than crashing the
+   worker process, and the acceptance run reports the resulting rate honestly.
 2. Byte-identical results for a fixed seed and action sequence, across two runs.
 3. Measured and documented steps/sec for World, Baltics, and Europe.
 4. Random agent and scripted baseline both play complete games.
@@ -689,10 +767,10 @@ design does not decide it.
    simulation budget and is not viable. §5.4 now specifies a bounded candidate-list
    build-site head instead, with Factory capped tightly (~840us/call when legal) and
    `TransportShip` masking replaced by `bestTransportShipSpawn()` (~11us/call, ~25×
-   cheaper than the equivalent `buildableUnits()` query). Still open: the exact
-   candidate-selection heuristic (how `playerBorderTiles()` output is thinned to ≤32
-   sites) is an implementation detail, not a design gate, and phase 3's real-time
-   deadline (§10.4) inherits this same bound.
+   cheaper than the equivalent `buildableUnits()` query). The candidate heuristic is
+   concrete (≤10 spread border sites + ≤4 interior, 3 rotated types each, §5.4) and the
+   integrated cost is measured: ~0.5ms per `masks()` call early-game inside a real
+   16.5ms step (§2.2). Phase 3's real-time deadline (§10.4) inherits this same bound.
 2. Whether the encoder can be written against public interfaces only — decides submodule
    versus fork (§3), and keeps phase 3's page-introspection fallback available (§10.7).
 3. Optimal M (envs per process) and W (processes) — to be tuned empirically against the
@@ -713,3 +791,13 @@ design does not decide it.
    elsewhere — wasn't run down further, since fixing engine internals is out of scope
    while the submodule-vs-fork decision (#2) is still open. Worth an upstream bug report
    either way; blocks criterion 1 until resolved one way or the other.
+
+   Two measurement notes added while building the codec. First, the earlier crash
+   rates were dirty-map artifacts: with the terrain cache bypassed (§5.1), 80 clean
+   builds ran crash-free where the same flow on cached maps crashed ~90% of the time,
+   so any future rate measurement must use fresh terrain or it measures the harness,
+   not the engine. Second, a further crash signature turned up in the same dirty runs:
+   `NameBoxCalculator.createGrid` throws `RangeError: Invalid array length` for players
+   with degenerate (empty) bounding boxes — and it throws raw past `GameRunner`'s
+   error catch, which is why §7 now hardens `GameEnv.step()` against raw throws. It
+   has not been observed on a clean map either.

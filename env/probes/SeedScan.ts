@@ -15,7 +15,15 @@
  * maintainer who hits a new crashing seed has no way to reproduce how the
  * current ones were selected.
  *
- * Usage: npx tsx env/probes/SeedScan.ts <prefix> [bots]
+ * Usage: TSX_TSCONFIG_PATH=tsconfig.probes.json npx tsx env/probes/SeedScan.ts <prefix> [bots]
+ * (run from env/ as TSX_TSCONFIG_PATH=tsconfig.probes.json npx tsx probes/SeedScan.ts <prefix> [bots]).
+ * The env var is load-bearing, not optional: tsx forwards compilerOptions
+ * to esbuild only for files matching the tsconfig's `include`, and the
+ * default tsconfig.json doesn't cover ../OpenFrontIO. Without it, engine
+ * classes with field initializers reading constructor parameters
+ * (NationNukeBehavior) miscompile to native define-semantics fields and
+ * every nation game dies on the first post-spawn tick with "reading
+ * 'unitInfo'". tsconfig.probes.json exists solely to fix that invocation.
  * Prints OK/CRASH per candidate and a list of the first 10 that pass.
  */
 import path from "path";

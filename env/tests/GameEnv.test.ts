@@ -2,6 +2,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { describe, expect, it } from "vitest";
 import { GameMapType } from "../../OpenFrontIO/src/core/game/Game";
+import { NUM_INTENT_TYPES, NUM_TARGET_SLOTS } from "../src/ActionCodec";
 import { GameEnv } from "../src/GameEnv";
 import type { EnvConfig } from "../src/types";
 import { NOOP_ACTION, NoopActionCodec, StubObservationEncoder } from "./helpers/stubs";
@@ -52,6 +53,9 @@ describe("GameEnv", () => {
     expect(result.done).toBe(false);
     expect(result.info.terminalReason).toBeNull();
     expect(result.obs.length).toBe(4);
+    // The bridge protocol (§5.6) needs next-step masks on every reply.
+    expect(result.info.masks.intentType.length).toBe(NUM_INTENT_TYPES);
+    expect(result.info.masks.target.length).toBe(NUM_TARGET_SLOTS);
   });
 
   it("terminates with tick_cap once the post-spawn tick budget is exhausted", async () => {
@@ -86,6 +90,33 @@ describe("GameEnv", () => {
     // calling step() again is the caller's bug to avoid, not GameEnv's to
     // reject — matching the auto-reset contract the bridge (§5.6) owns.
     expect(() => env.step(NOOP_ACTION)).not.toThrow();
+  });
+
+  it("converts a raw engine throw inside step() into a sim_error terminal", async () => {
+    // GameRunner catches tick errors into ErrorUpdate, but its own
+    // per-tick view-data pass (and engine queries on already-damaged state)
+    // throw raw past that catch. Those must end the episode, not escape.
+    class ThrowingMasksCodec extends NoopActionCodec {
+      override masks(): void {
+        throw new Error("boom");
+      }
+    }
+    const env = new GameEnv(
+      makeConfig(),
+      new StubObservationEncoder(),
+      new ThrowingMasksCodec(),
+    );
+    await env.reset("gameenv-simerror");
+
+    const result = env.step(NOOP_ACTION);
+
+    expect(result.done).toBe(true);
+    expect(result.info.terminalReason).toBe("sim_error");
+    expect(result.obs.every((v) => v === 0)).toBe(true);
+    expect([...result.info.masks.intentType].every((v) => v === 0)).toBe(true);
+    // Latched: the engine underneath is untrusted, so the next step()
+    // fails fast until reset() instead of driving damaged state.
+    expect(() => env.step(NOOP_ACTION)).toThrow();
   });
 
   it("reset() rebuilds the game rather than reusing the previous episode", async () => {
