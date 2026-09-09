@@ -152,3 +152,14 @@ shaping-delta test, spawn-path tests, finite-weight validation,
 XSS-safe eval rendering, min-ratio persisted and honored) and the nits.
 One item stays manual: a real-engine multi-worker PPO rollout to
 confirm the `get_attr("num_envs")` length correction against SB3.
+
+## 13. Live verification (2026-09-09)
+
+Done, on the reference machine. A 2 worker by 2 env live run on World
+(10 bots, strict mode, embargo plus Factory disabled) trained 128 steps
+with finite losses, saved and reloaded its checkpoint, and reported
+zero worker deaths and zero sim errors at about 36 to 47 steps per
+second on CPU. A separate single-worker boot with the same flags dumped
+its mask row: `[1,1,0,0,0,0,1,1,0,0,0,0,0,0]`, so embargo stays shut
+while Noop, attack, and the diplomacy intents around it stay open. The
+manual review item above is closed.
