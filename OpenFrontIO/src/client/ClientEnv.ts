@@ -1,0 +1,213 @@
+import { JWK } from "jose";
+import { z } from "zod";
+import { GameID } from "../core/Schemas";
+import { simpleHash } from "../core/Util";
+import {
+  GameEnv,
+  JwksSchema,
+  parseGameEnv,
+} from "../core/configuration/Config";
+
+export class ClientEnv {
+  private static values: ClientEnvValues | null = null;
+  private static publicKey: JWK | null = null;
+
+  /** Test-only. */
+  static reset(): void {
+    ClientEnv.values = null;
+    ClientEnv.publicKey = null;
+  }
+
+  private static get(): ClientEnvValues {
+    if (ClientEnv.values) return ClientEnv.values;
+    if (typeof window === "undefined") {
+      throw new Error("ClientEnv is only available on the browser main thread");
+    }
+    const bc = window.BOOTSTRAP_CONFIG;
+    if (
+      !bc ||
+      bc.gameEnv === undefined ||
+      bc.numWorkers === undefined ||
+      bc.turnstileSiteKey === undefined ||
+      bc.jwtAudience === undefined ||
+      bc.instanceId === undefined ||
+      bc.gitCommit === undefined
+    ) {
+      throw new Error("Missing BOOTSTRAP_CONFIG");
+    }
+    ClientEnv.values = {
+      gameEnv: parseGameEnv(bc.gameEnv),
+      numWorkers: bc.numWorkers,
+      turnstileSiteKey: bc.turnstileSiteKey,
+      jwtAudience: bc.jwtAudience,
+      instanceId: bc.instanceId,
+      gitCommit: bc.gitCommit,
+      // Optional: only the desktop app injects an explicit game-server host.
+      // Absent on the web build (falls back to same-origin window.location).
+      serverHost: bc.serverHost,
+    };
+    return ClientEnv.values;
+  }
+
+  // TODO: the following methods are duplicated on ServerEnv. The two classes
+  // read from different sources (window.BOOTSTRAP_CONFIG vs process.env) but
+  // the derived logic is identical. Consolidate into a shared helper that
+  // takes a source so we don't have to keep them in sync by hand.
+  static env(): GameEnv {
+    return ClientEnv.get().gameEnv;
+  }
+  static numWorkers(): number {
+    return ClientEnv.get().numWorkers;
+  }
+  static turnstileSiteKey(): string {
+    return ClientEnv.get().turnstileSiteKey;
+  }
+  static jwtAudience(): string {
+    return ClientEnv.get().jwtAudience;
+  }
+  static instanceId(): string {
+    return ClientEnv.get().instanceId;
+  }
+  static gitCommit(): string {
+    return ClientEnv.get().gitCommit;
+  }
+  static jwtIssuer(): string {
+    const audience = ClientEnv.jwtAudience();
+    return audience === "localhost"
+      ? "http://localhost:8787"
+      : `https://api.${audience}`;
+  }
+  static async jwkPublicKey(): Promise<JWK> {
+    if (ClientEnv.publicKey) return ClientEnv.publicKey;
+    const jwksUrl = ClientEnv.jwtIssuer() + "/.well-known/jwks.json";
+    console.log(`Fetching JWKS from ${jwksUrl}`);
+    const response = await fetch(jwksUrl);
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(`JWKS fetch failed: ${response.status} ${body}`);
+    }
+    const result = JwksSchema.safeParse(await response.json());
+    if (!result.success) {
+      const error = z.prettifyError(result.error);
+      console.error("Error parsing JWKS", error);
+      throw new Error("Invalid JWKS");
+    }
+    ClientEnv.publicKey = result.data.keys[0];
+    return ClientEnv.publicKey;
+  }
+  static turnIntervalMs(): number {
+    return 100;
+  }
+  static gameCreationRate(): number {
+    return ClientEnv.env() === GameEnv.Dev ? 5 * 1000 : 2 * 60 * 1000;
+  }
+  static workerIndex(gameID: GameID): number {
+    return simpleHash(gameID) % ClientEnv.numWorkers();
+  }
+  static workerPath(gameID: GameID): string {
+    return `w${ClientEnv.workerIndex(gameID)}`;
+  }
+  // Explicit game-server host, injected by the desktop app (absent on web).
+  static serverHost(): string | undefined {
+    return ClientEnv.get().serverHost;
+  }
+  // Origin (scheme + host, no trailing slash) of the game server that hosts the
+  // public-lobby and in-game WebSockets. The lobby-list and game sockets append
+  // their own worker path (e.g. `/w0/lobbies`, `/w0`).
+  static serverWsBase(): string {
+    return deriveServerWsBase(
+      ClientEnv.serverHost(),
+      window.location.protocol,
+      window.location.host,
+    );
+  }
+  // Origin (scheme + host, no trailing slash) of the same game server's HTTP
+  // API — the worker routes under `/api` (create_game, game/:id/exists,
+  // game/:id/listing). Callers append the path, worker prefix included where
+  // the route needs one (e.g. `/w0/api/game/<id>`).
+  //
+  // NOT the account/shop API: that is a separate service on api.<audience>,
+  // reached via getApiBase().
+  static serverHttpBase(): string {
+    return deriveServerHttpBase(
+      ClientEnv.serverHost(),
+      window.location.protocol,
+      window.location.host,
+    );
+  }
+}
+
+/**
+ * Resolve which host serves the game, and whether to reach it over TLS.
+ *
+ * This is the single place that answers "which game server?". Both the
+ * WebSocket base and the HTTP base derive from it so they cannot drift apart:
+ * a lobby created over HTTP on one host is only playable over the socket on
+ * that same host. A future multi-server client (picking a host at load time
+ * from /cluster.json) changes this function and both bases follow.
+ *
+ * When an explicit `serverHost` is configured, target it over TLS. Only the
+ * desktop app sets this: it loads the renderer from `app://openfront`, where
+ * `window.location.host` is just "openfront" (not a real server), and the
+ * game-server host is NOT derivable from the API audience — it is the bare
+ * audience host in prod (`openfront.io`) but a branch-variable subdomain on
+ * dev/staging (default `main.openfront.dev`, or `<branch>.openfront.dev`). So
+ * the host is injected explicitly rather than derived.
+ *
+ * When no `serverHost` is configured — the normal web build — the game server
+ * is same-origin as the document, so we keep the historical behaviour: scheme
+ * and host come from `window.location`, which is what the previously relative
+ * URLs resolved against anyway.
+ */
+function resolveServerOrigin(
+  serverHost: string | undefined,
+  locationProtocol: string,
+  locationHost: string,
+): { secure: boolean; host: string } {
+  if (serverHost) {
+    return { secure: true, host: serverHost };
+  }
+  return { secure: locationProtocol === "https:", host: locationHost };
+}
+
+/** Game-server WebSocket origin: see resolveServerOrigin. */
+export function deriveServerWsBase(
+  serverHost: string | undefined,
+  locationProtocol: string,
+  locationHost: string,
+): string {
+  const { secure, host } = resolveServerOrigin(
+    serverHost,
+    locationProtocol,
+    locationHost,
+  );
+  return `${secure ? "wss:" : "ws:"}//${host}`;
+}
+
+/** Game-server HTTP origin: see resolveServerOrigin. */
+export function deriveServerHttpBase(
+  serverHost: string | undefined,
+  locationProtocol: string,
+  locationHost: string,
+): string {
+  const { secure, host } = resolveServerOrigin(
+    serverHost,
+    locationProtocol,
+    locationHost,
+  );
+  return `${secure ? "https:" : "http:"}//${host}`;
+}
+/**
+ * Values that flow from server → client via index.html. Set on the server from
+ * process.env, then re-hydrated on the client from window.BOOTSTRAP_CONFIG.
+ */
+
+export interface ClientEnvValues {
+  gameEnv: GameEnv;
+  numWorkers: number;
+  turnstileSiteKey: string;
+  jwtAudience: string;
+  instanceId: string;
+  gitCommit: string;
+  serverHost?: string;
+}

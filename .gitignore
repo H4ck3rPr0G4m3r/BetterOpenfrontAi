@@ -1,6 +1,9 @@
-# Upstream game engine. Tracked by pinned commit in docs/superpowers/specs/
-# until the submodule-vs-fork decision is made (see phase-1 spec, "Repo layout").
-OpenFrontIO/
+# Upstream game engine, vendored in-tree at the pinned commit recorded in
+# docs/superpowers/specs/2026-09-05-openfront-rl-env-design.md §2.
+# Fresh clones need no separate upstream checkout — but DO run
+# `npm run inst` inside OpenFrontIO/ (engine deps like zod resolve from
+# OpenFrontIO/node_modules, which stays untracked via its own .gitignore)
+# plus `npm install` in env/.
 
 node_modules/
 __pycache__/
