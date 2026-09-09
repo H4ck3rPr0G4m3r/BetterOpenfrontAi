@@ -93,11 +93,21 @@ def build_vec(cfg: dict) -> SB3OpenFrontVec:
         socket_timeout=float(env_cfg.get("socket_timeout", 180.0)),
         seeds=None,
     )
-    return SB3OpenFrontVec(inner)
+    vec = SB3OpenFrontVec(inner)
+    if env_cfg.get("seed", None) is not None:
+        vec.seed(int(env_cfg["seed"]))
+    return vec
 
 
 def build_model(vec: SB3OpenFrontVec, cfg: dict, tensorboard_log: str | None):
     ppo = cfg["ppo"]
+    n_steps = int(ppo.get("n_steps", 128))
+    batch_size = int(ppo.get("batch_size", 512))
+    if (n_steps * vec.num_envs) % batch_size != 0:
+        raise ValueError(
+            f"n_steps * num_envs ({n_steps * vec.num_envs}) must divide "
+            f"batch_size ({batch_size}) or SB3 fails cryptically"
+        )
     policy_cfg = cfg.get("policy", {})
     policy_kwargs = {
         "features_extractor_kwargs": {
@@ -115,8 +125,8 @@ def build_model(vec: SB3OpenFrontVec, cfg: dict, tensorboard_log: str | None):
         tensorboard_log=tensorboard_log,
         seed=int(cfg["env"].get("seed", 0)),
         device=resolve_device(str(cfg["run"].get("device", "auto"))),
-        n_steps=int(ppo.get("n_steps", 128)),
-        batch_size=int(ppo.get("batch_size", 512)),
+        n_steps=n_steps,
+        batch_size=batch_size,
         n_epochs=int(ppo.get("n_epochs", 4)),
         gamma=float(ppo.get("gamma", 0.99)),
         gae_lambda=float(ppo.get("gae_lambda", 0.95)),
@@ -139,7 +149,7 @@ def main(argv: list[str] | None = None) -> dict:
 
     cfg = load_config(args.config)
     run = cfg["run"]
-    total = args.total_timesteps or int(run.get("total_timesteps", 1_000_000))
+    total = args.total_timesteps if args.total_timesteps is not None else int(run.get("total_timesteps", 1_000_000))
     run_name = args.run_name or str(run.get("run_name", "ppo"))
     if args.device is not None:
         run["device"] = args.device

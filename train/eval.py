@@ -30,7 +30,10 @@ def run_episodes(
     episodes: int,
     seeds: list[str],
     deterministic: bool = True,
+    max_steps: int = 1500,
 ) -> dict:
+    if vec.num_envs != 1:
+        raise ValueError("run_episodes tracks one env, pass a 1x1 vec")
     returns: list[float] = []
     lengths: list[int] = []
     reasons: Counter[str] = Counter()
@@ -41,10 +44,15 @@ def run_episodes(
         done = np.zeros(vec.num_envs, dtype=bool)
         ep_return = np.zeros(vec.num_envs)
         ep_len = np.zeros(vec.num_envs, dtype=int)
+        steps = 0
         while not done[0]:
+            if steps >= max_steps:
+                reasons["timeout"] += 1
+                break
             actions = predict(obs, masks, deterministic)
             obs, rewards, terminated, truncated, infos = vec.step(actions)
             masks = infos["action_masks"]
+            steps += 1
             active = ~done
             ep_return[active] += np.asarray(rewards)[active]
             ep_len[active] += 1
@@ -77,11 +85,11 @@ def baseline_predictor() -> ScriptedBaselineAgent:
     return lambda obs, masks, deterministic: agent.act_batch(np.asarray(obs), np.asarray(masks))
 
 
-def build_vec(cfg: dict, num_envs: int = 1) -> OpenFrontVecEnv:
+def build_vec(cfg: dict) -> OpenFrontVecEnv:
     env_cfg = cfg.get("env", {})
     return OpenFrontVecEnv(
         1,
-        num_envs,
+        1,
         map=str(env_cfg.get("map", "World")),
         bots=int(env_cfg.get("bots", 20)),
         ticks_per_step=int(env_cfg.get("ticks_per_step", 10)),

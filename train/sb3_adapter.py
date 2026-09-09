@@ -19,6 +19,9 @@ Three semantics matter and are easy to get wrong:
   spec and repeated here so nobody mistakes it for exactness.
 * Win, death, sim error, and worker death get no bootstrap. Their info
   dicts carry no terminal observation, so SB3 ends the advantage chain.
+  Sim error and worker death are also non-scoring: their step reward is
+  zeroed here, since the shaping delta out of a corrupted episode is
+  noise, not signal.
   Every done row carries ``terminal_reason`` and an ``episode`` summary
   with return and length, which is what SB3 logs as ep_rew_mean.
 """
@@ -31,6 +34,7 @@ import numpy as np
 from stable_baselines3.common.vec_env import VecEnv
 
 TRUNCATED_REASONS = {"tick_cap"}
+NON_SCORING_REASONS = {"sim_error", "worker_death"}
 
 
 class SB3OpenFrontVec(VecEnv):
@@ -53,6 +57,7 @@ class SB3OpenFrontVec(VecEnv):
         self._pending_actions = None
         self._ep_rewards[:] = 0.0
         self._ep_lengths[:] = 0
+        self._reset_seeds()
         return obs
 
     def seed(self, seed=None):
@@ -74,6 +79,7 @@ class SB3OpenFrontVec(VecEnv):
         dones = terminated | truncated
         reasons = list(infos.get("terminal_reason", [None] * self.num_envs))
         ticks = list(infos.get("ticks", [0] * self.num_envs))
+        rewards = np.asarray(rewards, dtype=np.float64)
 
         self._ep_rewards += np.asarray(rewards, dtype=np.float64)
         self._ep_lengths += 1
@@ -81,6 +87,9 @@ class SB3OpenFrontVec(VecEnv):
         out_infos: list[dict] = []
         for index in range(self.num_envs):
             reason = reasons[index]
+            if dones[index] and reason in NON_SCORING_REASONS:
+                rewards[index] = 0.0
+                self._ep_rewards[index] = 0.0
             info = {
                 "terminal_reason": reason,
                 "ticks": int(ticks[index]),
@@ -107,13 +116,17 @@ class SB3OpenFrontVec(VecEnv):
     def action_masks(self) -> np.ndarray:
         return self.inner.action_masks()
 
+    def has_attr(self, attr_name: str, indices=None) -> bool:
+        return attr_name in ("render_mode", "action_masks", "num_envs")
+
     def get_attr(self, attr_name: str, indices=None):
+        rows = self._get_indices(indices)
         if attr_name == "render_mode":
-            return [None] * self.num_envs
+            return [None for _ in rows]
         if attr_name == "action_masks":
-            return [row.copy() for row in self.inner.action_masks()]
+            return [row.copy() for i, row in enumerate(self.inner.action_masks()) if i in rows]
         if attr_name == "num_envs":
-            return [self.num_envs] * self.num_envs
+            return [self.num_envs for _ in rows]
         raise AttributeError(f"unknown attr {attr_name}")
 
     def set_attr(self, attr_name: str, value, indices=None) -> None:
@@ -121,7 +134,8 @@ class SB3OpenFrontVec(VecEnv):
 
     def env_method(self, method_name: str, *method_args, indices=None, **method_kwargs):
         if method_name == "action_masks":
-            return [row.copy() for row in self.inner.action_masks()]
+            rows = self._get_indices(indices)
+            return [row.copy() for i, row in enumerate(self.inner.action_masks()) if i in rows]
         raise AttributeError(f"unknown env method {method_name}")
 
     def env_is_wrapped(self, wrapper_class, indices=None):

@@ -33,14 +33,18 @@ def factory_for(fakes: list[FakeWorker], num_envs: int):
     return factory
 
 
-def mask_with(*, intent=(), target=(), spatial=(), site=()):
+def mask_with(*, intent=(), target=(), ratio=None, spatial=(), site=()):
     flat = np.zeros(spaces.MASK_TOTAL, dtype=bool)
     heads = spaces.split_flat_mask(flat)
     for index in intent:
         heads["intent_type"][index] = True
     for index in target:
         heads["target"][index] = True
-    heads["ratio_bucket"][:] = True
+    if ratio is None:
+        heads["ratio_bucket"][:] = True
+    else:
+        for index in ratio:
+            heads["ratio_bucket"][index] = True
     for index in spatial:
         heads["spatial_cell"][index] = True
     for index in site:
@@ -155,6 +159,15 @@ class SB3AdapterTest(unittest.TestCase):
             self.assertTrue(vec.has_attr("action_masks"))
             stacked = np.stack(vec.env_method("action_masks"))
             self.assertEqual(stacked.shape, (2, spaces.MASK_TOTAL))
+            heads = spaces.split_flat_mask(stacked[0])
+            self.assertEqual(
+                [heads[name].shape[0] for name in spaces.HEAD_NAMES],
+                [14, 17, 8, 8192, 32],
+            )
+            self.assertTrue(stacked.all())
+            subset = vec.env_method("action_masks", indices=[1])
+            self.assertEqual(len(subset), 1)
+            np.testing.assert_array_equal(subset[0], stacked[1])
             vec.close()
         finally:
             fake.stop()
@@ -201,7 +214,10 @@ class TrainSmokeTest(unittest.TestCase):
             vec = SB3OpenFrontVec(inner)
             model = self._make_model(vec)
             model.learn(total_timesteps=16)
-            self.assertGreater(model.num_timesteps, 0)
+            self.assertEqual(model.num_timesteps, 16)
+            loss = model.logger.name_to_value.get("train/loss")
+            self.assertIsNotNone(loss)
+            self.assertTrue(np.isfinite(loss))
             vec.close()
         finally:
             fake.stop()
@@ -237,10 +253,11 @@ class TrainSmokeTest(unittest.TestCase):
             vec = SB3OpenFrontVec(inner)
             model = self._make_model(vec)
             obs = vec.reset()
-            masks = mask_with(intent=[3], target=[2], spatial=[77], site=[5]).reshape(1, -1)
-            for _ in range(5):
+            # Exactly one open entry per head: any sample must equal it.
+            masks = mask_with(intent=[3], target=[2], ratio=[4], spatial=[77], site=[5]).reshape(1, -1)
+            for _ in range(3):
                 actions, _ = model.predict(obs, deterministic=False, action_masks=masks)
-                self.assertEqual([int(v) for v in actions[0]], [3, 2, int(actions[0][2]), 77, 5])
+                np.testing.assert_array_equal(actions[0], [3, 2, 4, 77, 5])
             vec.close()
         finally:
             fake.stop()
@@ -251,16 +268,14 @@ class TrainSmokeTest(unittest.TestCase):
         from openfront_policy import OpenFrontPolicy  # noqa: F401
 
         fake = FakeWorker(
-            num_envs=1, obs_size=8, terminals={0: [protocol.TerminalCode.WIN]}
+            num_envs=1, obs_size=OBSERVATION_SIZE, terminals={0: [protocol.TerminalCode.WIN]}
         )
         fake.start()
         try:
-            vec = OpenFrontVecEnv(1, 1, worker_factory=factory_for([fake], 1))
-
-            def constant_predict(obs, masks, deterministic=True):
-                return np.zeros((len(np.asarray(obs)), 5), dtype=np.int64)
-
-            stats = run_episodes(constant_predict, vec, 1, ["e0"])
+            inner = OpenFrontVecEnv(1, 1, worker_factory=factory_for([fake], 1))
+            vec = SB3OpenFrontVec(inner)
+            model = self._make_model(vec)
+            stats = run_episodes(policy_predictor(model), inner, 1, ["e0"])
             self.assertEqual(stats["episodes"], 1)
             self.assertEqual(stats["terminals"], {"win": 1})
             self.assertEqual(stats["win_rate"], 1.0)

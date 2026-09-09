@@ -1,3 +1,6 @@
+# Install CUDA torch FIRST, then the rest, or pip swaps in a CPU torch:
+#   pip install --index-url https://download.pytorch.org/whl/cu128 "torch>=2.8,<2.9"
+#   pip install -r requirements.txt
 gymnasium>=1.0,<2
 numpy>=1.21
 pytest>=7

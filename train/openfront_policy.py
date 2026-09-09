@@ -21,8 +21,10 @@ from torch import nn
 
 from openfront_gym.adapter import (
     NUM_GLOBALS,
+    OBSERVATION_SIZE,
     RASTER_HEIGHT,
     RASTER_PLANES,
+    RASTER_SIZE,
     RASTER_WIDTH,
     TABLE_SIZE,
 )
@@ -40,11 +42,11 @@ class OpenFrontExtractor(BaseFeaturesExtractor):
     ):
         super().__init__(observation_space, features_dim)
         flat_size = int(np.prod(observation_space.shape))
-        raster_end = RASTER_PLANES * RASTER_HEIGHT * RASTER_WIDTH
-        if flat_size < raster_end + TABLE_SIZE + NUM_GLOBALS:
+        if flat_size != OBSERVATION_SIZE:
             raise ValueError(
-                f"obs too small for the OpenFront layout: {flat_size}"
+                f"obs must hold {OBSERVATION_SIZE} floats, got {flat_size}"
             )
+        raster_end = RASTER_SIZE
         self._raster_end = raster_end
         self._table_end = raster_end + TABLE_SIZE
 
@@ -53,8 +55,10 @@ class OpenFrontExtractor(BaseFeaturesExtractor):
         for out_ch in cnn_channels:
             layers += [nn.Conv2d(in_ch, out_ch, kernel_size=3, stride=2, padding=1), nn.ReLU()]
             in_ch = out_ch
-        # 64x128 halved three times: 8x16 before flatten.
-        cnn_out = cnn_channels[-1] * (RASTER_HEIGHT // 8) * (RASTER_WIDTH // 8)
+        # Every layer is stride 2 with padding 1, so each spatial dim shrinks
+        # by exactly half per layer for even inputs: 64x128 becomes 8x16.
+        downscale = 2 ** len(cnn_channels)
+        cnn_out = cnn_channels[-1] * (RASTER_HEIGHT // downscale) * (RASTER_WIDTH // downscale)
         self.cnn = nn.Sequential(*layers, nn.Flatten())
         self.table_mlp = nn.Sequential(
             nn.Linear(TABLE_SIZE + NUM_GLOBALS, table_hidden), nn.ReLU()
@@ -83,9 +87,3 @@ class OpenFrontPolicy(MaskableActorCriticPolicy):
         kwargs.setdefault("net_arch", dict(pi=[256], vf=[256]))
         kwargs.setdefault("activation_fn", nn.ReLU)
         super().__init__(*args, **kwargs)
-
-
-POLICY_DEFAULTS: dict = {
-    "features_dim": 512,
-    "net_arch": {"pi": [256], "vf": [256]},
-}
