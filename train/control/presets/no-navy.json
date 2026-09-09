@@ -1,0 +1,10 @@
+{
+  "name": "no-navy",
+  "description": "Land war only. No boats, no warships, no ports. Pick a water map.",
+  "aggression": 45,
+  "disabled_intents": [2, 5],
+  "disabled_builds": ["Port", "Warship"],
+  "reward_weights": null,
+  "env_overrides": {},
+  "ppo_overrides": {}
+}

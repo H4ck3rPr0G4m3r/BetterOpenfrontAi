@@ -12,6 +12,15 @@ env:
   socket_timeout: 180.0
   seed: 0
 
+# Side-quest AI control UI. Empty lists and null weights mean no limits:
+# the phase-1 default. The dashboard writes this section when a preset
+# or the behavior form is used to start a run.
+behavior:
+  aggression: 50
+  disabled_intents: []
+  disabled_builds: []
+  reward_weights: null
+
 ppo:
   n_steps: 128
   batch_size: 512

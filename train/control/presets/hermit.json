@@ -1,0 +1,10 @@
+{
+  "name": "hermit",
+  "description": "Zero diplomacy of any kind. No targets, no pacts, no embargoes, no gifts. Everybody is a stranger.",
+  "aggression": 40,
+  "disabled_intents": [6, 7, 8, 9, 10, 11, 12],
+  "disabled_builds": [],
+  "reward_weights": null,
+  "env_overrides": {},
+  "ppo_overrides": {}
+}

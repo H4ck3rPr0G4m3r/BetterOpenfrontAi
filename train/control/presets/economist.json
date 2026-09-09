@@ -1,0 +1,10 @@
+{
+  "name": "economist",
+  "description": "Gold-obsessed and selfish. Hoards every coin, never donates, rewards shape it that way.",
+  "aggression": 50,
+  "disabled_intents": [11, 12],
+  "disabled_builds": [],
+  "reward_weights": [0.6, 0.05, 0.5, 1.0, -1.0],
+  "env_overrides": {},
+  "ppo_overrides": {}
+}
