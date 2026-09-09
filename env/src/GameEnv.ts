@@ -28,6 +28,7 @@ import {
   Action,
   ActionCodec,
   EnvConfig,
+  MaskBuffers,
   ObservationEncoder,
   Observation,
   StepResult,
@@ -212,6 +213,40 @@ export class GameEnv {
    *  through, once that's built. */
   get game() {
     return this.runner.game;
+  }
+
+  /**
+   * Current tick count. The bridge (§5.6) reports it on every reply,
+   * including RESET replies whose StepResult never exists.
+   */
+  get ticks(): number {
+    if (this.runner === undefined) {
+      throw new Error("ticks read before reset()");
+    }
+    return this.runner.game.ticks();
+  }
+
+  /**
+   * Next step masks for the current state. Same call the step path makes,
+   * exposed so the bridge can answer RESET with honest masks instead of
+   * all open bits. A damaged state yields zeroed masks, matching the
+   * sim_error reply contract.
+   */
+  currentMasks(): MaskBuffers {
+    if (this.runner === undefined) {
+      throw new Error("currentMasks read before reset()");
+    }
+    const masks = createMaskBuffers();
+    try {
+      this.codec.masks(this.runner.game, AGENT_ID, masks);
+    } catch {
+      masks.intentType.fill(0);
+      masks.target.fill(0);
+      masks.ratioBucket.fill(0);
+      masks.spatialCell.fill(0);
+      masks.buildSite.fill(0);
+    }
+    return masks;
   }
 
   private computeTerminal(feederOk: boolean): TerminalReason {
