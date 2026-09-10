@@ -39,6 +39,9 @@ export class Reward {
   private prevLandFraction = 0;
   private prevTroopFraction = 0;
   private prevGoldFraction = 0;
+  /** Alive non-agent player IDs at the previous snapshot. Compared across
+   *  steps to count eliminations for the kill bonus. */
+  private prevAliveIds = new Set<PlayerID>();
   // Snapshotted once in init(), not re-read from game.map() every step().
   // GameMap.numLandTiles() mutates (nukes and other terrain edits change
   // land tiles to non-land, see GameMap.ts's numLandTiles_--), so reading
@@ -61,6 +64,7 @@ export class Reward {
     this.prevLandFraction = this.landFraction(agent.numTilesOwned());
     this.prevTroopFraction = agent.troops() / this.troopScale;
     this.prevGoldFraction = Number(agent.gold()) / this.goldScale;
+    this.prevAliveIds = this.liveOpponentIds(game, agentPlayerID);
   }
 
   step(game: Game, agentPlayerID: PlayerID, terminal: TerminalReason): number {
@@ -79,11 +83,40 @@ export class Reward {
     this.prevTroopFraction = troopFraction;
     this.prevGoldFraction = goldFraction;
 
-    return shaping + this.terminalBonus(terminal);
+    const kills = this.countKills(game, agentPlayerID);
+
+    return shaping + this.weights.kill * kills + this.terminalBonus(terminal);
   }
 
   private landFraction(ownedTiles: number): number {
     return this.totalLandTiles > 0 ? ownedTiles / this.totalLandTiles : 0;
+  }
+
+  /**
+   * IDs of living players excluding the agent. Built from game.players(),
+   * the same call the encoder already makes every step, so this adds no
+   * new cost class. An opponent that spawns and dies between two snapshots
+   * is missed; with 10 ticks per step that window is small and the miss
+   * only costs one bonus, never a wrong one.
+   */
+  private liveOpponentIds(game: Game, agentPlayerID: PlayerID): Set<PlayerID> {
+    const ids = new Set<PlayerID>();
+    for (const p of game.players()) {
+      if (p.id() !== agentPlayerID && p.isAlive()) ids.add(p.id());
+    }
+    return ids;
+  }
+
+  /** Opponents alive at the previous snapshot but not now. Refreshes the
+   *  snapshot, so each elimination is counted exactly once. */
+  private countKills(game: Game, agentPlayerID: PlayerID): number {
+    const now = this.liveOpponentIds(game, agentPlayerID);
+    let kills = 0;
+    for (const id of this.prevAliveIds) {
+      if (!now.has(id)) kills++;
+    }
+    this.prevAliveIds = now;
+    return kills;
   }
 
   private terminalBonus(terminal: TerminalReason): number {

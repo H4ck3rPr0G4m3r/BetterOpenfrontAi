@@ -316,6 +316,24 @@ export class ActionCodecImpl implements ActionCodec {
     const ctx = buildContext(game, playerID);
     // The episode is over; nothing below can legally progress it.
     if (!ctx.agent.isAlive()) return [];
+    const intents = this.decodeInner(action, ctx);
+    // Identity stamping: the engine resolves every intent's acting player
+    // through playerByClientID (ExecutionManager.createExec). An intent
+    // without a clientID resolves to nobody and silently becomes a noop —
+    // every action the policy ever took was dropped this way before this
+    // line existed (see phase-8 replay investigation). A human seat always
+    // carries one; anything else is a caller bug, fail fast.
+    const clientID = ctx.agent.clientID();
+    if (clientID === null) {
+      throw new Error("decode() needs a seated human player with a clientID");
+    }
+    return intents.map((intent) => ({ ...intent, clientID }));
+  }
+
+  private decodeInner(
+    action: Action,
+    ctx: CodecContext,
+  ): Intent[] {
     const ratio = RATIO_BUCKETS[action.ratioBucket];
 
     switch (action.intentType) {

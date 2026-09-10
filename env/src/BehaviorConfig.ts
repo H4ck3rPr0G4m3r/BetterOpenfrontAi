@@ -23,15 +23,19 @@ export interface RewardWeights {
   gold: number;
   win: number;
   death: number;
+  /** Bonus per eliminated opponent, counted in Reward between steps. */
+  kill: number;
 }
 
-/** Phase-1 default shaping, unchanged unless explicitly overridden. */
+/** Phase-1 default shaping, unchanged unless explicitly overridden. Kill
+ *  defaults to 0 so old 5-value configs behave exactly as before. */
 export const DEFAULT_REWARD_WEIGHTS: RewardWeights = {
   land: 1.0,
   troop: 0.1,
   gold: 0.1,
   win: 1,
   death: -1,
+  kill: 0,
 };
 
 export interface BehaviorConfig {

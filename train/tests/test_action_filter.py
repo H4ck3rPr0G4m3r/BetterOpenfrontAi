@@ -41,7 +41,20 @@ def test_preset_validation():
     with pytest.raises(ValueError):
         BehaviorPreset.from_dict({"reward_weights": [1, 2, 3]})
     with pytest.raises(ValueError):
+        BehaviorPreset.from_dict({"reward_weights": [1, 2, 3, 4, 5, 6, 7]})
+    with pytest.raises(ValueError):
         BehaviorPreset.from_dict({"aggression": -1})
+
+
+def test_preset_accepts_optional_kill_weight():
+    preset = BehaviorPreset.from_dict(
+        {"name": "berserker", "reward_weights": [1.5, 0.2, 0.05, 2.0, -2.0, 1.0]}
+    )
+    assert preset.reward_weights == (1.5, 0.2, 0.05, 2.0, -2.0, 1.0)
+    argv = worker_argv(
+        WorkerConfig(num_envs=1, reward_weights=preset.reward_weights), 5001
+    )
+    assert "1.5,0.2,0.05,2.0,-2.0,1.0" in argv
 
 
 def test_preset_build_names_match_engine_candidates():

@@ -48,6 +48,7 @@ describe("normalizeBehavior", () => {
       gold: 0.1,
       win: 1,
       death: -1,
+      kill: 0,
     });
   });
 
@@ -220,6 +221,23 @@ describe("worker CLI behavior flags", () => {
       gold: 0,
       win: 5,
       death: -5,
+      kill: 0,
+    });
+  });
+
+  it("parses the optional 6th kill weight and still rejects bad counts", () => {
+    const options = parseWorkerArgs([
+      ...base,
+      "--reward-weights",
+      "2,0,0,5,-5,1.5",
+    ]);
+    expect(options.rewardWeights).toEqual({
+      land: 2,
+      troop: 0,
+      gold: 0,
+      win: 5,
+      death: -5,
+      kill: 1.5,
     });
   });
 
@@ -231,6 +249,9 @@ describe("worker CLI behavior flags", () => {
     ).toThrow();
     expect(() =>
       parseWorkerArgs([...base, "--reward-weights", "1,2,3"]),
+    ).toThrow();
+    expect(() =>
+      parseWorkerArgs([...base, "--reward-weights", "1,2,3,4,5,6,7"]),
     ).toThrow();
   });
 });

@@ -22,6 +22,7 @@ import {
   SlotField,
 } from "../src/ObservationEncoder";
 import { TROOP_SCALE } from "../src/Reward";
+import { TurnFeeder } from "../src/TurnFeeder";
 import { assignTargetSlots, borderingSmallIDs } from "../src/TargetSlots";
 import type { Action, MaskBuffers } from "../src/types";
 import { AGENT_ID, buildPostSpawnGame, buildWorldGame } from "./helpers/buildWorldGame";
@@ -204,6 +205,47 @@ describe("ActionCodec decode", () => {
     expect(intent.troops).toBeCloseTo(troopsBefore * RATIO_BUCKETS[4], 6);
   });
 
+  it("stamps every decoded intent with the agent's clientID", async () => {
+    // Regression guard for the dropped-action defect: the engine resolves
+    // each intent's acting player through playerByClientID, so an intent
+    // without a clientID resolves to nobody and silently becomes a noop.
+    // Every policy action trained before this line existed was dropped.
+    const { game } = await buildPostSpawnGame("codec3-0");
+    for (const action of [
+      baseAction({ intentType: IntentType.Attack, target: 0 }),
+      baseAction({ intentType: IntentType.TargetPlayer, target: 0 }),
+    ]) {
+      const intents = codec.decode(action, game, AGENT_ID);
+      for (const intent of intents) {
+        expect((intent as { clientID?: unknown }).clientID).toBe("client0");
+      }
+    }
+  });
+
+  it("executes a decoded attack: tiles actually grow", async () => {
+    // End-to-end proof the stamped intent resolves: feed it through the
+    // real runner and watch territory expand. Pre-stamp this silently
+    // no-op'd and tiles never moved.
+    const { game, runner } = await buildPostSpawnGame("codec3-exec");
+    const before = game.player(AGENT_ID).numTilesOwned();
+    const intents = codec.decode(
+      baseAction({ intentType: IntentType.Attack, target: 0 }),
+      game,
+      AGENT_ID,
+    );
+    expect(intents.length).toBe(1);
+    const feeder = new TurnFeeder(runner);
+    // Conquest takes a while (troops must march); poll until the frontier
+    // moves, well past any single-tick timing. Pre-stamp this silently
+    // no-op'd and tiles never moved at any horizon.
+    let grown = game.player(AGENT_ID).numTilesOwned();
+    for (let i = 0; i < 20 && grown <= before; i++) {
+      feeder.step(10, intents as never);
+      grown = game.player(AGENT_ID).numTilesOwned();
+    }
+    expect(grown).toBeGreaterThan(before);
+  });
+
   it("decodes a player-targeted attack to the slotted player's id", async () => {
     // This seed was scanned for a bordering attackable player at fixture
     // end; most early-game seeds border only unowned land so far.
@@ -272,7 +314,7 @@ describe("ActionCodec decode", () => {
       game,
       AGENT_ID,
     );
-    expect(request).toEqual([{ type: "allianceRequest", recipient: slots[slot]!.id() }]);
+    expect(request).toEqual([{ type: "allianceRequest", recipient: slots[slot]!.id(), clientID: "client0" }]);
 
     const embargo = codec.decode(
       baseAction({ intentType: IntentType.Embargo, target: slot }),
@@ -280,7 +322,7 @@ describe("ActionCodec decode", () => {
       AGENT_ID,
     );
     // No embargo yet against a fresh counterpart: the codec opens with start.
-    expect(embargo).toEqual([{ type: "embargo", targetID: slots[slot]!.id(), action: "start" }]);
+    expect(embargo).toEqual([{ type: "embargo", targetID: slots[slot]!.id(), action: "start", clientID: "client0" }]);
   });
 
   it("builds with bonus gold and the engine accepts the intent", async () => {
