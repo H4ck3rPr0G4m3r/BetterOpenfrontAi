@@ -10,6 +10,7 @@ env:
   envs_per_worker: 2
   strict_illegal_actions: true
   socket_timeout: 180.0
+  parallel_workers: true
   seed: 0
 
 # Side-quest AI control UI. Empty lists and null weights mean no limits:

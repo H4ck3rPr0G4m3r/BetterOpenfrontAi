@@ -86,20 +86,141 @@ export function letterboxTransform(
 }
 
 /**
- * Encodes a `Game` snapshot into a fixed-size observation (spec §5.3).
+ * Static per-map terrain data, built once per GameMap and reused across
+ * steps. Base terrain never changes within a game, but nukes convert land
+ * to water through `setWater` / `updateTile`, which advance
+ * `waterVersion()`. Geometry (letterbox, per-cell tile totals) is truly
+ * static; land membership is cached against that version and rebuilt when
+ * it moves. Only ownership and troops are dynamic and stay in the
+ * per-step loop.
  *
- * Full recompute from `map.ownerID()` / `map.isLand()` every call — no
- * incremental state, no dependency on `drainPackedTileUpdates()`. That
- * queue is destructive (whoever reads it consumes it), so incremental
- * maintenance would mean either GameEnv owns draining it exclusively or
- * this encoder does, and either way it needs per-episode state this
- * interface doesn't have. A full 128x64-cell recompute over the whole map
- * was measured cheap enough (see ObservationEncoder.test.ts's throughput
- * check) that the incremental design isn't needed in phase 1 — see spec
- * §11 for the record of that decision.
+ * Layout is axis-separated on purpose: `cxForX` (w ints) plus row bases for
+ * y (h ints) replace the per-tile `Math.floor(x / scale)` float math with
+ * two array reads. A full per-tile cell LUT would cost 4 bytes per tile
+ * (~8 MB on World); the engine deliberately avoids such tables for the
+ * same reason (`GameMap.ts` yToRef comment). The hot loop stays sequential
+ * and prefetcher-friendly.
  */
+interface StaticTerrain {
+  w: number;
+  h: number;
+  scale: number;
+  offsetX: number;
+  offsetY: number;
+  waterVersion: number;
+  isLand: Uint8Array;
+  cxForX: Int32Array;
+  rowBaseForY: Int32Array;
+  totalTilesInCell: Float64Array;
+  landTilesInCell: Float64Array;
+}
 export class ObservationEncoder implements ObservationEncoderInterface {
   readonly size = OBSERVATION_SIZE;
+
+  /**
+   * Full recompute every call, but only of dynamic state — no dependency
+   * on `drainPackedTileUpdates()`. That queue is destructive (whoever reads
+   * it consumes it), so incremental maintenance would need per-episode
+   * state this interface doesn't have. Static terrain comes from the
+   * per-GameMap cache below; ownership is re-read from `tileStateBuffer()`
+   * each call. See spec §11 for the record of that decision.
+   */
+  private staticByMap = new WeakMap<object, StaticTerrain>();
+  // Scratch accumulators, reused across calls to avoid ~500 KB of
+  // Float64Array garbage per encode. Fixed at RASTER_CELLS so sharing is
+  // safe; every encode fills them from zero.
+  private readonly scratchLandByCode = [
+    new Float64Array(RASTER_CELLS),
+    new Float64Array(RASTER_CELLS),
+    new Float64Array(RASTER_CELLS),
+  ];
+  private readonly scratchTroopByCode = [
+    new Float64Array(RASTER_CELLS),
+    new Float64Array(RASTER_CELLS),
+  ];
+  private readonly scratchUnowned = new Float64Array(RASTER_CELLS);
+  private readonly scratchStructures = new Float64Array(RASTER_CELLS);
+  private readonly scratchSelfTiles: number[] = [];
+  private readonly scratchBordering = new Set<number>();
+
+  private getStatic(map: {
+    width(): number;
+    height(): number;
+    isLand(ref: number): boolean;
+    waterVersion(): number;
+  }): StaticTerrain {
+    const cached = this.staticByMap.get(map);
+    if (cached !== undefined) {
+      // Nukes flip land to water mid-episode (`setWater` / `updateTile`
+      // advance waterVersion). Geometry never changes, so only the land
+      // arrays need a rebuild when the version moves.
+      if (map.waterVersion() === cached.waterVersion) return cached;
+      this.refreshLand(map, cached);
+      return cached;
+    }
+    const w = map.width();
+    const h = map.height();
+    const { scale, offsetX, offsetY } = letterboxTransform(w, h);
+    const isLand = new Uint8Array(w * h);
+    const cxForX = new Int32Array(w);
+    for (let x = 0; x < w; x++) {
+      cxForX[x] = Math.min(RASTER_WIDTH - 1, Math.max(0, offsetX + Math.floor(x / scale)));
+    }
+    const rowBaseForY = new Int32Array(h);
+    for (let y = 0; y < h; y++) {
+      const cy = Math.min(RASTER_HEIGHT - 1, Math.max(0, offsetY + Math.floor(y / scale)));
+      rowBaseForY[y] = cy * RASTER_WIDTH;
+    }
+    const totalTilesInCell = new Float64Array(RASTER_CELLS);
+    const landTilesInCell = new Float64Array(RASTER_CELLS);
+    let t = 0;
+    for (let y = 0; y < h; y++) {
+      const rowBase = rowBaseForY[y];
+      for (let x = 0; x < w; x++, t++) {
+        const cell = rowBase + cxForX[x];
+        totalTilesInCell[cell]++;
+      }
+    }
+    const built: StaticTerrain = {
+      w,
+      h,
+      scale,
+      offsetX,
+      offsetY,
+      waterVersion: -1,
+      isLand,
+      cxForX,
+      rowBaseForY,
+      totalTilesInCell,
+      landTilesInCell,
+    };
+    this.staticByMap.set(map, built);
+    this.refreshLand(map, built);
+    return built;
+  }
+
+  /** (Re)build land membership from the live map. Runs once per GameMap
+   *  plus once per waterVersion bump (nukes). One `isLand` call per tile
+   *  here, zero in the per-step loop. */
+  private refreshLand(
+    map: { isLand(ref: number): boolean; waterVersion(): number },
+    terrain: StaticTerrain,
+  ): void {
+    const { w, h, cxForX, rowBaseForY, isLand, landTilesInCell } = terrain;
+    isLand.fill(0);
+    landTilesInCell.fill(0);
+    let t = 0;
+    for (let y = 0; y < h; y++) {
+      const rowBase = rowBaseForY[y];
+      for (let x = 0; x < w; x++, t++) {
+        if (map.isLand(t)) {
+          isLand[t] = 1;
+          landTilesInCell[rowBase + cxForX[x]]++;
+        }
+      }
+    }
+    terrain.waterVersion = map.waterVersion();
+  }
 
   encode(game: Game, agentPlayerID: PlayerID, out: Float32Array): void {
     if (out.length !== this.size) {
@@ -109,9 +230,8 @@ export class ObservationEncoder implements ObservationEncoderInterface {
 
     const agent = game.player(agentPlayerID);
     const map = game.map();
-    const w = map.width();
-    const h = map.height();
-    const { scale, offsetX, offsetY } = letterboxTransform(w, h);
+    const terrain = this.getStatic(map);
+    const { w, h } = terrain;
 
     // Per-player lookups, computed once (O(numPlayers), not O(tiles)) as
     // flat typed arrays indexed directly by smallID — a dense small integer
@@ -145,52 +265,42 @@ export class ObservationEncoder implements ObservationEncoderInterface {
       troopPerTileBySmallID[p.smallID()] =
         p.troops() / TROOP_SCALE / Math.max(1, p.numTilesOwned());
     }
-    const totalTilesInCell = new Float64Array(RASTER_CELLS);
-    const landTilesInCell = new Float64Array(RASTER_CELLS);
-    // Indexed by relation code (0=self, 1=ally, 2=enemy) rather than a
-    // string-keyed Record — this loop runs per land tile (up to ~2M for
-    // World), and a string property lookup per tile was a measurable chunk
-    // of encode()'s cost versus a plain array index.
-    const landByCode = [
-      new Float64Array(RASTER_CELLS),
-      new Float64Array(RASTER_CELLS),
-      new Float64Array(RASTER_CELLS),
-    ];
-    const troopDensityByCode = [new Float64Array(RASTER_CELLS), new Float64Array(RASTER_CELLS)]; // self, enemy only
-    const unownedLandInCell = new Float64Array(RASTER_CELLS);
-    const borderingSmallIDs = new Set<number>();
+    // Reused scratch, zeroed per call. Same arrays every encode so the
+    // ~500 KB of Float64 accumulators never hits the allocator.
+    const landByCode = this.scratchLandByCode;
+    const troopDensityByCode = this.scratchTroopByCode;
+    const unownedLandInCell = this.scratchUnowned;
+    const structureCountInCell = this.scratchStructures;
+    for (let i = 0; i < landByCode.length; i++) landByCode[i].fill(0);
+    for (let i = 0; i < troopDensityByCode.length; i++) troopDensityByCode[i].fill(0);
+    unownedLandInCell.fill(0);
+    structureCountInCell.fill(0);
+    const selfOwnedTiles = this.scratchSelfTiles;
+    selfOwnedTiles.length = 0;
+    const borderingSmallIDs = this.scratchBordering;
+    borderingSmallIDs.clear();
 
-    // cellIndexOf(x, y) instead of cellIndexOf(tile) so the hot loop below
-    // can track x/y with plain increments instead of calling map.x(t)/
-    // map.y(t) (a division/modulo each) two million times. cy only depends
-    // on y, so it's hoisted out of the inner x loop.
-    const cellIndexOf = (x: number, y: number): number => {
-      const cx = Math.min(RASTER_WIDTH - 1, Math.max(0, offsetX + Math.floor(x / scale)));
-      const cy = Math.min(RASTER_HEIGHT - 1, Math.max(0, offsetY + Math.floor(y / scale)));
-      return cy * RASTER_WIDTH + cx;
-    };
+    const cellIndexOf = (x: number, y: number): number =>
+      terrain.rowBaseForY[y] + terrain.cxForX[x];
 
     // Read ownerID straight out of the packed state plane instead of
     // through map.hasOwner(t)/map.ownerID(t)'s virtual dispatch — this loop
     // runs per tile (up to ~2M for World) and those two calls were a
     // measurable fraction of encode()'s cost. 0xfff mirrors
     // GameMap.tileStateBuffer()'s documented low-12-bits-are-ownerID layout
-    // (relied on elsewhere per spec §2.6); land still goes through
-    // map.isLand() since terrain isn't exposed as a bulk buffer.
+    // (relied on elsewhere per spec §2.6). Land comes from the static cache
+    // built once per GameMap, so the loop pays no isLand() dispatch and no
+    // float-division geometry per tile — just sequential array reads.
     const OWNER_ID_MASK = 0xfff;
     const stateBuf = map.tileStateBuffer();
+    const { isLand, cxForX, rowBaseForY } = terrain;
 
-    const selfOwnedTiles: number[] = [];
     let t = 0;
     for (let y = 0; y < h; y++) {
-      const cy = Math.min(RASTER_HEIGHT - 1, Math.max(0, offsetY + Math.floor(y / scale)));
-      const cellRowBase = cy * RASTER_WIDTH;
+      const cellRowBase = rowBaseForY[y];
       for (let x = 0; x < w; x++, t++) {
-        const cx = Math.min(RASTER_WIDTH - 1, Math.max(0, offsetX + Math.floor(x / scale)));
-        const cell = cellRowBase + cx;
-        totalTilesInCell[cell]++;
-        if (!map.isLand(t)) continue;
-        landTilesInCell[cell]++;
+        if (isLand[t] === 0) continue;
+        const cell = cellRowBase + cxForX[x];
 
         const ownerSmallID = stateBuf[t] & OWNER_ID_MASK;
         if (ownerSmallID === 0) {
@@ -224,12 +334,16 @@ export class ObservationEncoder implements ObservationEncoderInterface {
     }
 
     // Structure presence: real unit positions, not a per-tile ownership proxy.
-    const structureCountInCell = new Float64Array(RASTER_CELLS);
+    // Uses the scratch buffer zeroed above; structure counts are sparse.
     for (const unit of game.units(Structures.types)) {
       const tile = unit.tile();
-      structureCountInCell[cellIndexOf(map.x(tile), map.y(tile))]++;
+      const ux = map.x(tile);
+      const uy = map.y(tile);
+      if (ux < 0 || ux >= w || uy < 0 || uy >= h) continue;
+      structureCountInCell[cellIndexOf(ux, uy)]++;
     }
 
+    const { totalTilesInCell, landTilesInCell } = terrain;
     const raster = out.subarray(0, RASTER_SIZE);
     for (let cell = 0; cell < RASTER_CELLS; cell++) {
       const totalT = totalTilesInCell[cell];

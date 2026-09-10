@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import threading
 import warnings
 from collections.abc import Callable, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import gymnasium
@@ -21,11 +23,14 @@ _TRUNCATING_CODES = {TerminalCode.TICK_CAP}
 class OpenFrontVecEnv(gymnasium.vector.VectorEnv):
     """W workers times M envs behind one batched Gymnasium interface.
 
-    Workers step sequentially in phase 1. The Node side already auto-resets
-    finished episodes, so a ``done`` row carries the next episode's obs
-    with the finished episode's reward and terminal reason, which is the
-    same-step autoreset mode below. A dead worker is respawned and its M
-    rows come back done with ``terminal_reason == "worker_death"``.
+    Workers step in parallel threads in phase 6. Each worker owns its own
+    socket and sequence numbers, so blocking socket calls run concurrently
+    while result assembly stays single-threaded for deterministic row
+    order. The Node side already auto-resets finished episodes, so a
+    ``done`` row carries the next episode's obs with the finished
+    episode's reward and terminal reason, which is the same-step
+    autoreset mode below. A dead worker is respawned and its M rows come
+    back done with ``terminal_reason == "worker_death"``.
     """
 
     metadata = {"autoreset_mode": AutoresetMode.SAME_STEP}
@@ -48,6 +53,7 @@ class OpenFrontVecEnv(gymnasium.vector.VectorEnv):
         disabled_builds: Sequence[str] = (),
         reward_weights: Sequence[float] | None = None,
         spawn_timeout: float = 120.0,
+        parallel: bool = True,
     ):
         if num_workers < 1 or envs_per_worker < 1:
             raise ValueError("num_workers and envs_per_worker must be positive")
@@ -72,6 +78,13 @@ class OpenFrontVecEnv(gymnasium.vector.VectorEnv):
         self._worker_factory = worker_factory
         self._base_seeds = self._initial_seeds(seeds, num_envs)
         self._clients: list[WorkerClient | None] = [None] * num_workers
+        self._client_lock = threading.Lock()
+        self._parallel = bool(parallel) and num_workers > 1
+        self._pool: ThreadPoolExecutor | None = (
+            ThreadPoolExecutor(max_workers=num_workers, thread_name_prefix="openfront-step")
+            if self._parallel
+            else None
+        )
         self._masks = np.ones((num_envs, spaces.MASK_TOTAL), dtype=bool)
         self._ticks = np.zeros(num_envs, dtype=np.int64)
         self._obs_size = spaces.OBSERVATION_SIZE
@@ -124,13 +137,35 @@ class OpenFrontVecEnv(gymnasium.vector.VectorEnv):
                     raise ValueError(f"need {self.num_envs} seeds, got {len(given)}")
                 self._base_seeds = given
         obs = np.zeros((self.num_envs, self._obs_size), dtype=np.float32)
-        for worker_index in range(self.num_workers):
-            rows = self._rows(worker_index)
-            client = self._require_client(worker_index)
-            obs_list, ticks, masks = client.reset(self._worker_seeds(worker_index))
-            obs[rows] = np.asarray(obs_list, dtype=np.float32)
-            self._ticks[rows] = np.asarray(ticks, dtype=np.int64)
-            self._masks[rows] = np.stack([spaces.mask_bytes_to_array(m) for m in masks])
+        if self._pool is None:
+            for worker_index in range(self.num_workers):
+                rows = self._rows(worker_index)
+                client = self._require_client(worker_index)
+                obs_list, ticks, masks = client.reset(self._worker_seeds(worker_index))
+                obs[rows] = np.asarray(obs_list, dtype=np.float32)
+                self._ticks[rows] = np.asarray(ticks, dtype=np.int64)
+                self._masks[rows] = np.stack([spaces.mask_bytes_to_array(m) for m in masks])
+        else:
+            # Only the blocking socket call runs in threads. Results are
+            # fully collected before assembly so a failing worker can never
+            # leave a sibling socket busy when the error propagates.
+            def _reset_one(worker_index: int):
+                try:
+                    return worker_index, self._snapshot_client(worker_index).reset(
+                        self._worker_seeds(worker_index)
+                    ), None
+                except Exception as exc:  # noqa: BLE001, collected below
+                    return worker_index, None, exc
+
+            completed = list(self._pool.map(_reset_one, range(self.num_workers)))
+            for worker_index, result, exc in completed:
+                if exc is not None or result is None:
+                    raise exc
+                rows = self._rows(worker_index)
+                obs_list, ticks, masks = result
+                obs[rows] = np.asarray(obs_list, dtype=np.float32)
+                self._ticks[rows] = np.asarray(ticks, dtype=np.int64)
+                self._masks[rows] = np.stack([spaces.mask_bytes_to_array(m) for m in masks])
         return obs, self._infos([None] * self.num_envs)
 
     def step(self, actions):
@@ -140,35 +175,70 @@ class OpenFrontVecEnv(gymnasium.vector.VectorEnv):
         terminated = np.zeros(self.num_envs, dtype=bool)
         truncated = np.zeros(self.num_envs, dtype=bool)
         reasons: list[str | None] = [None] * self.num_envs
-        for worker_index in range(self.num_workers):
-            rows = self._rows(worker_index)
-            try:
-                client = self._require_client(worker_index)
-                result = client.step(
-                    [spaces.action_array_to_dict(actions[i]) for i in rows],
-                    [""] * self.envs_per_worker,
-                )
-            except (ConnectionError, OSError):
-                self._respawn(worker_index, obs, rewards, terminated, reasons)
-                continue
-            obs_list, reward_list, done, terminal_codes, ticks, masks = result
-            obs[rows] = np.asarray(obs_list, dtype=np.float32)
-            rewards[rows] = np.asarray(reward_list, dtype=np.float32)
-            self._ticks[rows] = np.asarray(ticks, dtype=np.int64)
-            self._masks[rows] = np.stack([spaces.mask_bytes_to_array(m) for m in masks])
-            for row, is_done, code in zip(rows, done, terminal_codes):
-                if not is_done:
+        if self._pool is None:
+            for worker_index in range(self.num_workers):
+                rows = self._rows(worker_index)
+                try:
+                    client = self._require_client(worker_index)
+                    result = client.step(
+                        [spaces.action_array_to_dict(actions[i]) for i in rows],
+                        [""] * self.envs_per_worker,
+                    )
+                except (ConnectionError, OSError):
+                    self._respawn(worker_index, obs, rewards, terminated, reasons)
                     continue
-                terminated[row] = code not in _TRUNCATING_CODES
-                truncated[row] = code in _TRUNCATING_CODES
-                reasons[row] = spaces.TERMINAL_NAMES.get(code)
+                self._assemble_step(worker_index, rows, result, obs, rewards, terminated, truncated, reasons)
+        else:
+            # Fan the blocking step calls out to threads, collect every
+            # result first, then assemble and respawn sequentially in index
+            # order. Helpers never raise: a fatal error is re-raised only
+            # after all sockets are idle, so a retry can never issue a
+            # second request on a socket that is still busy.
+            def _step_one(worker_index: int):
+                rows = self._rows(worker_index)
+                try:
+                    result = self._snapshot_client(worker_index).step(
+                        [spaces.action_array_to_dict(actions[i]) for i in rows],
+                        [""] * self.envs_per_worker,
+                    )
+                except (ConnectionError, OSError) as exc:
+                    return worker_index, None, exc, True
+                except Exception as exc:  # noqa: BLE001, re-raised below
+                    return worker_index, None, exc, False
+                return worker_index, result, None, False
+
+            completed = list(self._pool.map(_step_one, range(self.num_workers)))
+            for worker_index, result, exc, respawnable in completed:
+                rows = self._rows(worker_index)
+                if exc is not None:
+                    if respawnable:
+                        self._respawn(worker_index, obs, rewards, terminated, reasons)
+                        continue
+                    raise exc
+                if result is None:
+                    raise RuntimeError(f"worker {worker_index} returned no result")
+                self._assemble_step(worker_index, rows, result, obs, rewards, terminated, truncated, reasons)
         return obs, rewards, terminated, truncated, self._infos(reasons)
+
+    def _assemble_step(self, worker_index: int, rows, result, obs, rewards, terminated, truncated, reasons) -> None:
+        obs_list, reward_list, done, terminal_codes, ticks, masks = result
+        obs[rows] = np.asarray(obs_list, dtype=np.float32)
+        rewards[rows] = np.asarray(reward_list, dtype=np.float32)
+        self._ticks[rows] = np.asarray(ticks, dtype=np.int64)
+        self._masks[rows] = np.stack([spaces.mask_bytes_to_array(m) for m in masks])
+        for row, is_done, code in zip(rows, done, terminal_codes):
+            if not is_done:
+                continue
+            terminated[row] = code not in _TRUNCATING_CODES
+            truncated[row] = code in _TRUNCATING_CODES
+            reasons[row] = spaces.TERMINAL_NAMES.get(code)
 
     def _respawn(self, worker_index: int, obs, rewards, terminated, reasons) -> None:
         """Replace a dead worker, reset its envs, mark its rows done."""
         warnings.warn(f"worker {worker_index} died, respawning", RuntimeWarning, stacklevel=3)
-        old = self._clients[worker_index]
-        self._clients[worker_index] = None
+        with self._client_lock:
+            old = self._clients[worker_index]
+            self._clients[worker_index] = None
         if old is not None:
             try:
                 old.close()
@@ -176,7 +246,17 @@ class OpenFrontVecEnv(gymnasium.vector.VectorEnv):
                 pass
         rows = self._rows(worker_index)
         client = self._spawn(worker_index)
-        self._clients[worker_index] = client
+        with self._client_lock:
+            current = self._clients[worker_index]
+            if current is not None and current is not client and not current.closed:
+                # A concurrent lookup replaced the slot while we spawned.
+                # Our reset data came from the new client, so keep ours and
+                # drop the orphan instead of leaking it.
+                try:
+                    current.close()
+                except OSError:
+                    pass
+            self._clients[worker_index] = client
         obs_list, ticks, masks = client.reset(self._worker_seeds(worker_index))
         obs[rows] = np.asarray(obs_list, dtype=np.float32)
         rewards[rows] = 0.0
@@ -187,10 +267,33 @@ class OpenFrontVecEnv(gymnasium.vector.VectorEnv):
             reasons[row] = spaces.WORKER_DEATH_REASON
 
     def _require_client(self, worker_index: int) -> WorkerClient:
-        client = self._clients[worker_index]
-        if client is None or client.closed:
-            client = self._spawn(worker_index)
+        # Fast path under a short lock; the slow spawn and connect happen
+        # outside it so one dead worker cannot stall healthy workers.
+        with self._client_lock:
+            client = self._clients[worker_index]
+            if client is not None and not client.closed:
+                return client
+        client = self._spawn(worker_index)
+        with self._client_lock:
+            current = self._clients[worker_index]
+            if current is not None and not current.closed:
+                # Another thread already replaced it while we spawned.
+                # Prefer the live one and drop ours.
+                try:
+                    client.close()
+                except OSError:
+                    pass
+                return current
             self._clients[worker_index] = client
+            return client
+
+    def _snapshot_client(self, worker_index: int) -> WorkerClient:
+        # Workers own their socket, so threads can block in parallel. The
+        # list lookup is the only shared state, guarded by a short lock.
+        with self._client_lock:
+            client = self._clients[worker_index]
+        if client is None or client.closed:
+            return self._require_client(worker_index)
         return client
 
     def _rows(self, worker_index: int) -> list[int]:
@@ -210,10 +313,9 @@ class OpenFrontVecEnv(gymnasium.vector.VectorEnv):
 
     def worker_log_paths(self) -> list[str | None]:
         """Stderr log file per worker, for surfacing boot failures."""
-        paths = []
-        for client in self._clients:
-            paths.append(client.log_path if client is not None else None)
-        return paths
+        with self._client_lock:
+            clients = list(self._clients)
+        return [client.log_path if client is not None else None for client in clients]
 
     def env_method(self, name: str, *args, **kwargs) -> list:
         """Subset of the SB3 VecEnv protocol, enough for mask retrieval."""
@@ -232,11 +334,17 @@ class OpenFrontVecEnv(gymnasium.vector.VectorEnv):
         raise AttributeError(f"unknown attr {name}")
 
     def close(self) -> None:
-        for worker_index, client in enumerate(self._clients):
-            self._clients[worker_index] = None
-            if client is not None:
-                try:
-                    client.close()
-                except OSError:
-                    pass
+        pool, self._pool = self._pool, None
+        if pool is not None:
+            pool.shutdown(wait=True, cancel_futures=False)
+        with self._client_lock:
+            clients = list(self._clients)
+            self._clients = [None] * self.num_workers
+        for client in clients:
+            if client is None:
+                continue
+            try:
+                client.close()
+            except OSError:
+                pass
         self.closed = True
