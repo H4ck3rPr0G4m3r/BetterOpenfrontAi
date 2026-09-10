@@ -87,9 +87,12 @@ export function letterboxTransform(
 
 /**
  * Static per-map terrain data, built once per GameMap and reused across
- * steps. Terrain is immutable (`GameMapImpl.terrain`), so land layout,
- * letterbox geometry, and per-cell tile counts never change within a game.
- * Only ownership and troops are dynamic and stay in the per-step loop.
+ * steps. Base terrain never changes within a game, but nukes convert land
+ * to water through `setWater` / `updateTile`, which advance
+ * `waterVersion()`. Geometry (letterbox, per-cell tile totals) is truly
+ * static; land membership is cached against that version and rebuilt when
+ * it moves. Only ownership and troops are dynamic and stay in the
+ * per-step loop.
  *
  * Layout is axis-separated on purpose: `cxForX` (w ints) plus row bases for
  * y (h ints) replace the per-tile `Math.floor(x / scale)` float math with
@@ -104,6 +107,7 @@ interface StaticTerrain {
   scale: number;
   offsetX: number;
   offsetY: number;
+  waterVersion: number;
   isLand: Uint8Array;
   cxForX: Int32Array;
   rowBaseForY: Int32Array;
@@ -143,9 +147,17 @@ export class ObservationEncoder implements ObservationEncoderInterface {
     width(): number;
     height(): number;
     isLand(ref: number): boolean;
+    waterVersion(): number;
   }): StaticTerrain {
     const cached = this.staticByMap.get(map);
-    if (cached !== undefined) return cached;
+    if (cached !== undefined) {
+      // Nukes flip land to water mid-episode (`setWater` / `updateTile`
+      // advance waterVersion). Geometry never changes, so only the land
+      // arrays need a rebuild when the version moves.
+      if (map.waterVersion() === cached.waterVersion) return cached;
+      this.refreshLand(map, cached);
+      return cached;
+    }
     const w = map.width();
     const h = map.height();
     const { scale, offsetX, offsetY } = letterboxTransform(w, h);
@@ -167,12 +179,6 @@ export class ObservationEncoder implements ObservationEncoderInterface {
       for (let x = 0; x < w; x++, t++) {
         const cell = rowBase + cxForX[x];
         totalTilesInCell[cell]++;
-        // One interface call per tile, once per GameMap — never in the
-        // per-step loop. Terrain is immutable so this stays exact.
-        if (map.isLand(t)) {
-          isLand[t] = 1;
-          landTilesInCell[cell]++;
-        }
       }
     }
     const built: StaticTerrain = {
@@ -181,6 +187,7 @@ export class ObservationEncoder implements ObservationEncoderInterface {
       scale,
       offsetX,
       offsetY,
+      waterVersion: -1,
       isLand,
       cxForX,
       rowBaseForY,
@@ -188,7 +195,31 @@ export class ObservationEncoder implements ObservationEncoderInterface {
       landTilesInCell,
     };
     this.staticByMap.set(map, built);
+    this.refreshLand(map, built);
     return built;
+  }
+
+  /** (Re)build land membership from the live map. Runs once per GameMap
+   *  plus once per waterVersion bump (nukes). One `isLand` call per tile
+   *  here, zero in the per-step loop. */
+  private refreshLand(
+    map: { isLand(ref: number): boolean; waterVersion(): number },
+    terrain: StaticTerrain,
+  ): void {
+    const { w, h, cxForX, rowBaseForY, isLand, landTilesInCell } = terrain;
+    isLand.fill(0);
+    landTilesInCell.fill(0);
+    let t = 0;
+    for (let y = 0; y < h; y++) {
+      const rowBase = rowBaseForY[y];
+      for (let x = 0; x < w; x++, t++) {
+        if (map.isLand(t)) {
+          isLand[t] = 1;
+          landTilesInCell[rowBase + cxForX[x]]++;
+        }
+      }
+    }
+    terrain.waterVersion = map.waterVersion();
   }
 
   encode(game: Game, agentPlayerID: PlayerID, out: Float32Array): void {
@@ -306,7 +337,10 @@ export class ObservationEncoder implements ObservationEncoderInterface {
     // Uses the scratch buffer zeroed above; structure counts are sparse.
     for (const unit of game.units(Structures.types)) {
       const tile = unit.tile();
-      structureCountInCell[cellIndexOf(map.x(tile), map.y(tile))]++;
+      const ux = map.x(tile);
+      const uy = map.y(tile);
+      if (ux < 0 || ux >= w || uy < 0 || uy >= h) continue;
+      structureCountInCell[cellIndexOf(ux, uy)]++;
     }
 
     const { totalTilesInCell, landTilesInCell } = terrain;

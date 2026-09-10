@@ -10,7 +10,9 @@ env:
   envs_per_worker: 1
   strict_illegal_actions: true
   socket_timeout: 30.0
-  parallel_workers: true
+  # False on purpose: smoke is 1x1 so the pool is off either way, and this
+  # pins the sequential path while default.yaml exercises parallel.
+  parallel_workers: false
   seed: 0
 
 behavior:

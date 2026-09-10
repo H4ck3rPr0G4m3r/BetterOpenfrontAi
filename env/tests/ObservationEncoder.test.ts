@@ -257,4 +257,41 @@ describe("ObservationEncoder", () => {
     // guess.
     expect(meanMs).toBeLessThan(10);
   });
+
+  it("refreshes cached land after the map converts land to water", async () => {
+    // Nukes flip land to water mid-episode through setWater/updateTile,
+    // which advance waterVersion. The encoder caches land per GameMap, so
+    // it must notice the version move and rebuild instead of serving the
+    // pre-nuke layout for the rest of the episode.
+    const { game } = await buildWorldGame("encoder-safe-4", 20);
+    const map = game.map();
+    const encoder = new ObservationEncoder();
+    const out = new Float32Array(encoder.size);
+    encoder.encode(game, AGENT_ID, out);
+
+    let victim = -1;
+    for (let t = 0; t < map.width() * map.height(); t++) {
+      if (map.isLand(t) && !map.hasOwner(t)) {
+        victim = t;
+        break;
+      }
+    }
+    expect(victim).toBeGreaterThanOrEqual(0);
+    let beforeSum = 0;
+    for (let cell = 0; cell < RASTER_CELLS; cell++) {
+      beforeSum += out[Plane.Land * RASTER_CELLS + cell];
+    }
+    map.setWater(victim);
+
+    encoder.encode(game, AGENT_ID, out);
+    const oracle = referenceLandAndOwnershipFractions(game);
+    let afterSum = 0;
+    for (let cell = 0; cell < RASTER_CELLS; cell++) {
+      const expectedLand = oracle.total[cell] > 0 ? oracle.land[cell] / oracle.total[cell] : 0;
+      expect(out[Plane.Land * RASTER_CELLS + cell]).toBeCloseTo(expectedLand, 6);
+      afterSum += out[Plane.Land * RASTER_CELLS + cell];
+    }
+    // One fewer land tile must show up somewhere in the plane.
+    expect(afterSum).toBeLessThan(beforeSum);
+  });
 });

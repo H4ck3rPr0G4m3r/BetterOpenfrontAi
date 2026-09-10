@@ -146,14 +146,21 @@ class OpenFrontVecEnv(gymnasium.vector.VectorEnv):
                 self._ticks[rows] = np.asarray(ticks, dtype=np.int64)
                 self._masks[rows] = np.stack([spaces.mask_bytes_to_array(m) for m in masks])
         else:
-            # Only the blocking socket call runs in threads. Assembly stays
-            # here so row order is deterministic.
+            # Only the blocking socket call runs in threads. Results are
+            # fully collected before assembly so a failing worker can never
+            # leave a sibling socket busy when the error propagates.
             def _reset_one(worker_index: int):
-                return worker_index, self._snapshot_client(worker_index).reset(
-                    self._worker_seeds(worker_index)
-                )
+                try:
+                    return worker_index, self._snapshot_client(worker_index).reset(
+                        self._worker_seeds(worker_index)
+                    ), None
+                except Exception as exc:  # noqa: BLE001, collected below
+                    return worker_index, None, exc
 
-            for worker_index, result in self._pool.map(_reset_one, range(self.num_workers)):
+            completed = list(self._pool.map(_reset_one, range(self.num_workers)))
+            for worker_index, result, exc in completed:
+                if exc is not None or result is None:
+                    raise exc
                 rows = self._rows(worker_index)
                 obs_list, ticks, masks = result
                 obs[rows] = np.asarray(obs_list, dtype=np.float32)
@@ -182,8 +189,11 @@ class OpenFrontVecEnv(gymnasium.vector.VectorEnv):
                     continue
                 self._assemble_step(worker_index, rows, result, obs, rewards, terminated, truncated, reasons)
         else:
-            # Fan the blocking step calls out to threads, then assemble in
-            # worker-index order. Dead workers respawn sequentially here.
+            # Fan the blocking step calls out to threads, collect every
+            # result first, then assemble and respawn sequentially in index
+            # order. Helpers never raise: a fatal error is re-raised only
+            # after all sockets are idle, so a retry can never issue a
+            # second request on a socket that is still busy.
             def _step_one(worker_index: int):
                 rows = self._rows(worker_index)
                 try:
@@ -192,14 +202,21 @@ class OpenFrontVecEnv(gymnasium.vector.VectorEnv):
                         [""] * self.envs_per_worker,
                     )
                 except (ConnectionError, OSError) as exc:
-                    return worker_index, None, exc
-                return worker_index, result, None
+                    return worker_index, None, exc, True
+                except Exception as exc:  # noqa: BLE001, re-raised below
+                    return worker_index, None, exc, False
+                return worker_index, result, None, False
 
-            for worker_index, result, exc in self._pool.map(_step_one, range(self.num_workers)):
+            completed = list(self._pool.map(_step_one, range(self.num_workers)))
+            for worker_index, result, exc, respawnable in completed:
                 rows = self._rows(worker_index)
-                if exc is not None or result is None:
-                    self._respawn(worker_index, obs, rewards, terminated, reasons)
-                    continue
+                if exc is not None:
+                    if respawnable:
+                        self._respawn(worker_index, obs, rewards, terminated, reasons)
+                        continue
+                    raise exc
+                if result is None:
+                    raise RuntimeError(f"worker {worker_index} returned no result")
                 self._assemble_step(worker_index, rows, result, obs, rewards, terminated, truncated, reasons)
         return obs, rewards, terminated, truncated, self._infos(reasons)
 
@@ -219,8 +236,9 @@ class OpenFrontVecEnv(gymnasium.vector.VectorEnv):
     def _respawn(self, worker_index: int, obs, rewards, terminated, reasons) -> None:
         """Replace a dead worker, reset its envs, mark its rows done."""
         warnings.warn(f"worker {worker_index} died, respawning", RuntimeWarning, stacklevel=3)
-        old = self._clients[worker_index]
-        self._clients[worker_index] = None
+        with self._client_lock:
+            old = self._clients[worker_index]
+            self._clients[worker_index] = None
         if old is not None:
             try:
                 old.close()
@@ -228,7 +246,17 @@ class OpenFrontVecEnv(gymnasium.vector.VectorEnv):
                 pass
         rows = self._rows(worker_index)
         client = self._spawn(worker_index)
-        self._clients[worker_index] = client
+        with self._client_lock:
+            current = self._clients[worker_index]
+            if current is not None and current is not client and not current.closed:
+                # A concurrent lookup replaced the slot while we spawned.
+                # Our reset data came from the new client, so keep ours and
+                # drop the orphan instead of leaking it.
+                try:
+                    current.close()
+                except OSError:
+                    pass
+            self._clients[worker_index] = client
         obs_list, ticks, masks = client.reset(self._worker_seeds(worker_index))
         obs[rows] = np.asarray(obs_list, dtype=np.float32)
         rewards[rows] = 0.0
@@ -239,11 +267,24 @@ class OpenFrontVecEnv(gymnasium.vector.VectorEnv):
             reasons[row] = spaces.WORKER_DEATH_REASON
 
     def _require_client(self, worker_index: int) -> WorkerClient:
+        # Fast path under a short lock; the slow spawn and connect happen
+        # outside it so one dead worker cannot stall healthy workers.
         with self._client_lock:
             client = self._clients[worker_index]
-            if client is None or client.closed:
-                client = self._spawn(worker_index)
-                self._clients[worker_index] = client
+            if client is not None and not client.closed:
+                return client
+        client = self._spawn(worker_index)
+        with self._client_lock:
+            current = self._clients[worker_index]
+            if current is not None and not current.closed:
+                # Another thread already replaced it while we spawned.
+                # Prefer the live one and drop ours.
+                try:
+                    client.close()
+                except OSError:
+                    pass
+                return current
+            self._clients[worker_index] = client
             return client
 
     def _snapshot_client(self, worker_index: int) -> WorkerClient:
@@ -272,10 +313,9 @@ class OpenFrontVecEnv(gymnasium.vector.VectorEnv):
 
     def worker_log_paths(self) -> list[str | None]:
         """Stderr log file per worker, for surfacing boot failures."""
-        paths = []
-        for client in self._clients:
-            paths.append(client.log_path if client is not None else None)
-        return paths
+        with self._client_lock:
+            clients = list(self._clients)
+        return [client.log_path if client is not None else None for client in clients]
 
     def env_method(self, name: str, *args, **kwargs) -> list:
         """Subset of the SB3 VecEnv protocol, enough for mask retrieval."""
@@ -297,11 +337,14 @@ class OpenFrontVecEnv(gymnasium.vector.VectorEnv):
         pool, self._pool = self._pool, None
         if pool is not None:
             pool.shutdown(wait=True, cancel_futures=False)
-        for worker_index, client in enumerate(self._clients):
-            self._clients[worker_index] = None
-            if client is not None:
-                try:
-                    client.close()
-                except OSError:
-                    pass
+        with self._client_lock:
+            clients = list(self._clients)
+            self._clients = [None] * self.num_workers
+        for client in clients:
+            if client is None:
+                continue
+            try:
+                client.close()
+            except OSError:
+                pass
         self.closed = True
