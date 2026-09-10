@@ -9,6 +9,7 @@ import {
 } from "../BehaviorConfig";
 import { GameEnv } from "../GameEnv";
 import { ObservationEncoder } from "../ObservationEncoder";
+import { replayOptionsFromEnv } from "../Replay";
 import { Reward } from "../Reward";
 import type { EnvConfig } from "../types";
 import { WorkerServer } from "./WorkerServer";
@@ -133,15 +134,17 @@ export function parseWorkerArgs(argv: string[]): WorkerMainOptions {
       }
       case "--reward-weights": {
         const parts = next().split(",");
-        if (parts.length !== 5) {
-          throw new Error("--reward-weights needs land,troop,gold,win,death");
+        if (parts.length !== 5 && parts.length !== 6) {
+          throw new Error("--reward-weights needs land,troop,gold,win,death[,kill]");
         }
         const values = parts.map((raw) => Number(raw));
         if (values.some((v) => !Number.isFinite(v))) {
           throw new Error(`--reward-weights must be finite numbers, got ${parts}`);
         }
         const [land, troop, gold, win, death] = values;
-        options.rewardWeights = { land, troop, gold, win, death };
+        // Old 5-value configs keep working: kill defaults to 0, which
+        // makes the kill bonus vanish and restores phase-1 behavior.
+        options.rewardWeights = { land, troop, gold, win, death, kill: values[5] ?? 0 };
         break;
       }
       case "--help":
@@ -178,8 +181,9 @@ Usage: tsx src/bridge/worker_main.ts --port 5001 [options]
   --lenient          count illegal actions and retry as noop
   --disable-intent N keep one intent type shut, repeatable, 1..13 (side quest)
   --disable-build T  exclude one build type, repeatable, e.g. Factory
-  --reward-weights L,T,G,W,D
-                     shaping override as land,troop,gold,win,death`);
+  --reward-weights L,T,G,W,D[,K]
+                     shaping override as land,troop,gold,win,death
+                     plus optional per-kill bonus, default 0`);
 }
 
 async function main(): Promise<void> {
@@ -197,6 +201,9 @@ async function main(): Promise<void> {
     bots: options.bots,
     ticksPerStep: options.ticksPerStep,
     tickCap: options.tickCap,
+    // Phase-8 replays arrive via environment, not the wire protocol, so the
+    // bridge schema stays at version 1. Python sets these before spawning.
+    replay: replayOptionsFromEnv(),
   };
   const server = new WorkerServer({
     numEnvs: options.numEnvs,

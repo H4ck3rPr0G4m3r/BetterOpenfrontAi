@@ -60,6 +60,18 @@ export interface EnvConfig {
   /** Post-spawn tick cap — nations don't eliminate each other within 3300
    *  ticks (§5.1), so episodes need a hard cap, not a natural winner. */
   tickCap: number;
+  /** Episode recording for data replays (phase 8). Absent means off. */
+  replay?: ReplayOptions;
+}
+
+/**
+ * Data-replay recording. Every Nth episode per env is written to `dir` as
+ * a GameRecord-compatible JSON file the dev client can play back.
+ */
+export interface ReplayOptions {
+  dir: string;
+  /** Record every Nth episode (1 means every episode). Must be >= 1. */
+  every: number;
 }
 
 export const DEFAULT_ENV_CONFIG: Omit<EnvConfig, "map" | "mapsDir"> = {

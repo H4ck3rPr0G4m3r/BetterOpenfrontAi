@@ -1,0 +1,49 @@
+# Short end-to-end check: 10k steps at the full 16-env shape plus replay
+# files. Roughly 5 PPO rollouts, a few minutes wall clock.
+env:
+  map: World
+  bots: 20
+  ticks_per_step: 10
+  tick_cap: 6000
+  num_workers: 8
+  envs_per_worker: 2
+  strict_illegal_actions: true
+  socket_timeout: 180.0
+  parallel_workers: true
+  seed: 0
+
+behavior:
+  aggression: 50
+  disabled_intents: []
+  disabled_builds: []
+  reward_weights: null
+
+ppo:
+  n_steps: 128
+  batch_size: 512
+  n_epochs: 4
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_range: 0.2
+  ent_coef: 0.01
+  vf_coef: 0.5
+  max_grad_norm: 0.5
+  learning_rate: 0.0003
+
+policy:
+  features_dim: 512
+  net_arch_pi: [256]
+  net_arch_vf: [256]
+
+run:
+  total_timesteps: 10000
+  checkpoint_freq: 10000
+  checkpoint_dir: checkpoints/test10k
+  tensorboard_log: runs/test10k
+  run_name: test10k
+  device: auto
+  # A 10k run is ~60 episodes (~4 per env, since the boot reset consumes
+  # index 0 on each env), so record every 4th to land about one file per env.
+  replay:
+    dir: replays/test10k
+    every: 4

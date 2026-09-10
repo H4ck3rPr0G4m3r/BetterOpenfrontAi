@@ -46,3 +46,9 @@ run:
   tensorboard_log: runs/openfront_ppo
   run_name: ppo_default
   device: auto
+  # Phase-8 data replays. Record every Nth episode per env as a JSON file
+  # the dev game client can play back. Files land in the low hundreds of
+  # kilobytes, so every 10,000th episode is the standing rule.
+  replay:
+    dir: replays/openfront_ppo
+    every: 10000

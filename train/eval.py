@@ -140,6 +140,7 @@ def evaluate(
 
 
 def main(argv: list[str] | None = None) -> dict:
+    import os
     import yaml
 
     parser = argparse.ArgumentParser(description="Evaluate an OpenFront PPO checkpoint.")
@@ -151,6 +152,12 @@ def main(argv: list[str] | None = None) -> dict:
     parser.add_argument("--baseline", action="store_true")
     parser.add_argument("--stochastic", action="store_true")
     parser.add_argument("--min-attack-ratio", type=int, default=None)
+    parser.add_argument(
+        "--replay-dir",
+        default=None,
+        help="record every episode here as a phase-8 replay file",
+    )
+    parser.add_argument("--replay-every", type=int, default=1)
     args = parser.parse_args(argv)
 
     with open(args.config, encoding="utf-8") as handle:
@@ -168,6 +175,20 @@ def main(argv: list[str] | None = None) -> dict:
     min_ratio = int(min_ratio)
     if not 0 <= min_ratio < 8:
         parser.error("--min-attack-ratio must be 0..7")
+    if args.replay_dir is not None:
+        if args.replay_every < 1:
+            parser.error("--replay-every must be positive")
+        # Workers run with env/ as cwd, so resolve here or files land there.
+        from pathlib import Path
+
+        replay_dir = Path(args.replay_dir)
+        if not replay_dir.is_absolute():
+            replay_dir = Path(__file__).resolve().parent / replay_dir
+        os.environ["OPENFRONT_REPLAY_DIR"] = str(replay_dir)
+        os.environ["OPENFRONT_REPLAY_EVERY"] = str(args.replay_every)
+    else:
+        os.environ.pop("OPENFRONT_REPLAY_DIR", None)
+        os.environ.pop("OPENFRONT_REPLAY_EVERY", None)
     seeds = [f"{args.seed}-{i}" for i in range(args.episodes)]
     result = evaluate(
         args.model,

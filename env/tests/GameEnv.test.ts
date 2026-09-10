@@ -11,7 +11,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MAPS_DIR = path.join(__dirname, "../../OpenFrontIO/resources/maps");
 
 function findAgentSpawnTile(env: GameEnv): number | undefined {
-  return env.game.player("agent0").spawnTile();
+  return env.game.player(env.agentPlayerID).spawnTile();
 }
 
 function makeConfig(overrides: Partial<EnvConfig> = {}): EnvConfig {
@@ -40,8 +40,8 @@ describe("GameEnv", () => {
     const obs = await env.reset("gameenv-reset");
 
     expect(obs.length).toBe(encoder.size);
-    expect(env.game.player("agent0").isAlive()).toBe(true);
-    expect(env.game.player("agent0").numTilesOwned()).toBeGreaterThan(0);
+    expect(env.game.player(env.agentPlayerID).isAlive()).toBe(true);
+    expect(env.game.player(env.agentPlayerID).numTilesOwned()).toBeGreaterThan(0);
     expect(env.game.inSpawnPhase()).toBe(false);
   });
 
@@ -143,8 +143,8 @@ describe("GameEnv", () => {
     const obs = await env.reset("gameenv-fresh-2");
 
     expect(obs.length).toBe(4);
-    expect(env.game.player("agent0").isAlive()).toBe(true);
-    expect(env.game.player("agent0").numTilesOwned()).toBeGreaterThan(0);
+    expect(env.game.player(env.agentPlayerID).isAlive()).toBe(true);
+    expect(env.game.player(env.agentPlayerID).numTilesOwned()).toBeGreaterThan(0);
     // A stale/reused game would still be sitting at ticksAfterStepping (or
     // beyond); a genuinely fresh one is back down near the post-spawn tick
     // count of a new episode.

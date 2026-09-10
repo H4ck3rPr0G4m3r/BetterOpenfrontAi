@@ -285,5 +285,28 @@ class TrainSmokeTest(unittest.TestCase):
             fake.stop()
 
 
+class ReplayEnvTest(unittest.TestCase):
+    def test_apply_replay_env_exports_and_clears(self):
+        import os
+        from train_ppo import apply_replay_env
+
+        os.environ.pop("OPENFRONT_REPLAY_DIR", None)
+        os.environ.pop("OPENFRONT_REPLAY_EVERY", None)
+        apply_replay_env({"run": {"replay": {"dir": "replays/x", "every": 50}}})
+        self.assertTrue(
+            os.environ["OPENFRONT_REPLAY_DIR"].endswith(os.path.join("replays", "x"))
+        )
+        self.assertEqual(os.environ["OPENFRONT_REPLAY_EVERY"], "50")
+        apply_replay_env({"run": {}})
+        self.assertNotIn("OPENFRONT_REPLAY_DIR", os.environ)
+        self.assertNotIn("OPENFRONT_REPLAY_EVERY", os.environ)
+
+    def test_apply_replay_env_rejects_bad_every(self):
+        from train_ppo import apply_replay_env
+
+        with self.assertRaises(ValueError):
+            apply_replay_env({"run": {"replay": {"dir": "replays/x", "every": 0}}})
+
+
 if __name__ == "__main__":
     unittest.main()

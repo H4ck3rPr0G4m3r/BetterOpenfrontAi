@@ -14,6 +14,7 @@ so a rising return built on a rising error rate cannot pass unnoticed.
 from __future__ import annotations
 
 import argparse
+import os
 import time
 from collections import Counter
 from pathlib import Path
@@ -78,6 +79,29 @@ def resolve_device(name: str) -> str:
     if name == "auto":
         return "cuda" if th.cuda.is_available() else "cpu"
     return name
+
+
+def apply_replay_env(cfg: dict, train_dir: Path | None = None) -> None:
+    """Export phase-8 replay recording into the environment for workers.
+
+    Node workers inherit os.environ on spawn, so this is the whole trigger
+    path and the bridge schema stays untouched. Relative dirs resolve under
+    train/. Absent config clears stale values instead of inheriting them.
+    """
+    replay = (cfg.get("run", {}) or {}).get("replay", None)
+    if not replay:
+        os.environ.pop("OPENFRONT_REPLAY_DIR", None)
+        os.environ.pop("OPENFRONT_REPLAY_EVERY", None)
+        return
+    root = Path(train_dir) if train_dir is not None else Path(__file__).resolve().parent
+    directory = Path(str(replay.get("dir", "replays")))
+    if not directory.is_absolute():
+        directory = root / directory
+    every = int(replay.get("every", 10000))
+    if every < 1:
+        raise ValueError(f"replay.every must be positive, got {every}")
+    os.environ["OPENFRONT_REPLAY_DIR"] = str(directory)
+    os.environ["OPENFRONT_REPLAY_EVERY"] = str(every)
 
 
 def build_vec(cfg: dict) -> SB3OpenFrontVec:
@@ -160,6 +184,7 @@ def main(argv: list[str] | None = None) -> dict:
     checkpoint_dir = Path(str(run.get("checkpoint_dir", "checkpoints/openfront_ppo")))
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     tb_log = run.get("tensorboard_log")
+    apply_replay_env(cfg)
 
     vec = build_vec(cfg)
     print(f"envs: {vec.num_envs}, obs: {vec.observation_space.shape}, device: {resolve_device(str(run.get('device', 'auto')))}")

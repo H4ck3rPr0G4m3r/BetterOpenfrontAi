@@ -18,7 +18,6 @@ import type { Action, EnvConfig } from "../src/types";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MAPS_DIR = path.join(__dirname, "../../OpenFrontIO/resources/maps");
-const AGENT_ID = "agent0";
 
 /**
  * Integration step-cost measurement (spec §2.2's budget, §5.4's masking, §10.4's
@@ -41,6 +40,7 @@ describe("StepCost", () => {
     const env = new GameEnv(config, encoder, codec, new Reward());
     // Scanned seed: survives spawn with open borders on clean maps.
     await env.reset("codec3-19");
+    const AGENT_ID = env.agentPlayerID;
 
     // Fixed-seed sampler, not Math.random: the timing gate must measure the
     // same action distribution every run, not luck into cheap ones.
