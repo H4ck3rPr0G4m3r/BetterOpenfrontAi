@@ -11,7 +11,12 @@ import {
   Quads,
   Trios,
 } from "../core/game/Game";
-import { PublicGameInfo, PublicGames } from "../core/Schemas";
+import {
+  GameRecord,
+  GameRecordSchema,
+  PublicGameInfo,
+  PublicGames,
+} from "../core/Schemas";
 import { getDesktopSessionState } from "./Auth";
 import "./components/IOSAddToHomeScreenBanner";
 import {
@@ -49,6 +54,9 @@ const SECONDARY_ACTION =
   "bg-surface hover:brightness-[1.08] active:brightness-[0.95] hover:scale-105 hover:shadow-[var(--shadow-action-card-hover)]";
 const DISABLED = "opacity-50 cursor-not-allowed pointer-events-none";
 
+/** Default address of the training control server (see train/control_server.py). */
+export const REPLAY_SERVER_URL = "http://127.0.0.1:8765";
+
 /**
  * Whether a multiplayer entry point should refuse to act. Exported for tests
  * and kept free of component state so the rule is checkable in isolation.
@@ -80,6 +88,66 @@ export function joinIsGateable(lobby: JoinLobbyEvent): boolean {
 }
 
 /**
+ * Parse a training-replay file into a validated game record. Pure so it is
+ * unit-testable without mounting the component; throws on anything that is
+ * not a record (bad JSON or schema mismatch).
+ */
+export function parseTrainingReplay(text: string): GameRecord {
+  let json: unknown;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    throw new Error("main.replay_invalid");
+  }
+  const parsed = GameRecordSchema.safeParse(json);
+  if (!parsed.success) {
+    throw new Error("main.replay_invalid");
+  }
+  return parsed.data;
+}
+
+/** One entry of the training server's replay index (see /api/replays). */
+export interface ReplayFileEntry {
+  name: string;
+  size: number;
+}
+
+/**
+ * List recorded episodes on a running training control server. Pure over
+ * fetch so tests stub the network; throws on unreachable servers and bad
+ * shapes alike, and the caller reports either as the missing-server note.
+ */
+export async function fetchReplayList(
+  baseUrl: string,
+): Promise<ReplayFileEntry[]> {
+  const res = await fetch(`${baseUrl}/api/replays`);
+  if (!res.ok) {
+    throw new Error(`replay index HTTP ${res.status}`);
+  }
+  const json: unknown = await res.json();
+  if (
+    typeof json !== "object" ||
+    json === null ||
+    !Array.isArray((json as { replays?: unknown }).replays)
+  ) {
+    throw new Error("bad replay index shape");
+  }
+  const entries = (json as { replays: unknown[] }).replays;
+  return entries.map((entry) => {
+    if (
+      typeof entry !== "object" ||
+      entry === null ||
+      typeof (entry as { name?: unknown }).name !== "string" ||
+      typeof (entry as { size?: unknown }).size !== "number"
+    ) {
+      throw new Error("bad replay index shape");
+    }
+    const typed = entry as { name: string; size: number };
+    return { name: typed.name, size: typed.size };
+  });
+}
+
+/**
  * The whole gate decision for one join, as a pure function so it is testable
  * without mounting Main's client. Main adds only the shell check and the
  * status-bar wiggle around it.
@@ -97,6 +165,10 @@ export function shouldBlockDesktopJoin(
 export class GameModeSelector extends LitElement {
   @state() private lobbies: PublicGames | null = null;
   @state() private inputValid: boolean = true;
+  @state() private replayError: string | null = null;
+  @state() private showReplayBrowser: boolean = false;
+  @state() private replayFiles: ReplayFileEntry[] | null = null;
+  @state() private replayLoading: boolean = false;
   @state() private desktopUpdateState: DesktopUpdateState | null = null;
   @state() private viewerTrusted: boolean = false;
   @state() private viewerSignedIn: boolean = false;
@@ -289,7 +361,20 @@ export class GameModeSelector extends LitElement {
             true,
           )}
         </div>
-
+        <div class="h-14 sm:col-span-2">
+          ${this.renderSmallActionCard(
+            translateText("main.watch_replay"),
+            this.openReplayBrowser,
+          )}
+        </div>
+        ${this.showReplayBrowser ? this.renderReplayBrowser() : nothing}
+        ${this.replayError
+          ? html`<p
+              class="sm:col-span-2 text-center text-sm font-medium text-red-400"
+            >
+              ${this.replayError}
+            </p>`
+          : nothing}
         ${heroSlot
           ? html`<div class="min-w-0 sm:col-start-1 sm:row-start-2">
               ${ffa
@@ -393,8 +478,146 @@ export class GameModeSelector extends LitElement {
     (document.querySelector("join-lobby-modal") as JoinLobbyModal)?.open();
   };
 
+  /**
+   * Training-replay watcher (phase 8 of the BetterOpenfrontAi track). The
+   * Watch Replay button opens a browser over the training server's replay
+   * folder, so recorded episodes load with one click instead of hunting
+   * for files. Replays simulate locally and need no session, so unlike
+   * the lobby buttons this is never update-gated (see joinIsGateable).
+   */
+  private openReplayBrowser = () => {
+    this.showReplayBrowser = !this.showReplayBrowser;
+    if (this.showReplayBrowser && this.replayFiles === null) {
+      void this.refreshReplayList();
+    }
+  };
+
+  private async refreshReplayList(): Promise<void> {
+    this.replayLoading = true;
+    this.replayError = null;
+    try {
+      this.replayFiles = await fetchReplayList(REPLAY_SERVER_URL);
+    } catch {
+      this.replayFiles = null;
+      this.replayError = translateText("main.replay_server_missing");
+    } finally {
+      this.replayLoading = false;
+    }
+  }
+
+  private joinWithRecord(record: GameRecord): void {
+    this.showReplayBrowser = false;
+    this.dispatchEvent(
+      new CustomEvent("join-lobby", {
+        detail: {
+          gameID: record.info.gameID,
+          gameRecord: record,
+          source: "private",
+        } as JoinLobbyEvent,
+        bubbles: true,
+        composed: true,
+      }),
+    );
+  }
+
+  private async loadReplayFromUrl(url: string): Promise<void> {
+    this.replayError = null;
+    let record: GameRecord;
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      record = parseTrainingReplay(await res.text());
+    } catch {
+      this.replayError = translateText("main.replay_invalid");
+      return;
+    }
+    this.joinWithRecord(record);
+  }
+
+  private openReplayFile = () => {
+    this.replayError = null;
+    const picker = document.createElement("input");
+    picker.type = "file";
+    picker.accept = ".json,application/json";
+    picker.onchange = async () => {
+      const file = picker.files?.[0];
+      if (!file) return;
+      let record: GameRecord;
+      try {
+        record = parseTrainingReplay(await file.text());
+      } catch {
+        this.replayError = translateText("main.replay_invalid");
+        return;
+      }
+      this.joinWithRecord(record);
+    };
+    picker.click();
+  };
+
   // Number of open hosted lobbies waiting in the browser; shown as a chip
   // on the Join button.
+  /**
+   * The training-replay browser: recorded episodes on the control server,
+   * newest last, one click to load. Falls back to a disk file when the
+   * server is not running.
+   */
+  private renderReplayBrowser() {
+    const files = this.replayFiles ?? [];
+    return html`
+      <div
+        class="sm:col-span-2 rounded-lg border border-white/10 bg-white/[0.04] p-3"
+      >
+        <div class="mb-2 flex items-center justify-between">
+          <span
+            class="text-sm font-bold uppercase tracking-widest text-white/70"
+            >${translateText("main.replay_title")}</span
+          >
+          <button
+            @click=${() => void this.refreshReplayList()}
+            class="rounded bg-white/10 px-2 py-0.5 text-xs font-bold uppercase tracking-wider text-white hover:bg-white/20"
+          >
+            ${translateText("main.replay_refresh")}
+          </button>
+        </div>
+        ${this.replayLoading
+          ? html`<p class="py-2 text-center text-sm text-white/50">…</p>`
+          : files.length === 0
+            ? html`<p class="py-2 text-center text-sm text-white/50">
+                ${translateText("main.replay_empty")}
+              </p>`
+            : html`<ul class="max-h-48 space-y-1 overflow-y-auto">
+                ${files.map(
+                  (file) =>
+                    html`<li>
+                      <button
+                        @click=${() =>
+                          void this.loadReplayFromUrl(
+                            `${REPLAY_SERVER_URL}/replays/${file.name
+                              .split("/")
+                              .map(encodeURIComponent)
+                              .join("/")}`,
+                          )}
+                        class="flex w-full items-center justify-between gap-2 rounded px-2 py-1.5 text-left text-sm text-white hover:bg-malibu-blue/15"
+                      >
+                        <span class="truncate font-mono text-xs"
+                          >${file.name}</span
+                        >
+                        <span class="shrink-0 text-xs text-white/50"
+                          >${Math.max(1, Math.round(file.size / 1024))} KB</span
+                        >
+                      </button>
+                    </li>`,
+                )}
+              </ul>`}
+        <button
+          @click=${this.openReplayFile}
+          class="mt-2 w-full rounded px-2 py-1.5 text-center text-xs font-bold uppercase tracking-wider text-white/70 hover:bg-white/10 hover:text-white"
+        >
+          ${translateText("main.replay_from_disk")}
+        </button>
+      </div>
+    `;
+  }
   /**
    * The heading over the upcoming column, and the way to the lobby browser now
    * that the Detailed View button is gone. Heading and link are one control:

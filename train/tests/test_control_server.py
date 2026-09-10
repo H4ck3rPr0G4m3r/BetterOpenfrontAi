@@ -229,6 +229,10 @@ def test_path_traversal_rejected(base_url):
     assert status == 400
     status, _ = _request("GET", f"{base_url}/api/metrics?tb_dir=../../env&run=x")
     assert status == 400
+    status, _ = _request("GET", f"{base_url}/api/replays?dir=../../env")
+    assert status == 400
+    status, _ = _request("GET", f"{base_url}/replays/../../env/package.json")
+    assert status in (400, 404)
     status, _ = _request(
         "POST", f"{base_url}/api/jobs/train", {"base": "../../env/package.json"}
     )
@@ -239,6 +243,36 @@ def test_path_traversal_rejected(base_url):
         {"model": "../../env/package.json", "base": "smoke.yaml"},
     )
     assert status == 400
+
+
+def test_replays_index_and_file(base_url):
+    import urllib.request
+
+    root = control_server.REPLAYS_DIR / "srv-replay-test"
+    root.mkdir(parents=True, exist_ok=True)
+    target = root / "ep0-seed-death.json"
+    try:
+        target.write_text('{"info": {}, "turns": []}', encoding="utf-8")
+        with urllib.request.urlopen(
+            f"{base_url}/api/replays?dir=replays/srv-replay-test", timeout=10
+        ) as res:
+            assert res.status == 200
+            assert res.headers.get("Access-Control-Allow-Origin") == "*"
+            data = json.loads(res.read().decode("utf-8"))
+        assert len(data["replays"]) == 1
+        entry = data["replays"][0]
+        assert entry["name"] == "ep0-seed-death.json"
+        assert entry["size"] > 0
+        with urllib.request.urlopen(
+            f"{base_url}/replays/srv-replay-test/ep0-seed-death.json", timeout=10
+        ) as res:
+            assert res.status == 200
+            assert res.headers.get("Access-Control-Allow-Origin") == "*"
+            assert json.loads(res.read().decode("utf-8")) == {"info": {}, "turns": []}
+        status, _ = _request("GET", f"{base_url}/replays/srv-replay-test/nope.json")
+        assert status == 404
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
 
 
 def test_override_whitelist_rejected(base_url, monkeypatch):

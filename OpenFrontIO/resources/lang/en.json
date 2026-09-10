@@ -1151,6 +1151,12 @@
     "news": "News",
     "play": "Play",
     "privacy_policy": "Privacy Policy",
+    "replay_empty": "No replays recorded yet.",
+    "replay_from_disk": "Load from disk…",
+    "replay_invalid": "That file is not a valid replay.",
+    "replay_refresh": "Refresh",
+    "replay_server_missing": "Training server not found — start it or load a file.",
+    "replay_title": "Training replays",
     "sign_in": "Sign in",
     "solo": "Solo",
     "store": "Store",
@@ -1158,6 +1164,7 @@
     "title": "OpenFront (ALPHA)",
     "troubleshooting": "Troubleshooting",
     "user_avatar_alt": "{username}'s avatar",
+    "watch_replay": "Watch Replay",
     "wiki": "Wiki"
   },
   "map": {
