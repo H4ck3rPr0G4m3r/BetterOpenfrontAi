@@ -94,6 +94,7 @@ def build_vec(cfg: dict) -> SB3OpenFrontVec:
         strict_illegal_actions=bool(env_cfg.get("strict_illegal_actions", True)),
         socket_timeout=float(env_cfg.get("socket_timeout", 180.0)),
         seeds=None,
+        parallel=bool(env_cfg.get("parallel_workers", True)),
         **behavior,
     )
     vec = SB3OpenFrontVec(inner)

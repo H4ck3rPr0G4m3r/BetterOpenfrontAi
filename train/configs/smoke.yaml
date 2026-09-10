@@ -10,6 +10,7 @@ env:
   envs_per_worker: 1
   strict_illegal_actions: true
   socket_timeout: 30.0
+  parallel_workers: true
   seed: 0
 
 behavior:
