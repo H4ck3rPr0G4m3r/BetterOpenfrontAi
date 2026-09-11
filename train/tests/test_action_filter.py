@@ -57,6 +57,16 @@ def test_preset_accepts_optional_kill_weight():
     assert "1.5,0.2,0.05,2.0,-2.0,1.0" in argv
 
 
+def test_preset_accepts_full_phase_weights():
+    weights = [1.0, 0.1, 0.1, 2.0, -2.0, 0.5, 2.0, 2.0, 0.5, 0.5, 0.3, 0.0002, 0.5]
+    preset = BehaviorPreset.from_dict({"name": "phased", "reward_weights": weights})
+    assert preset.reward_weights == tuple(weights)
+    argv = worker_argv(
+        WorkerConfig(num_envs=1, reward_weights=preset.reward_weights), 5001
+    )
+    assert ",".join(str(v) for v in weights) in argv
+
+
 def test_preset_build_names_match_engine_candidates():
     # The TypeScript side pins KNOWN_BUILD_TYPES to BUILD_CANDIDATE_TYPES;
     # this pins the Python copy to the same seven names.
@@ -112,3 +122,6 @@ def test_worker_argv_carries_behavior_flags():
     assert ["--disable-build", "Factory"] in [argv[i : i + 2] for i in range(len(argv))]
     assert "--reward-weights" in argv
     assert "2.0,0.0,0.0,5.0,-5.0" in argv
+    assert ["--nations", "default"] in [argv[i : i + 2] for i in range(len(argv))]
+    argv = worker_argv(WorkerConfig(num_envs=1, nations="disabled"), 5001)
+    assert ["--nations", "disabled"] in [argv[i : i + 2] for i in range(len(argv))]

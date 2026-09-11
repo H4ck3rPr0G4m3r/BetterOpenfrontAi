@@ -42,6 +42,10 @@ Profile one rollout step into sim milliseconds, encode milliseconds, mask millis
 
 Built ahead of the sweeps at user request rather than gated behind 3.1: a per elimination bonus on top of the existing terms. `Reward` snapshots living opponent IDs at init and pays `kill` for each one gone at the next step, counted exactly once. The agent's own death never counts. Default is 0, so old 5-value configs behave exactly as before; pass a 6th weight to opt in. The berserker preset now carries kill 1.0. Touched `Reward.ts`, `BehaviorConfig.ts`, worker CLI parsing, Python preset validation, both test suites. Bridge schema still version 1.
 
+### 3.5 Phased shaping, implemented 2026-09-10
+
+Per user request, one step further: the reward now runs three phases on the post-spawn tick clock (early to 900, mid to 3000, late after; ~1.5 and ~5 minutes at live cadence). Early prices land with `landEarly` and punishes losses extra with `landLoss`; mid pays `city`/`factory` structure deltas and `troopHold` movement toward keeping 30 percent of peak troops; late pays a tiny per-step `survive` trickle while alive plus `rich` movement toward affording a live-priced MIRV. Everything is a delta except the survival trickle, so episode length cannot mint return by idling. Weights grow to 13 in fixed order; 5- and 6-value configs still work, and `land` without `landEarly` keeps applying early so no old config changes meaning. New `phased` preset carries starter values. Verified live: a 2-episode eval on the full 13 finished with finite return.
+
 ## 4. Logging
 
 Every sweep run records the phase 6 set plus the new behavior stats: return, length, losses, entropy, steps per second wall clock with inference, terminal histogram with sim error and worker death visible, attack share, mean attack ratio bucket, build counts. The generated YAML beside each run stays the reproduction record.

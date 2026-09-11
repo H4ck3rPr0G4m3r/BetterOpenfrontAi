@@ -25,10 +25,26 @@ export interface RewardWeights {
   death: number;
   /** Bonus per eliminated opponent, counted in Reward between steps. */
   kill: number;
+  /** Land-delta coefficient during the early phase (instead of land). */
+  landEarly: number;
+  /** Extra multiplier on land LOSSES during the early phase. 1.0 keeps
+   *  gains and losses symmetric. */
+  landLoss: number;
+  /** Per structure built/lost (signed delta) during the mid phase. */
+  city: number;
+  factory: number;
+  /** Delta of the troop-hold fraction (troops vs 30% of peak) in mid. */
+  troopHold: number;
+  /** Per-step bonus while alive during the late phase. The only
+   *  length-variant term: keep it tiny, winning must pay more. */
+  survive: number;
+  /** Delta of min(gold / live MIRV price, 1) during the late phase. */
+  rich: number;
 }
 
-/** Phase-1 default shaping, unchanged unless explicitly overridden. Kill
- *  defaults to 0 so old 5-value configs behave exactly as before. */
+/** Phase-1 default shaping, unchanged unless explicitly overridden. Every
+ *  phase-7 weight defaults to neutral (0, or the matching base weight), so
+ *  old 5- and 6-value configs behave exactly as before. */
 export const DEFAULT_REWARD_WEIGHTS: RewardWeights = {
   land: 1.0,
   troop: 0.1,
@@ -36,6 +52,13 @@ export const DEFAULT_REWARD_WEIGHTS: RewardWeights = {
   win: 1,
   death: -1,
   kill: 0,
+  landEarly: 1.0,
+  landLoss: 1.0,
+  city: 0,
+  factory: 0,
+  troopHold: 0,
+  survive: 0,
+  rich: 0,
 };
 
 export interface BehaviorConfig {

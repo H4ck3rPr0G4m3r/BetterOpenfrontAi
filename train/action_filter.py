@@ -119,10 +119,11 @@ class BehaviorPreset:
         weights = raw.get("reward_weights", None)
         if weights is not None:
             weights = tuple(float(v) for v in weights)
-            if len(weights) not in (5, 6):
+            if len(weights) not in (5, 6, 13):
                 raise ValueError(
-                    "reward_weights needs 5 values: land,troop,gold,win,death "
-                    "plus an optional 6th per-kill bonus"
+                    "reward_weights needs 5 values: land,troop,gold,win,death, "
+                    "plus an optional 6th per-kill bonus, or the full 13 with "
+                    "landEarly,landLoss,city,factory,troopHold,survive,rich"
                 )
             for value in weights:
                 if not math.isfinite(value):
