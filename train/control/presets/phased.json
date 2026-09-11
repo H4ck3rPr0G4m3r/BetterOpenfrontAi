@@ -1,0 +1,11 @@
+{
+  "name": "phased",
+  "description": "Phase-shaped play: expand early, build mid, survive rich late. Starting values for sweeps, not tuned.",
+  "aggression": 65,
+  "min_attack_ratio": 2,
+  "disabled_intents": [],
+  "disabled_builds": [],
+  "reward_weights": [1.0, 0.1, 0.1, 2.0, -2.0, 0.5, 2.0, 2.0, 0.5, 0.5, 0.3, 0.0002, 0.5],
+  "env_overrides": {},
+  "ppo_overrides": {}
+}

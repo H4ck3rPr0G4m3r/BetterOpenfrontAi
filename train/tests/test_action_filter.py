@@ -41,7 +41,30 @@ def test_preset_validation():
     with pytest.raises(ValueError):
         BehaviorPreset.from_dict({"reward_weights": [1, 2, 3]})
     with pytest.raises(ValueError):
+        BehaviorPreset.from_dict({"reward_weights": [1, 2, 3, 4, 5, 6, 7]})
+    with pytest.raises(ValueError):
         BehaviorPreset.from_dict({"aggression": -1})
+
+
+def test_preset_accepts_optional_kill_weight():
+    preset = BehaviorPreset.from_dict(
+        {"name": "berserker", "reward_weights": [1.5, 0.2, 0.05, 2.0, -2.0, 1.0]}
+    )
+    assert preset.reward_weights == (1.5, 0.2, 0.05, 2.0, -2.0, 1.0)
+    argv = worker_argv(
+        WorkerConfig(num_envs=1, reward_weights=preset.reward_weights), 5001
+    )
+    assert "1.5,0.2,0.05,2.0,-2.0,1.0" in argv
+
+
+def test_preset_accepts_full_phase_weights():
+    weights = [1.0, 0.1, 0.1, 2.0, -2.0, 0.5, 2.0, 2.0, 0.5, 0.5, 0.3, 0.0002, 0.5]
+    preset = BehaviorPreset.from_dict({"name": "phased", "reward_weights": weights})
+    assert preset.reward_weights == tuple(weights)
+    argv = worker_argv(
+        WorkerConfig(num_envs=1, reward_weights=preset.reward_weights), 5001
+    )
+    assert ",".join(str(v) for v in weights) in argv
 
 
 def test_preset_build_names_match_engine_candidates():
@@ -99,3 +122,6 @@ def test_worker_argv_carries_behavior_flags():
     assert ["--disable-build", "Factory"] in [argv[i : i + 2] for i in range(len(argv))]
     assert "--reward-weights" in argv
     assert "2.0,0.0,0.0,5.0,-5.0" in argv
+    assert ["--nations", "default"] in [argv[i : i + 2] for i in range(len(argv))]
+    argv = worker_argv(WorkerConfig(num_envs=1, nations="disabled"), 5001)
+    assert ["--nations", "disabled"] in [argv[i : i + 2] for i in range(len(argv))]

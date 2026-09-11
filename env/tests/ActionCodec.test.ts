@@ -22,6 +22,7 @@ import {
   SlotField,
 } from "../src/ObservationEncoder";
 import { TROOP_SCALE } from "../src/Reward";
+import { TurnFeeder } from "../src/TurnFeeder";
 import { assignTargetSlots, borderingSmallIDs } from "../src/TargetSlots";
 import type { Action, MaskBuffers } from "../src/types";
 import { AGENT_ID, buildPostSpawnGame, buildWorldGame } from "./helpers/buildWorldGame";
@@ -204,6 +205,85 @@ describe("ActionCodec decode", () => {
     expect(intent.troops).toBeCloseTo(troopsBefore * RATIO_BUCKETS[4], 6);
   });
 
+  it("stamps every decoded intent with the agent's clientID", async () => {
+    // Regression guard for the dropped-action defect: the engine resolves
+    // each intent's acting player through playerByClientID, so an intent
+    // without a clientID resolves to nobody and silently becomes a noop.
+    // Every policy action trained before this line existed was dropped.
+    const { game } = await buildPostSpawnGame("codec3-0");
+    for (const action of [
+      baseAction({ intentType: IntentType.Attack, target: 0 }),
+      baseAction({ intentType: IntentType.TargetPlayer, target: 0 }),
+    ]) {
+      const intents = codec.decode(action, game, AGENT_ID);
+      for (const intent of intents) {
+        expect((intent as { clientID?: unknown }).clientID).toBe("client0");
+      }
+    }
+  });
+
+  it("executes a decoded attack: tiles actually grow", async () => {    // End-to-end proof the stamped intent resolves: feed it through the
+    // real runner and watch territory expand. Pre-stamp this silently
+    // no-op'd and tiles never moved.
+    const { game, runner } = await buildPostSpawnGame("codec3-exec");
+    const before = game.player(AGENT_ID).numTilesOwned();
+    const intents = codec.decode(
+      baseAction({ intentType: IntentType.Attack, target: 0 }),
+      game,
+      AGENT_ID,
+    );
+    expect(intents.length).toBe(1);
+    const feeder = new TurnFeeder(runner);
+    // Conquest takes a while (troops must march); poll until the frontier
+    // moves, well past any single-tick timing. Pre-stamp this silently
+    // no-op'd and tiles never moved at any horizon.
+    let grown = game.player(AGENT_ID).numTilesOwned();
+    for (let i = 0; i < 20 && grown <= before; i++) {
+      feeder.step(10, intents as never);
+      grown = game.player(AGENT_ID).numTilesOwned();
+    }
+    expect(grown).toBeGreaterThan(before);
+  });
+
+  it("resolves sampled open intents instead of voiding them", async () => {
+    // Regression guard for the passive-bot defect: the target head is
+    // occupancy-marginal, so sampled attack/donate/break combos usually
+    // named the wrong slot and decoded to [], teaching the policy that
+    // only diplomacy does anything. Fallback retargeting must hold the
+    // void rate at zero for every intent whose mask guarantees a target.
+    const { game, runner } = await buildPostSpawnGame("void-probe-1");
+    const feeder = new TurnFeeder(runner);
+    let rngState = 0x12345678;
+    const rand = (): number => {
+      rngState = (Math.imul(rngState, 1664525) + 1013904223) | 0;
+      return (rngState >>> 0) / 4294967296;
+    };
+    const voids: Record<number, number> = {};
+    for (let step = 0; step < 200; step++) {
+      const masks = createMaskBuffers();
+      codec.masks(game, AGENT_ID, masks);
+      const pick = (mask: Uint8Array, size: number): number => {
+        const open: number[] = [];
+        for (let i = 0; i < size; i++) if (mask[i] === 1) open.push(i);
+        return open.length > 0 ? open[Math.floor(rand() * open.length)] : 0;
+      };
+      const action: Action = {
+        intentType: pick(masks.intentType, NUM_INTENT_TYPES),
+        target: pick(masks.target, NUM_TARGET_SLOTS),
+        ratioBucket: pick(masks.ratioBucket, NUM_RATIO_BUCKETS),
+        spatialCell: pick(masks.spatialCell, NUM_SPATIAL_CELLS),
+        buildSite: pick(masks.buildSite, MAX_BUILD_SITES),
+      };
+      const intents = codec.decode(action, game, AGENT_ID);
+      if (intents.length === 0 && action.intentType !== IntentType.Noop) {
+        voids[action.intentType] = (voids[action.intentType] ?? 0) + 1;
+      }
+      feeder.step(10, intents as never);
+      if (!game.player(AGENT_ID).isAlive()) break;
+    }
+    expect(voids).toEqual({});
+  });
+
   it("decodes a player-targeted attack to the slotted player's id", async () => {
     // This seed was scanned for a bordering attackable player at fixture
     // end; most early-game seeds border only unowned land so far.
@@ -233,8 +313,15 @@ describe("ActionCodec decode", () => {
     const slots = assignTargetSlots(game, agent, borderingSmallIDs(game, agent));
     const occupied = slots.findIndex((p) => p !== null);
 
-    // Slot 0 is terra nullius: no player-directed intent applies to it.
-    expect(codec.decode(baseAction({ intentType: IntentType.TargetPlayer, target: 0 }), game, AGENT_ID)).toEqual([]);
+    // Slot 0 is terra nullius: targetPlayer retargets to a real player
+    // through fallback (or voids if nobody is targetable).
+    const retargeted = codec.decode(baseAction({ intentType: IntentType.TargetPlayer, target: 0 }), game, AGENT_ID);
+    expect(retargeted.length).toBeLessThanOrEqual(1);
+    if (retargeted.length === 1) {
+      const intent = retargeted[0] as { type: string; target: string };
+      expect(intent.type).toBe("targetPlayer");
+      expect(game.player(intent.target).isAlive()).toBe(true);
+    }
     // Fresh game: no allies, no pending requests, no structures, no attacks.
     expect(
       codec.decode(baseAction({ intentType: IntentType.BreakAlliance, target: occupied }), game, AGENT_ID),
@@ -272,7 +359,7 @@ describe("ActionCodec decode", () => {
       game,
       AGENT_ID,
     );
-    expect(request).toEqual([{ type: "allianceRequest", recipient: slots[slot]!.id() }]);
+    expect(request).toEqual([{ type: "allianceRequest", recipient: slots[slot]!.id(), clientID: "client0" }]);
 
     const embargo = codec.decode(
       baseAction({ intentType: IntentType.Embargo, target: slot }),
@@ -280,7 +367,7 @@ describe("ActionCodec decode", () => {
       AGENT_ID,
     );
     // No embargo yet against a fresh counterpart: the codec opens with start.
-    expect(embargo).toEqual([{ type: "embargo", targetID: slots[slot]!.id(), action: "start" }]);
+    expect(embargo).toEqual([{ type: "embargo", targetID: slots[slot]!.id(), action: "start", clientID: "client0" }]);
   });
 
   it("builds with bonus gold and the engine accepts the intent", async () => {

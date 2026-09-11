@@ -14,6 +14,7 @@ so a rising return built on a rising error rate cannot pass unnoticed.
 from __future__ import annotations
 
 import argparse
+import os
 import time
 from collections import Counter
 from pathlib import Path
@@ -80,6 +81,46 @@ def resolve_device(name: str) -> str:
     return name
 
 
+def apply_replay_env(cfg: dict, train_dir: Path | None = None) -> None:
+    """Export phase-8 replay recording into the environment for workers.
+
+    Node workers inherit os.environ on spawn, so this is the whole trigger
+    path and the bridge schema stays untouched. Relative dirs resolve under
+    train/. Absent config clears stale values instead of inheriting them.
+    """
+    replay = (cfg.get("run", {}) or {}).get("replay", None)
+    if not replay:
+        os.environ.pop("OPENFRONT_REPLAY_DIR", None)
+        os.environ.pop("OPENFRONT_REPLAY_EVERY", None)
+        return
+    root = Path(train_dir) if train_dir is not None else Path(__file__).resolve().parent
+    directory = Path(str(replay.get("dir", "replays")))
+    if not directory.is_absolute():
+        directory = root / directory
+    every = int(replay.get("every", 10000))
+    if every < 1:
+        raise ValueError(f"replay.every must be positive, got {every}")
+    os.environ["OPENFRONT_REPLAY_DIR"] = str(directory)
+    os.environ["OPENFRONT_REPLAY_EVERY"] = str(every)
+
+
+def build_or_resume(
+    vec: SB3OpenFrontVec, cfg: dict, tensorboard_log: str | None, resume: str | None
+):
+    """Fresh model or a continued one. Resume keeps policy, value, and
+    normalization statistics; the rollout buffer restarts empty, which is
+    exact for on-policy PPO. No reward or env change across the seam."""
+    if resume is None:
+        return build_model(vec, cfg, tensorboard_log), False
+    model = MaskablePPO.load(
+        resume,
+        env=vec,
+        device=resolve_device(str(cfg["run"].get("device", "auto"))),
+        tensorboard_log=tensorboard_log,
+    )
+    return model, True
+
+
 def build_vec(cfg: dict) -> SB3OpenFrontVec:
     env_cfg = cfg["env"]
     behavior = behavior_from_config(cfg)
@@ -88,6 +129,7 @@ def build_vec(cfg: dict) -> SB3OpenFrontVec:
         envs_per_worker=int(env_cfg.get("envs_per_worker", 1)),
         map=str(env_cfg.get("map", "World")),
         bots=int(env_cfg.get("bots", 20)),
+        nations=str(env_cfg.get("nations", "default")),
         ticks_per_step=int(env_cfg.get("ticks_per_step", 10)),
         tick_cap=int(env_cfg.get("tick_cap", 6000)),
         maps_dir=env_cfg.get("maps_dir"),
@@ -149,6 +191,11 @@ def main(argv: list[str] | None = None) -> dict:
     parser.add_argument("--total-timesteps", type=int, default=None)
     parser.add_argument("--run-name", default=None)
     parser.add_argument("--device", default=None)
+    parser.add_argument(
+        "--resume",
+        default=None,
+        help="checkpoint .zip to continue training from (same env and reward)",
+    )
     args = parser.parse_args(argv)
 
     cfg = load_config(args.config)
@@ -160,10 +207,12 @@ def main(argv: list[str] | None = None) -> dict:
     checkpoint_dir = Path(str(run.get("checkpoint_dir", "checkpoints/openfront_ppo")))
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     tb_log = run.get("tensorboard_log")
+    apply_replay_env(cfg)
 
     vec = build_vec(cfg)
     print(f"envs: {vec.num_envs}, obs: {vec.observation_space.shape}, device: {resolve_device(str(run.get('device', 'auto')))}")
-    model = build_model(vec, cfg, tb_log)
+    model, resumed = build_or_resume(vec, cfg, tb_log, args.resume)
+    print(f"resumed from {args.resume}" if resumed else "fresh model")
     terminal_cb = TerminalCounterCallback()
     checkpoint_cb = CheckpointCallback(
         save_freq=max(int(run.get("checkpoint_freq", 50000)) // vec.num_envs, 1),

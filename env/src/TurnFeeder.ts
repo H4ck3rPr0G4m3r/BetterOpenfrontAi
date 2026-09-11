@@ -22,6 +22,10 @@ export interface TurnFeederResult {
  */
 export class TurnFeeder {
   private turnNumber = 0;
+  /** Every turn fed this episode, in order, including the spawn phase.
+   *  A fresh feeder is built per reset, so this is always one episode.
+   *  Read by the phase-8 replay writer; never mutated outside this class. */
+  readonly turns: Turn[] = [];
 
   constructor(private readonly runner: GameRunner) {}
 
@@ -33,10 +37,12 @@ export class TurnFeeder {
     let ticksExecuted = 0;
     for (let i = 0; i < ticksPerStep; i++) {
       const isLastTick = i === ticksPerStep - 1;
-      this.runner.addTurn({
+      const turn: Turn = {
         turnNumber: this.turnNumber++,
         intents: isLastTick ? intents : [],
-      });
+      };
+      this.runner.addTurn(turn);
+      this.turns.push(turn);
       const ok = this.runner.executeNextTick();
       if (!ok) {
         return { ok: false, ticksExecuted };

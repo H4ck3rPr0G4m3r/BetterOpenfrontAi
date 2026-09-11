@@ -96,3 +96,22 @@ python train_ppo.py --config configs/default.yaml
 ```
 
 Pass gates: measured wall clock throughput within 30 percent of the phase 1 estimate of 650 to 850 steps per second after inference, zero worker kills attributed to trainer bugs, sim error and worker death rates visible in the terminal histogram next to return. On pass, close this section with the measured numbers. On fail, the failure owns a new work item, not a quiet retry.
+
+## 11. Closeout: 1M run skipped, superseded by 100k shakedown
+
+Closed by decision 2026-09-10, not by running the 1M. A 100k shakedown (`ppo_100k_shakedown`, 16 envs, default weights, run artifacts pulled into `train/checkpoints/openfront_ppo/ppo_100k_shakedown_final.zip` and `train/runs/openfront_ppo/ppo_100k_shakedown_1/`) gave the answer the 1M run was meant to give, plus a reason not to run it.
+
+Measured over 100,352 steps and roughly 600 episodes:
+
+* Throughput in that run held 34 to 37 env steps per second total wall clock with inference. That figure predates parallel worker stepping: the run stepped workers sequentially, and PR 5 (parallel stepping plus encoder static terrain cache) landed after it with an expected rate near 130 on the same shape. Verified 2026-09-10: one 2048-step rollout at the full 16-env default shape (8 workers by 2, World, 20 bots, CUDA inference) ran 2048 steps in 15.0s for 137 steps per second, SB3 fps 146. Same rollout also reproduced the shakedown opening exactly (return -0.907, length 74.8, 10 of 10 deaths), which is a nice determinism check on seed 0. The 1M skip stands on the reward finding alone: at either rate it buys hours of a policy that is not learning.
+* Stability held. Zero sim errors and zero worker deaths over the full run. The phase 1 hardening does its job at 16 env scale.
+* Learning did not. Mean episode return sat at -0.91 to -0.85 for the whole run, win rate exactly 0, death 90 to 100 percent of terminals with the rest tick cap. Episode length grew from 75 to about 170, value loss fell from 0.52 to about 0.015 with explained variance near 0.5, entropy drifted down slowly, clip fraction stayed near 0.3 with approx KL near 0.05. The agent learned to survive longer and to predict its own death, not to win. The minus 1 death terminal dominates and the land, troop, and gold deltas give no usable gradient toward winning.
+* Checkpoint integrity held. The final checkpoint loads and produces reload identical greedy actions.
+
+## 12. Correction (2026-09-10): the 100k trained disconnected
+
+The phase-8 replay investigation found that `ActionCodec.decode()` never stamped `clientID` on intents, so the engine dropped every policy action as a noop. Only the hand-written spawn intent ever acted. The worker logs said so all along (`player with clientID undefined not found`). The fix stamps the agent's clientID in `decode()` with regression tests.
+
+This voids the learning conclusions above, not the stability or throughput ones. Return flat at -0.9, zero wins, length doubling: that is the trajectory of a passive agent plus selection noise, not a policy failing to learn. Evidence: the first eval with stamped intents, on the same 100k checkpoint, survived to tick cap with positive return. Do not tune against 100k curves. Phase 7's first job is now a fresh baseline with connected actions, then sweeps.
+
+Criterion 4 is therefore closed as superseded rather than passed. Its throughput question moves to phase 7 as a triage item, and the reward finding sets the phase 7 order: tune shaping on short runs before any long run.

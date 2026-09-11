@@ -316,6 +316,24 @@ export class ActionCodecImpl implements ActionCodec {
     const ctx = buildContext(game, playerID);
     // The episode is over; nothing below can legally progress it.
     if (!ctx.agent.isAlive()) return [];
+    const intents = this.decodeInner(action, ctx);
+    // Identity stamping: the engine resolves every intent's acting player
+    // through playerByClientID (ExecutionManager.createExec). An intent
+    // without a clientID resolves to nobody and silently becomes a noop —
+    // every action the policy ever took was dropped this way before this
+    // line existed (see phase-8 replay investigation). A human seat always
+    // carries one; anything else is a caller bug, fail fast.
+    const clientID = ctx.agent.clientID();
+    if (clientID === null) {
+      throw new Error("decode() needs a seated human player with a clientID");
+    }
+    return intents.map((intent) => ({ ...intent, clientID }));
+  }
+
+  private decodeInner(
+    action: Action,
+    ctx: CodecContext,
+  ): Intent[] {
     const ratio = RATIO_BUCKETS[action.ratioBucket];
 
     switch (action.intentType) {
@@ -353,20 +371,26 @@ export class ActionCodecImpl implements ActionCodec {
   private decodeAttack(ctx: CodecContext, action: Action, ratio: number): Intent[] {
     const troops = ratio * ctx.agent.troops();
     if (troops <= 0) return [];
+    const strike = (targetID: string | null): Intent[] =>
+      [{ type: "attack", targetID, troops } as Intent];
     if (action.target === 0) {
       // Terra nullius: expand into adjacent unowned land (spec §2.4/§2.7).
       if (!ctx.bordering.has(0)) return [];
-      return [{ type: "attack", targetID: null, troops } as Intent];
+      return strike(null);
     }
-    const raw = ctx.slots[action.target];
-    if (raw === null) return [];
-    const target = slotPlayer(ctx.slots, ctx.agentID, ctx.game, action.target);
-    if (target === null) return [];
-    // Guarded here, not just in the mask: attacking an ally still embargoes
-    // them and rejects alliance requests before the execution deactivates.
-    if (!ctx.agent.canAttackPlayer(target)) return [];
-    if (!ctx.agent.sharesBorderWith(target)) return [];
-    return [{ type: "attack", targetID: target.id(), troops } as Intent];
+    // Fallback retarget: the target head is shared across intents, so the
+    // sampled slot is often wrong for attacks specifically (86% of sampled
+    // attacks voided pre-fallback). Prefer the requested slot, then the
+    // first attackable one in slot order, then expansion. Guarded here, not
+    // just in the mask: attacking an ally still embargoes them and rejects
+    // alliance requests before the execution stands down, so allies never
+    // fire — canAttackPlayer excludes them from candidates too.
+    const attackable = (t: Player): boolean =>
+      ctx.agent.canAttackPlayer(t) && ctx.agent.sharesBorderWith(t);
+    const target = this.resolveTarget(ctx, action, attackable);
+    if (target !== null) return strike(target.id());
+    if (ctx.bordering.has(0)) return strike(null);
+    return [];
   }
 
   private decodeBoat(ctx: CodecContext, action: Action, ratio: number): Intent[] {
@@ -426,10 +450,36 @@ export class ActionCodecImpl implements ActionCodec {
     return [{ type: "move_warship", unitIds: ids, tile: dst } as Intent];
   }
 
+  /**
+   * Shared-slot fallback: the target head is occupancy-marginal across
+   * intents, so the sampled slot is often invalid for the sampled intent
+   * (86% of sampled attacks voided pre-fallback). Prefer the requested
+   * slot, then the first valid one in slot order. A sampled open intent
+   * therefore fires whenever ANY valid target exists — which the intent
+   * marginals already guarantee for break/reject/donate/request.
+   */
+  private resolveTarget(
+    ctx: CodecContext,
+    action: Action,
+    isValid: (target: Player) => boolean,
+  ): Player | null {
+    const direct = slotPlayer(ctx.slots, ctx.agentID, ctx.game, action.target);
+    if (direct !== null && isValid(direct)) return direct;
+    for (let i = 1; i < ctx.slots.length; i++) {
+      if (i === action.target) continue;
+      const candidate = slotPlayer(ctx.slots, ctx.agentID, ctx.game, i);
+      if (candidate !== null && isValid(candidate)) return candidate;
+    }
+    return null;
+  }
+
   private decodeTargetPlayer(ctx: CodecContext, action: Action): Intent[] {
-    if (ctx.slots[action.target] === null) return [];
-    const target = slotPlayer(ctx.slots, ctx.agentID, ctx.game, action.target);
-    if (target === null || !ctx.agent.canTarget(target)) return [];
+    const target = this.resolveTarget(
+      ctx,
+      action,
+      (t) => ctx.agent.canTarget(t),
+    );
+    if (target === null) return [];
     return [{ type: "targetPlayer", target: target.id() } as Intent];
   }
 
@@ -439,9 +489,35 @@ export class ActionCodecImpl implements ActionCodec {
     kind: "allianceRequest" | "allianceReject" | "breakAlliance" | "embargo" | "donateGold" | "donateTroops",
     ratio?: number,
   ): Intent[] {
-    const raw = ctx.slots[action.target];
-    if (raw === null) return [];
-    const target = slotPlayer(ctx.slots, ctx.agentID, ctx.game, action.target);
+    const valid = (target: Player): boolean => {
+      switch (kind) {
+        case "allianceRequest":
+          return ctx.agent.canSendAllianceRequest(target);
+        case "allianceReject":
+          return ctx.agent
+            .incomingAllianceRequests()
+            .some((r) => r.requestor() === target);
+        case "breakAlliance":
+          return ctx.agent.allianceWith(target) !== null;
+        case "embargo":
+          return true;
+        case "donateGold":
+          return (
+            ctx.agent.canDonateGold(target) &&
+            goldFraction(ctx.agent.gold(), ratio ?? 0) > 0n
+          );
+        case "donateTroops":
+          return (
+            ctx.agent.canDonateTroops(target) &&
+            (ratio ?? 0) * ctx.agent.troops() > 0
+          );
+      }
+    };
+    // Every slot-taking intent resolves through fallback: a sampled open
+    // intent fires whenever ANY valid target exists. Embargo included: it
+    // toggles on any occupied slot, and firing on a live target beats
+    // voiding when the named slot went stale.
+    const target = this.resolveTarget(ctx, action, valid);
     if (target === null) return [];
     switch (kind) {
       case "allianceRequest":
@@ -485,8 +561,11 @@ export class ActionCodecImpl implements ActionCodec {
   /**
    * Per-head legality masks. Each head is marginal — a value is unmasked when
    * SOME combination using it is legal — because masks() cannot see the other
-   * heads' selections. decode() re-validates the actual combination and drops
-   * illegal ones as [].
+   * heads' selections. decode() re-validates the actual combination and
+   * retargets it onto the first legal target in slot order (falling back to
+   * expansion for attacks); only a combination with no legal target anywhere
+   * voids as []. An open intent therefore fires on nearly every step, which
+   * is what keeps the policy's actions connected to consequences.
    */
   masks(game: Game, playerID: PlayerID, out: MaskBuffers): void {
     checkMaskBuffers(out);

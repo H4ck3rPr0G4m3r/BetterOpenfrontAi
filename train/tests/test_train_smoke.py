@@ -222,6 +222,27 @@ class TrainSmokeTest(unittest.TestCase):
         finally:
             fake.stop()
 
+    def test_resume_continues_from_checkpoint(self):
+        from train_ppo import build_or_resume, load_config
+
+        cfg = load_config("configs/smoke.yaml")
+        fake = FakeWorker(num_envs=1, obs_size=OBSERVATION_SIZE)
+        fake.start()
+        try:
+            inner = OpenFrontVecEnv(1, 1, worker_factory=factory_for([fake], 1))
+            vec = SB3OpenFrontVec(inner)
+            model = self._make_model(vec)
+            model.learn(total_timesteps=8)
+            with tempfile.TemporaryDirectory() as tmp:
+                model.save(f"{tmp}/part")
+                resumed, flag = build_or_resume(vec, cfg, None, f"{tmp}/part.zip")
+                self.assertTrue(flag)
+                resumed.learn(total_timesteps=16)
+                self.assertEqual(resumed.num_timesteps, 16)
+            vec.close()
+        finally:
+            fake.stop()
+
     def test_checkpoint_round_trips_identical_actions(self):
         from sb3_contrib import MaskablePPO
 
@@ -283,6 +304,29 @@ class TrainSmokeTest(unittest.TestCase):
             vec.close()
         finally:
             fake.stop()
+
+
+class ReplayEnvTest(unittest.TestCase):
+    def test_apply_replay_env_exports_and_clears(self):
+        import os
+        from train_ppo import apply_replay_env
+
+        os.environ.pop("OPENFRONT_REPLAY_DIR", None)
+        os.environ.pop("OPENFRONT_REPLAY_EVERY", None)
+        apply_replay_env({"run": {"replay": {"dir": "replays/x", "every": 50}}})
+        self.assertTrue(
+            os.environ["OPENFRONT_REPLAY_DIR"].endswith(os.path.join("replays", "x"))
+        )
+        self.assertEqual(os.environ["OPENFRONT_REPLAY_EVERY"], "50")
+        apply_replay_env({"run": {}})
+        self.assertNotIn("OPENFRONT_REPLAY_DIR", os.environ)
+        self.assertNotIn("OPENFRONT_REPLAY_EVERY", os.environ)
+
+    def test_apply_replay_env_rejects_bad_every(self):
+        from train_ppo import apply_replay_env
+
+        with self.assertRaises(ValueError):
+            apply_replay_env({"run": {"replay": {"dir": "replays/x", "every": 0}}})
 
 
 if __name__ == "__main__":

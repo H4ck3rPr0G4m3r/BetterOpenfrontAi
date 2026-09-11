@@ -13,6 +13,7 @@ import {
   ErrorUpdate,
   GameUpdateType,
   GameUpdateViewData,
+  HashUpdate,
 } from "../../OpenFrontIO/src/core/game/GameUpdates";
 import { createGame } from "../../OpenFrontIO/src/core/game/GameImpl";
 import { createNationsForGame } from "../../OpenFrontIO/src/core/game/NationCreation";
@@ -22,6 +23,12 @@ import { PseudoRandom } from "../../OpenFrontIO/src/core/PseudoRandom";
 import { GameConfig, GameStartInfo } from "../../OpenFrontIO/src/core/Schemas";
 import { simpleHash } from "../../OpenFrontIO/src/core/Util";
 import { Reward, TerminalReason } from "./Reward";
+import {
+  buildGameRecord,
+  replayGameID,
+  shouldRecordReplay,
+  writeReplayFile,
+} from "./Replay";
 import { TurnFeeder } from "./TurnFeeder";
 import { createMaskBuffers } from "./ActionCodec";
 import {
@@ -34,9 +41,10 @@ import {
   StepResult,
 } from "./types";
 
-const AGENT_ID: PlayerID = "agent0";
 const AGENT_CLIENT_ID = "client0";
-
+/** Pre-reset placeholder; reset() replaces it with the first draw of the
+ *  episode stream (see below). */
+const UNSEATED_AGENT_ID: PlayerID = "agent0";
 /**
  * Owns one episode's lifecycle (spec §5.1). Constructed the way
  * FullGamePerf.ts constructs its game — real Config, production map via
@@ -60,6 +68,28 @@ export class GameEnv {
   private ticksAtSpawnEnd = 0;
   private lastSeed = "";
   private readonly reward: Reward;
+  /** Phase-8 replay bookkeeping: when the episode started, the config it
+   *  runs, and how many episodes have completed (recording cadence counts
+   *  completions, so an unconcluded boot reset never consumes a slot). */
+  private episodesCompleted = 0;
+  private replayStart = 0;
+  private lastGameConfig: GameConfig | undefined;
+  /** State hashes by tick, collected from HashUpdates for replay records. */
+  private replayHashes = new Map<number, number>();
+  /**
+   * This episode's agent player ID. Drawn as the first value of the episode
+   * stream — mirroring tests/replay/ReplayGame.ts, which draws the human ID
+   * before nations — so a recorded episode replays with identical IDs and
+   * identical state hashes. The string ID never affects behavior (the sim
+   * keys on smallIDs and clientIDs), only the hash, but parity there is the
+   * whole point of a verifiable replay.
+   */
+  private agentID: PlayerID = UNSEATED_AGENT_ID;
+
+  /** This episode's agent player ID. Valid after reset(). */
+  get agentPlayerID(): PlayerID {
+    return this.agentID;
+  }
 
   constructor(
     private readonly config: EnvConfig,
@@ -82,7 +112,7 @@ export class GameEnv {
       gameMode: GameMode.FFA,
       gameType: GameType.Public,
       difficulty: Difficulty.Medium,
-      nations: "default",
+      nations: this.config.nations ?? "default",
       donateGold: false,
       donateTroops: false,
       bots: this.config.bots,
@@ -91,8 +121,14 @@ export class GameEnv {
       instantBuild: false,
       randomSpawn: false,
     };
+    this.lastGameConfig = gameConfig;
+    this.replayStart = Date.now();
     const gameStart: GameStartInfo = {
-      gameID: seed,
+      // Phase-8 replay fidelity: the replay harness rederives everything
+      // from the RECORD's game ID (seeded nations, executor, bot spawns),
+      // so training must derive from it too. Same seed still means same
+      // game; the derivation just moved one hash earlier.
+      gameID: replayGameID(seed),
       lobbyCreatedAt: 0,
       config: gameConfig,
       players: [],
@@ -107,7 +143,13 @@ export class GameEnv {
       gameConfig.gameMapSize,
       this.config.mapsDir,
     );
-    const random = new PseudoRandom(simpleHash(seed));
+    const random = new PseudoRandom(simpleHash(gameStart.gameID));
+    // First draw seats the agent (see agentID). This mirrors
+    // tests/replay/ReplayGame.ts exactly — human ID, then nations — so a
+    // recorded episode replays with identical IDs and hashes. (numHumans
+    // stays 0: the count is unused on the FFA full-size branch both sides
+    // run; HvN would need parity.)
+    this.agentID = random.nextID();
     const nations = createNationsForGame(
       gameStart,
       terrain.nations,
@@ -120,7 +162,7 @@ export class GameEnv {
       "RLAgent",
       PlayerType.Human,
       AGENT_CLIENT_ID,
-      AGENT_ID,
+      this.agentID,
     );
     const game = createGame(
       [human],
@@ -133,18 +175,22 @@ export class GameEnv {
 
     this.runner = new GameRunner(
       game,
-      new Executor(game, seed, undefined),
+      new Executor(game, gameStart.gameID, undefined),
       (gu: GameUpdateViewData | ErrorUpdate) => this.onGameUpdate(gu),
     );
     this.runner.init();
     this.feeder = new TurnFeeder(this.runner);
+    this.replayHashes = new Map();
 
-    const spawnTile = this.pickSpawnTile(random);
+    // Spawn sampling runs on its own stream: the spawn tile is recorded in
+    // the turns, so replay never resamples it.
+    const spawnRandom = new PseudoRandom(simpleHash(`${seed}:spawn`));
+    const spawnTile = this.pickSpawnTile(spawnRandom);
     if (spawnTile < 0) {
       throw new Error("reset(): no free land tile found for agent spawn");
     }
     this.feeder.step(1, [
-      { clientID: AGENT_CLIENT_ID, playerID: AGENT_ID, type: "spawn", tile: spawnTile },
+      { clientID: AGENT_CLIENT_ID, playerID: this.agentID, type: "spawn", tile: spawnTile },
     ] as any);
     while (this.runner.game.inSpawnPhase()) {
       this.assertNoFatalError();
@@ -153,7 +199,7 @@ export class GameEnv {
     this.assertNoFatalError();
 
     this.ticksAtSpawnEnd = this.runner.game.ticks();
-    this.reward.init(this.runner.game, AGENT_ID);
+    this.reward.init(this.runner.game, this.agentID);
 
     return this.encodeObservation();
   }
@@ -176,15 +222,16 @@ export class GameEnv {
     // in-range heads (illegal combinations decode to []), so a throw here is
     // a caller bug (out-of-range head), not a simulation failure, and must
     // keep failing fast rather than masquerading as sim_error.
-    const intents = this.codec.decode(action, this.runner.game, AGENT_ID);
+    const intents = this.codec.decode(action, this.runner.game, this.agentID);
     try {
       const result = this.feeder.step(this.config.ticksPerStep, intents as any);
 
       const terminal = this.computeTerminal(result.ok);
       const obs = this.encodeObservation();
-      const reward = this.reward.step(this.runner.game, AGENT_ID, terminal);
+      const reward = this.reward.step(this.runner.game, this.agentID, terminal);
       const masks = createMaskBuffers();
-      this.codec.masks(this.runner.game, AGENT_ID, masks);
+      this.codec.masks(this.runner.game, this.agentID, masks);
+      if (terminal !== null) this.maybeWriteReplay(terminal);
 
       return {
         obs,
@@ -238,7 +285,7 @@ export class GameEnv {
     }
     const masks = createMaskBuffers();
     try {
-      this.codec.masks(this.runner.game, AGENT_ID, masks);
+      this.codec.masks(this.runner.game, this.agentID, masks);
     } catch {
       masks.intentType.fill(0);
       masks.target.fill(0);
@@ -252,9 +299,9 @@ export class GameEnv {
   private computeTerminal(feederOk: boolean): TerminalReason {
     if (!feederOk || this.fatalError !== undefined) return "sim_error";
     if (this.winnerAgentID !== undefined) {
-      return this.winnerAgentID === AGENT_ID ? "win" : "death";
+      return this.winnerAgentID === this.agentID ? "win" : "death";
     }
-    const agent = this.runner.game.player(AGENT_ID);
+    const agent = this.runner.game.player(this.agentID);
     if (!agent.isAlive()) return "death";
     if (this.runner.game.ticks() - this.ticksAtSpawnEnd >= this.config.tickCap) {
       return "tick_cap";
@@ -273,10 +320,11 @@ export class GameEnv {
     const detail = e instanceof Error ? (e.stack ?? e.message) : String(e);
     this.fatalError = `raw engine throw: ${detail}`;
     console.warn(`GameEnv sim_error, seed ${this.lastSeed}: ${detail}`);
+    this.maybeWriteReplay("sim_error");
 
     let reward = 0;
     try {
-      reward = this.reward.step(this.runner.game, AGENT_ID, "sim_error");
+      reward = this.reward.step(this.runner.game, this.agentID, "sim_error");
     } catch {
       reward = 0;
     }
@@ -294,7 +342,7 @@ export class GameEnv {
 
   private encodeObservation(): Observation {
     const obs = new Float32Array(this.encoder.size);
-    this.encoder.encode(this.runner.game, AGENT_ID, obs);
+    this.encoder.encode(this.runner.game, this.agentID, obs);
     return obs;
   }
 
@@ -304,10 +352,51 @@ export class GameEnv {
     }
   }
 
+  /**
+   * Phase-8 data replay. Writes every Nth episode as a GameRecord file the
+   * dev client can play back. Best effort by design: a failed write logs
+   * and never breaks the episode result or the training batch.
+   */
+  private maybeWriteReplay(terminal: string): void {
+    const replay = this.config.replay;
+    const index = this.episodesCompleted++;
+    if (
+      replay === undefined ||
+      this.lastGameConfig === undefined ||
+      !shouldRecordReplay(index, replay.every)
+    ) {
+      return;
+    }
+    try {
+      const record = buildGameRecord({
+        seed: this.lastSeed,
+        gameConfig: this.lastGameConfig,
+        turns: this.feeder.turns,
+        agentClientID: AGENT_CLIENT_ID,
+        agentWon: terminal === "win",
+        startedAt: this.replayStart,
+        endedAt: Date.now(),
+        hashes: this.replayHashes,
+      });
+      const file = writeReplayFile(
+        replay,
+        this.lastSeed,
+        index,
+        terminal,
+        record,
+      );
+      if (file !== undefined) console.log(`replay recorded: ${file}`);
+    } catch (e) {
+      console.warn(`replay build failed, seed ${this.lastSeed}: ${String(e)}`);
+    }
+  }
   private onGameUpdate(gu: GameUpdateViewData | ErrorUpdate): void {
     if ("errMsg" in gu) {
       this.fatalError = `${gu.errMsg}\n${gu.stack ?? ""}`;
       return;
+    }
+    for (const hu of gu.updates[GameUpdateType.Hash] as HashUpdate[]) {
+      this.replayHashes.set(hu.tick, hu.hash);
     }
     const winUpdates = gu.updates[GameUpdateType.Win];
     if (winUpdates.length > 0) {
@@ -319,7 +408,7 @@ export class GameEnv {
       const agentWon = winner !== undefined
         && winner[0] === "player"
         && winner[1] === AGENT_CLIENT_ID;
-      this.winnerAgentID = agentWon ? AGENT_ID : "opponent";
+      this.winnerAgentID = agentWon ? this.agentID : "opponent";
     }
   }
 

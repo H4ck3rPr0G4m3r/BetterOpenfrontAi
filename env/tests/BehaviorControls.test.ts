@@ -48,6 +48,14 @@ describe("normalizeBehavior", () => {
       gold: 0.1,
       win: 1,
       death: -1,
+      kill: 0,
+      landEarly: 1.0,
+      landLoss: 1.0,
+      city: 0,
+      factory: 0,
+      troopHold: 0,
+      survive: 0,
+      rich: 0,
     });
   });
 
@@ -220,6 +228,58 @@ describe("worker CLI behavior flags", () => {
       gold: 0,
       win: 5,
       death: -5,
+      kill: 0,
+      landEarly: 1,
+      landLoss: 1,
+      city: 0,
+      factory: 0,
+      troopHold: 0,
+      survive: 0,
+      rich: 0,
+    });
+  });
+
+  it("parses the optional 6th kill weight and still rejects bad counts", () => {
+    const options = parseWorkerArgs([
+      ...base,
+      "--reward-weights",
+      "2,0,0,5,-5,1.5",
+    ]);
+    expect(options.rewardWeights).toEqual({
+      land: 2,
+      troop: 0,
+      gold: 0,
+      win: 5,
+      death: -5,
+      kill: 1.5,
+      landEarly: 1,
+      landLoss: 1,
+      city: 0,
+      factory: 0,
+      troopHold: 0,
+      survive: 0,
+      rich: 0,
+    });
+
+    const full = parseWorkerArgs([
+      ...base,
+      "--reward-weights",
+      "1,0.1,0.1,2,-2,0.5,2,2,0.5,0.5,0.3,0.0002,0.5",
+    ]);
+    expect(full.rewardWeights).toEqual({
+      land: 1,
+      troop: 0.1,
+      gold: 0.1,
+      win: 2,
+      death: -2,
+      kill: 0.5,
+      landEarly: 2,
+      landLoss: 2,
+      city: 0.5,
+      factory: 0.5,
+      troopHold: 0.3,
+      survive: 0.0002,
+      rich: 0.5,
     });
   });
 
@@ -231,6 +291,9 @@ describe("worker CLI behavior flags", () => {
     ).toThrow();
     expect(() =>
       parseWorkerArgs([...base, "--reward-weights", "1,2,3"]),
+    ).toThrow();
+    expect(() =>
+      parseWorkerArgs([...base, "--reward-weights", "1,2,3,4,5,6,7"]),
     ).toThrow();
   });
 });

@@ -43,6 +43,7 @@ from action_filter import (
 TRAIN_DIR = Path(__file__).resolve().parent
 CONTROL_DIR = TRAIN_DIR / "control"
 RUNS_DIR = CONTROL_DIR / "runs"
+REPLAYS_DIR = TRAIN_DIR / "replays"
 PRESETS_DIR = CONTROL_DIR / "presets"
 DASHBOARD_DIR = TRAIN_DIR.parent / "dashboard"
 
@@ -417,6 +418,31 @@ def list_checkpoints(subdir: str) -> list[dict]:
     return out
 
 
+def list_replays(subdir: str = "replays") -> list[dict]:
+    """Recorded episode files for the phase-8 replay viewer.
+
+    Mirrors list_checkpoints but recursive: training writes one small JSON
+    per recorded episode under replays/<run>/, and the game client lists
+    them without touching the filesystem.
+    """
+    root = resolve_under(TRAIN_DIR, subdir)
+    if not root.is_dir():
+        return []
+    out = []
+    for path in sorted(root.glob("**/*.json")):
+        stat = path.stat()
+        out.append(
+            {
+                "name": str(path.relative_to(root)),
+                "size": stat.st_size,
+                "modified": datetime.fromtimestamp(
+                    stat.st_mtime, tz=timezone.utc
+                ).isoformat(timespec="seconds"),
+            }
+        )
+    return out
+
+
 def read_metrics(tb_dir: str, run: str) -> dict:
     from tensorboard.backend.event_processing import event_accumulator
 
@@ -775,7 +801,9 @@ class Handler(BaseHTTPRequestHandler):
         path = url.path
         query = urllib.parse.parse_qs(url.query)
         try:
-            if not path.startswith("/api/"):
+            if path.startswith("/replays/"):
+                self.serve_replay_file(path[len("/replays/"):])
+            elif not path.startswith("/api/"):
                 self.serve_dashboard(path)
             elif path == "/api/state":
                 self.send_json(
@@ -790,6 +818,9 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/checkpoints":
                 subdir = query.get("dir", ["checkpoints/openfront_ppo"])[0]
                 self.send_json({"checkpoints": list_checkpoints(subdir)})
+            elif path == "/api/replays":
+                subdir = query.get("dir", ["replays"])[0]
+                self.send_json({"replays": list_replays(subdir)}, cors=True)
             elif path == "/api/metrics":
                 tb_dir = query.get("tb_dir", ["runs/openfront_ppo"])[0]
                 run = query.get("run", ["ppo_default"])[0]
@@ -874,11 +905,16 @@ class Handler(BaseHTTPRequestHandler):
 
     # -- responses -----------------------------------------------------
 
-    def send_json(self, payload: dict, status: int = 200) -> None:
+    def send_json(self, payload: dict, status: int = 200, cors: bool = False) -> None:
         raw = json.dumps(payload).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(raw)))
+        if cors:
+            # The game client runs on its own dev port and fetches the
+            # replay index cross-origin. Simple GETs need no preflight,
+            # just the allow header.
+            self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(raw)
 
@@ -903,6 +939,24 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", content_types.get(target.suffix, "text/plain"))
         self.send_header("Content-Length", str(len(raw)))
         self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def serve_replay_file(self, relpath: str) -> None:
+        try:
+            target = resolve_under(REPLAYS_DIR, relpath)
+        except (ValueError, KeyError):
+            self.send_error_json(400, "bad replay path")
+            return
+        if target.suffix != ".json" or not target.is_file():
+            self.send_error_json(404, "not found")
+            return
+        raw = target.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(raw)
 
