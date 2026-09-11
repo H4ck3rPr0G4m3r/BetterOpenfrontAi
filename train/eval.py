@@ -35,9 +35,16 @@ def run_episodes(
 ) -> dict:
     if vec.num_envs != 1:
         raise ValueError("run_episodes tracks one env, pass a 1x1 vec")
+    from action_filter import INTENT_NAMES
+    from openfront_gym import spaces
+
     returns: list[float] = []
     lengths: list[int] = []
     reasons: Counter[str] = Counter()
+    intent_counts: Counter[str] = Counter()
+    attack_ratios: Counter[float] = Counter()
+    attack_open_steps = 0
+    total_steps = 0
     seed_cycle = [seeds[i % len(seeds)] for i in range(episodes)]
     for episode in range(episodes):
         obs, infos = vec.reset(seed=[seed_cycle[episode]] * vec.num_envs)
@@ -51,6 +58,16 @@ def run_episodes(
                 reasons["timeout"] += 1
                 break
             actions = predict(obs, masks, deterministic)
+            act = np.asarray(actions)[0]
+            intent_counts[INTENT_NAMES[int(act[0])]] += 1
+            if int(act[0]) == spaces.IntentType.ATTACK:
+                from action_filter import RATIO_BUCKETS
+
+                attack_ratios[float(RATIO_BUCKETS[int(act[2])])] += 1
+            heads = spaces.split_flat_mask(np.asarray(masks)[0])
+            if heads["intent_type"][spaces.IntentType.ATTACK]:
+                attack_open_steps += 1
+            total_steps += 1
             obs, rewards, terminated, truncated, infos = vec.step(actions)
             masks = infos["action_masks"]
             steps += 1
@@ -70,6 +87,11 @@ def run_episodes(
         "mean_length": float(np.mean(lengths)),
         "win_rate": reasons.get("win", 0) / episodes,
         "terminals": dict(reasons),
+        "intent_share": {
+            name: intent_counts.get(name, 0) / total_steps for name in INTENT_NAMES
+        },
+        "attack_ratio_mix": dict(attack_ratios),
+        "attack_open_share": attack_open_steps / total_steps if total_steps else 0.0,
     }
 
 
@@ -96,6 +118,7 @@ def build_vec(cfg: dict) -> OpenFrontVecEnv:
         1,
         map=str(env_cfg.get("map", "World")),
         bots=int(env_cfg.get("bots", 20)),
+        nations=str(env_cfg.get("nations", "default")),
         ticks_per_step=int(env_cfg.get("ticks_per_step", 10)),
         tick_cap=int(env_cfg.get("tick_cap", 6000)),
         maps_dir=env_cfg.get("maps_dir"),
@@ -208,6 +231,14 @@ def main(argv: list[str] | None = None) -> dict:
             f"win rate {stats['win_rate']:.2f}, "
             f"terminals {stats['terminals']}"
         )
+        top = sorted(stats["intent_share"].items(), key=lambda kv: -kv[1])[:5]
+        print(
+            f"{name}: top intents "
+            + ", ".join(f"{k} {v:.2f}" for k, v in top)
+            + f", attack open {stats['attack_open_share']:.2f}"
+        )
+        if stats["attack_ratio_mix"]:
+            print(f"{name}: attack ratios {stats['attack_ratio_mix']}")
     return result
 
 

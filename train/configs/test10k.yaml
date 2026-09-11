@@ -42,8 +42,8 @@ run:
   tensorboard_log: runs/test10k
   run_name: test10k
   device: auto
-  # A 10k run is ~60 episodes (~4 per env, since the boot reset consumes
-  # index 0 on each env), so record every 4th to land about one file per env.
+  # A 10k run is ~60 episodes, so record every 10th completed episode
+  # per env to land a handful of watchable files.
   replay:
     dir: replays/test10k
-    every: 4
+    every: 10

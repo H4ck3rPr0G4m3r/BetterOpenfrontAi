@@ -32,4 +32,12 @@ describe("parseWorkerArgs", () => {
     expect(() => parseWorkerArgs(["--port", "1", "--bogus"])).toThrow();
     expect(() => parseWorkerArgs(["--port"])).toThrow();
   });
+
+  it("parses the nations curriculum knob", () => {
+    expect(parseWorkerArgs(["--port", "1"]).nations).toBe("default");
+    expect(parseWorkerArgs(["--port", "1", "--nations", "disabled"]).nations).toBe(
+      "disabled",
+    );
+    expect(() => parseWorkerArgs(["--port", "1", "--nations", "tribes"])).toThrow();
+  });
 });

@@ -68,10 +68,10 @@ export class GameEnv {
   private ticksAtSpawnEnd = 0;
   private lastSeed = "";
   private readonly reward: Reward;
-  /** Phase-8 replay bookkeeping: which episode this is, when it started,
-   *  and the config it runs, for the record file written at episode end. */
-  private episodesStarted = 0;
-  private replayEpisodeIndex = 0;
+  /** Phase-8 replay bookkeeping: when the episode started, the config it
+   *  runs, and how many episodes have completed (recording cadence counts
+   *  completions, so an unconcluded boot reset never consumes a slot). */
+  private episodesCompleted = 0;
   private replayStart = 0;
   private lastGameConfig: GameConfig | undefined;
   /** State hashes by tick, collected from HashUpdates for replay records. */
@@ -112,7 +112,7 @@ export class GameEnv {
       gameMode: GameMode.FFA,
       gameType: GameType.Public,
       difficulty: Difficulty.Medium,
-      nations: "default",
+      nations: this.config.nations ?? "default",
       donateGold: false,
       donateTroops: false,
       bots: this.config.bots,
@@ -122,7 +122,6 @@ export class GameEnv {
       randomSpawn: false,
     };
     this.lastGameConfig = gameConfig;
-    this.replayEpisodeIndex = this.episodesStarted++;
     this.replayStart = Date.now();
     const gameStart: GameStartInfo = {
       // Phase-8 replay fidelity: the replay harness rederives everything
@@ -360,10 +359,11 @@ export class GameEnv {
    */
   private maybeWriteReplay(terminal: string): void {
     const replay = this.config.replay;
+    const index = this.episodesCompleted++;
     if (
       replay === undefined ||
       this.lastGameConfig === undefined ||
-      !shouldRecordReplay(this.replayEpisodeIndex, replay.every)
+      !shouldRecordReplay(index, replay.every)
     ) {
       return;
     }
@@ -381,7 +381,7 @@ export class GameEnv {
       const file = writeReplayFile(
         replay,
         this.lastSeed,
-        this.replayEpisodeIndex,
+        index,
         terminal,
         record,
       );

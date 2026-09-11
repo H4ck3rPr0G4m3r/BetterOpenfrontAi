@@ -25,6 +25,8 @@ export interface WorkerMainOptions {
   ticksPerStep: number;
   tickCap: number;
   strictIllegalActions: boolean;
+  /** Curriculum knob: scripted nation peoples, default or disabled. */
+  nations: "default" | "disabled";
   /** Side-quest AI control UI: intent types to keep shut. */
   disabledIntents: number[];
   /** Side-quest AI control UI: buildable unit types to exclude. */
@@ -44,6 +46,7 @@ export const DEFAULT_WORKER_OPTIONS: WorkerMainOptions = {
   ticksPerStep: 10,
   tickCap: 6000,
   strictIllegalActions: true,
+  nations: "default",
   disabledIntents: [],
   disabledBuilds: [],
   rewardWeights: { ...DEFAULT_REWARD_WEIGHTS },
@@ -110,6 +113,14 @@ export function parseWorkerArgs(argv: string[]): WorkerMainOptions {
       case "--tick-cap":
         options.tickCap = integer(next(), "tick-cap");
         break;
+      case "--nations": {
+        const value = next();
+        if (value !== "default" && value !== "disabled") {
+          throw new Error(`nations must be default or disabled, got ${value}`);
+        }
+        options.nations = value;
+        break;
+      }
       case "--strict":
         options.strictIllegalActions = true;
         break;
@@ -134,17 +145,26 @@ export function parseWorkerArgs(argv: string[]): WorkerMainOptions {
       }
       case "--reward-weights": {
         const parts = next().split(",");
-        if (parts.length !== 5 && parts.length !== 6) {
-          throw new Error("--reward-weights needs land,troop,gold,win,death[,kill]");
+        if (parts.length !== 5 && parts.length !== 6 && parts.length !== 13) {
+          throw new Error(
+            "--reward-weights needs land,troop,gold,win,death[,kill] or the full 13",
+          );
         }
         const values = parts.map((raw) => Number(raw));
         if (values.some((v) => !Number.isFinite(v))) {
           throw new Error(`--reward-weights must be finite numbers, got ${parts}`);
         }
-        const [land, troop, gold, win, death] = values;
-        // Old 5-value configs keep working: kill defaults to 0, which
-        // makes the kill bonus vanish and restores phase-1 behavior.
-        options.rewardWeights = { land, troop, gold, win, death, kill: values[5] ?? 0 };
+        // Old 5- and 6-value configs keep working: missing phase-7 weights
+        // fall back to neutral defaults, restoring earlier behavior.
+        const [
+          land, troop, gold, win, death, kill = 0,
+          landEarly = 1, landLoss = 1, city = 0, factory = 0,
+          troopHold = 0, survive = 0, rich = 0,
+        ] = values;
+        options.rewardWeights = {
+          land, troop, gold, win, death, kill,
+          landEarly, landLoss, city, factory, troopHold, survive, rich,
+        };
         break;
       }
       case "--help":
@@ -177,13 +197,14 @@ Usage: tsx src/bridge/worker_main.ts --port 5001 [options]
   --bots N           default 20
   --ticks-per-step N default 10
   --tick-cap N       default 6000
+  --nations MODE     default or disabled (curriculum: disabled is easiest)
   --strict           illegal actions fail loudly (default)
   --lenient          count illegal actions and retry as noop
   --disable-intent N keep one intent type shut, repeatable, 1..13 (side quest)
   --disable-build T  exclude one build type, repeatable, e.g. Factory
-  --reward-weights L,T,G,W,D[,K]
-                     shaping override as land,troop,gold,win,death
-                     plus optional per-kill bonus, default 0`);
+  --reward-weights L,T,G,W,D[,K] or full 13
+                     shaping override: land,troop,gold,win,death,kill,
+                     landEarly,landLoss,city,factory,troopHold,survive,rich`);
 }
 
 async function main(): Promise<void> {
@@ -201,6 +222,7 @@ async function main(): Promise<void> {
     bots: options.bots,
     ticksPerStep: options.ticksPerStep,
     tickCap: options.tickCap,
+    nations: options.nations,
     // Phase-8 replays arrive via environment, not the wire protocol, so the
     // bridge schema stays at version 1. Python sets these before spawning.
     replay: replayOptionsFromEnv(),

@@ -60,6 +60,9 @@ export interface EnvConfig {
   /** Post-spawn tick cap — nations don't eliminate each other within 3300
    *  ticks (§5.1), so episodes need a hard cap, not a natural winner. */
   tickCap: number;
+  /** Scripted nation peoples: "default" (map manifest) or "disabled".
+   *  Curriculum knob — disabled plus few bots is the easiest stage. */
+  nations?: "default" | "disabled";
   /** Episode recording for data replays (phase 8). Absent means off. */
   replay?: ReplayOptions;
 }

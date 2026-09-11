@@ -32,6 +32,8 @@ class WorkerConfig:
 
     map: str = "World"
     bots: int = 20
+    # Curriculum knob: scripted nation peoples, default or disabled.
+    nations: str = "default"
     ticks_per_step: int = 10
     tick_cap: int = 6000
     maps_dir: str | None = None
@@ -70,6 +72,8 @@ def worker_argv(config: WorkerConfig, port: int) -> list[str]:
         config.map,
         "--bots",
         str(config.bots),
+        "--nations",
+        str(config.nations),
         "--ticks-per-step",
         str(config.ticks_per_step),
         "--tick-cap",

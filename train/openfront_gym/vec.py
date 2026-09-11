@@ -41,6 +41,7 @@ class OpenFrontVecEnv(gymnasium.vector.VectorEnv):
         envs_per_worker: int,
         map: str = "World",
         bots: int = 20,
+        nations: str = "default",
         ticks_per_step: int = 10,
         tick_cap: int = 6000,
         maps_dir: str | None = None,
@@ -63,6 +64,7 @@ class OpenFrontVecEnv(gymnasium.vector.VectorEnv):
         self._config = WorkerConfig(
             map=map,
             bots=bots,
+            nations=nations,
             ticks_per_step=ticks_per_step,
             tick_cap=tick_cap,
             maps_dir=maps_dir,
