@@ -67,6 +67,21 @@ def test_preset_accepts_full_phase_weights():
     assert ",".join(str(v) for v in weights) in argv
 
 
+def test_troop_loss_scale_validation_and_argv():
+    preset = BehaviorPreset.from_dict({"name": "fighter", "troop_loss_scale": 0.0})
+    assert preset.troop_loss_scale == 0.0
+    assert preset.to_worker_kwargs()["troop_loss_scale"] == 0.0
+    argv = worker_argv(WorkerConfig(num_envs=1, troop_loss_scale=0.0), 5001)
+    assert ["--troop-loss-scale", "0.0"] in [argv[i : i + 2] for i in range(len(argv))]
+    # Default keeps the old symmetric behavior: no flag on the wire.
+    assert "--troop-loss-scale" not in worker_argv(WorkerConfig(num_envs=1), 5001)
+    for bad in (-0.5, 1.5, "all"):
+        with pytest.raises(ValueError):
+            BehaviorPreset.from_dict({"troop_loss_scale": bad})
+    kwargs = behavior_from_config({"behavior": {"troop_loss_scale": 0.25}})
+    assert kwargs["troop_loss_scale"] == 0.25
+
+
 def test_preset_build_names_match_engine_candidates():
     # The TypeScript side pins KNOWN_BUILD_TYPES to BUILD_CANDIDATE_TYPES;
     # this pins the Python copy to the same seven names.
@@ -105,6 +120,7 @@ def test_behavior_from_config_defaults_to_no_limits():
         "disabled_intents": (),
         "disabled_builds": (),
         "reward_weights": None,
+        "troop_loss_scale": 1.0,
     }
 
 

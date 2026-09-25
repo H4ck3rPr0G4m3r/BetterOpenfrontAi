@@ -225,6 +225,36 @@ describe("Reward", () => {
     expect(reward.step(stub.game, stub.agentId, null)).toBeCloseTo(-0.012, 10);
   });
 
+  it("mutes negative troop deltas with troopLossScale but keeps gains", () => {
+    const weights = {
+      land: 0, troop: 0.1, gold: 0, win: 0, death: 0, kill: 0,
+      landEarly: 0, landLoss: 1, city: 0, factory: 0,
+      troopHold: 0, survive: 0, rich: 0,
+    };
+    // Symmetric default: spending 5000 of 10000 troops costs 0.005.
+    const sym = stubGame({ opponents: {}, troops: 10000 });
+    const symReward = new Reward({ weights });
+    symReward.init(sym.game, sym.agentId);
+    sym.state.troops = 5000;
+    expect(symReward.step(sym.game, sym.agentId, null)).toBeCloseTo(-0.005, 10);
+
+    // Muted: the same attack-like loss is free.
+    const muted = stubGame({ opponents: {}, troops: 10000 });
+    const mutedReward = new Reward({ weights, troopLossScale: 0 });
+    mutedReward.init(muted.game, muted.agentId);
+    muted.state.troops = 5000;
+    expect(mutedReward.step(muted.game, muted.agentId, null)).toBeCloseTo(0, 10);
+
+    // Gains still count in full under the mute.
+    const gain = stubGame({ opponents: {}, troops: 10000 });
+    const gainReward = new Reward({ weights, troopLossScale: 0 });
+    gainReward.init(gain.game, gain.agentId);
+    gain.state.troops = 20000;
+    expect(gainReward.step(gain.game, gain.agentId, null)).toBeCloseTo(0.01, 10);
+
+    expect(() => new Reward({ troopLossScale: 1.5 })).toThrow();
+  });
+
   it("pays city and factory deltas only mid game", () => {
     const weights = {
       land: 0, troop: 0, gold: 0, win: 0, death: 0, kill: 0,
@@ -263,8 +293,7 @@ describe("Reward", () => {
     );
   });
 
-  it("pays the survival trickle only late while alive", () => {
-    const weights = {
+  it("pays the survival trickle only late while alive", () => {    const weights = {
       land: 0, troop: 0, gold: 0, win: 0, death: 0, kill: 0,
       landEarly: 0, landLoss: 1, city: 0, factory: 0,
       troopHold: 0, survive: 0.0002, rich: 0,

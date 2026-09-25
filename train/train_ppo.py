@@ -26,6 +26,7 @@ from sb3_contrib import MaskablePPO
 from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback
 
 from openfront_gym.vec import OpenFrontVecEnv
+from openfront_gym.normalize import ObservationNormalizer
 from action_filter import behavior_from_config
 from openfront_policy import OpenFrontPolicy
 from sb3_adapter import SB3OpenFrontVec
@@ -139,10 +140,20 @@ def build_vec(cfg: dict) -> SB3OpenFrontVec:
         parallel=bool(env_cfg.get("parallel_workers", True)),
         **behavior,
     )
-    vec = SB3OpenFrontVec(inner)
+    norm_cfg = (cfg.get("run", {}) or {}).get("normalization", None) or {}
+    wrapped = inner
+    if bool(norm_cfg.get("enabled", False)):
+        wrapped = ObservationNormalizer(
+            inner, clip=float(norm_cfg.get("clip", 5.0)), training=True
+        )
+    vec = SB3OpenFrontVec(wrapped)
     if env_cfg.get("seed", None) is not None:
         vec.seed(int(env_cfg["seed"]))
     return vec
+
+
+def normalization_stats_path(checkpoint_dir: Path, run_name: str) -> Path:
+    return checkpoint_dir / f"{run_name}_obs_norm.npz"
 
 
 def build_model(vec: SB3OpenFrontVec, cfg: dict, tensorboard_log: str | None):
@@ -229,6 +240,11 @@ def main(argv: list[str] | None = None) -> dict:
     final_path = checkpoint_dir / f"{run_name}_final.zip"
     model.save(str(final_path.with_suffix("")))
     print(f"saved {final_path}")
+    inner = getattr(vec, "inner", None)
+    if isinstance(inner, ObservationNormalizer):
+        stats_path = normalization_stats_path(checkpoint_dir, run_name)
+        inner.save(stats_path)
+        print(f"saved {stats_path}")
     print(f"timesteps: {total} in {elapsed:.1f}s = {total / max(elapsed, 1e-6):.0f} steps/sec")
     print(f"terminals: {dict(terminal_cb.totals)}")
     vec.close()

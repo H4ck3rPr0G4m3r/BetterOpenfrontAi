@@ -33,6 +33,8 @@ export interface WorkerMainOptions {
   disabledBuilds: string[];
   /** Side-quest AI control UI: shaping override, defaults are phase 1. */
   rewardWeights: RewardWeights;
+  /** Mute negative troop deltas so attacks stop punishing themselves. */
+  troopLossScale: number;
 }
 
 export const DEFAULT_WORKER_OPTIONS: WorkerMainOptions = {
@@ -50,6 +52,7 @@ export const DEFAULT_WORKER_OPTIONS: WorkerMainOptions = {
   disabledIntents: [],
   disabledBuilds: [],
   rewardWeights: { ...DEFAULT_REWARD_WEIGHTS },
+  troopLossScale: 1.0,
 };
 
 /**
@@ -65,6 +68,7 @@ export function parseWorkerArgs(argv: string[]): WorkerMainOptions {
     disabledIntents: [...DEFAULT_WORKER_OPTIONS.disabledIntents],
     disabledBuilds: [...DEFAULT_WORKER_OPTIONS.disabledBuilds],
     rewardWeights: { ...DEFAULT_WORKER_OPTIONS.rewardWeights },
+    troopLossScale: DEFAULT_WORKER_OPTIONS.troopLossScale,
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -167,6 +171,14 @@ export function parseWorkerArgs(argv: string[]): WorkerMainOptions {
         };
         break;
       }
+      case "--troop-loss-scale": {
+        const value = Number(next());
+        if (!Number.isFinite(value) || value < 0 || value > 1) {
+          throw new Error(`troop-loss-scale must be 0..1, got ${value}`);
+        }
+        options.troopLossScale = value;
+        break;
+      }
       case "--help":
       case "-h":
         printUsage();
@@ -203,8 +215,10 @@ Usage: tsx src/bridge/worker_main.ts --port 5001 [options]
   --disable-intent N keep one intent type shut, repeatable, 1..13 (side quest)
   --disable-build T  exclude one build type, repeatable, e.g. Factory
   --reward-weights L,T,G,W,D[,K] or full 13
-                     shaping override: land,troop,gold,win,death,kill,
-                     landEarly,landLoss,city,factory,troopHold,survive,rich`);
+                      shaping override: land,troop,gold,win,death,kill,
+                      landEarly,landLoss,city,factory,troopHold,survive,rich
+  --troop-loss-scale S mute negative troop deltas 0..1, default 1.0
+                      (0.0 stops attacks punishing themselves)`);
 }
 
 async function main(): Promise<void> {
@@ -214,6 +228,7 @@ async function main(): Promise<void> {
     disabledIntents: options.disabledIntents,
     disabledBuilds: options.disabledBuilds,
     rewardWeights: options.rewardWeights,
+    troopLossScale: options.troopLossScale,
   };
   const codec = new ActionCodecImpl(behavior);
   const config: EnvConfig = {
@@ -229,7 +244,7 @@ async function main(): Promise<void> {
   };
   const server = new WorkerServer({
     numEnvs: options.numEnvs,
-    createEnv: () => new GameEnv(config, encoder, codec, new Reward({ weights: behavior.rewardWeights })),
+    createEnv: () => new GameEnv(config, encoder, codec, new Reward({ weights: behavior.rewardWeights, troopLossScale: behavior.troopLossScale })),
     obsSize: encoder.size,
     strictIllegalActions: options.strictIllegalActions,
     listen:

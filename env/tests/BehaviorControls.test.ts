@@ -42,6 +42,7 @@ describe("normalizeBehavior", () => {
     const behavior = normalizeBehavior();
     expect(behavior.disabledIntents.size).toBe(0);
     expect(behavior.disabledBuilds.size).toBe(0);
+    expect(behavior.troopLossScale).toBe(1.0);
     expect(behavior.rewardWeights).toEqual({
       land: 1.0,
       troop: 0.1,
@@ -69,6 +70,13 @@ describe("normalizeBehavior", () => {
     expect(() =>
       normalizeBehavior({ rewardWeights: { vibes: 2 } as never }),
     ).toThrow();
+  });
+
+  it("validates troopLossScale as 0..1, defaulting to symmetric", () => {
+    expect(normalizeBehavior({ troopLossScale: 0 }).troopLossScale).toBe(0);
+    expect(() => normalizeBehavior({ troopLossScale: -0.1 })).toThrow();
+    expect(() => normalizeBehavior({ troopLossScale: 1.1 })).toThrow();
+    expect(() => normalizeBehavior({ troopLossScale: Number.NaN })).toThrow();
   });
 
   it("accepts every known build type name", () => {

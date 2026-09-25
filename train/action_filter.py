@@ -92,6 +92,7 @@ class BehaviorPreset:
     disabled_intents: tuple = ()
     disabled_builds: tuple = ()
     reward_weights: tuple | None = None
+    troop_loss_scale: float = 1.0
     env_overrides: dict = field(default_factory=dict)
     ppo_overrides: dict = field(default_factory=dict)
 
@@ -128,6 +129,13 @@ class BehaviorPreset:
             for value in weights:
                 if not math.isfinite(value):
                     raise ValueError(f"reward_weights must be finite, got {value}")
+        loss_scale = raw.get("troop_loss_scale", 1.0)
+        try:
+            loss_scale = float(loss_scale)
+        except (TypeError, ValueError):
+            raise ValueError(f"troop_loss_scale must be 0..1, got {loss_scale!r}")
+        if not math.isfinite(loss_scale) or not 0.0 <= loss_scale <= 1.0:
+            raise ValueError(f"troop_loss_scale must be 0..1, got {loss_scale!r}")
         env_overrides = dict(raw.get("env_overrides", {}))
         ppo_overrides = dict(raw.get("ppo_overrides", {}))
         return BehaviorPreset(
@@ -138,6 +146,7 @@ class BehaviorPreset:
             disabled_intents=disabled_intents,
             disabled_builds=disabled_builds,
             reward_weights=weights,
+            troop_loss_scale=loss_scale,
             env_overrides=env_overrides,
             ppo_overrides=ppo_overrides,
         )
@@ -153,6 +162,7 @@ class BehaviorPreset:
             "disabled_intents": list(self.disabled_intents),
             "disabled_build_names": list(self.disabled_builds),
             "reward_weights": list(self.reward_weights) if self.reward_weights else None,
+            "troop_loss_scale": self.troop_loss_scale,
             "env_overrides": dict(self.env_overrides),
             "ppo_overrides": dict(self.ppo_overrides),
         }
@@ -163,6 +173,7 @@ class BehaviorPreset:
             "disabled_intents": self.disabled_intents,
             "disabled_builds": self.disabled_builds,
             "reward_weights": self.reward_weights,
+            "troop_loss_scale": self.troop_loss_scale,
         }
 
 
@@ -219,6 +230,7 @@ def behavior_from_config(cfg: dict) -> dict:
             "disabled_intents": raw.get("disabled_intents", ()),
             "disabled_builds": raw.get("disabled_builds", ()),
             "reward_weights": raw.get("reward_weights", None),
+            "troop_loss_scale": raw.get("troop_loss_scale", 1.0),
         }
     )
     return preset.to_worker_kwargs()

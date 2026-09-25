@@ -1,0 +1,11 @@
+{
+  "name": "fighter",
+  "description": "Learns to fight: kills pay, troop spending is free, wins pay 5x.",
+  "aggression": 80,
+  "disabled_intents": [],
+  "disabled_builds": [],
+  "reward_weights": [1.0, 0.1, 0.1, 5.0, -2.0, 2.0, 2.0, 2.0, 0.5, 0.5, 0.3, 0.0002, 0.5],
+  "troop_loss_scale": 0.0,
+  "env_overrides": {},
+  "ppo_overrides": {}
+}

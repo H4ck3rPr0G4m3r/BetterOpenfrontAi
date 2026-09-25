@@ -49,6 +49,9 @@ class WorkerConfig:
     # (land, troop, gold, win, death) shaping override, or None for the
     # phase-1 default.
     reward_weights: tuple | None = None
+    # Mute negative troop deltas so attacks stop punishing themselves.
+    # 1.0 keeps the old symmetric behavior.
+    troop_loss_scale: float = 1.0
 
 
 def default_env_root() -> Path:
@@ -88,6 +91,8 @@ def worker_argv(config: WorkerConfig, port: int) -> list[str]:
         argv += ["--disable-build", str(build)]
     if config.reward_weights is not None:
         argv += ["--reward-weights", ",".join(str(v) for v in config.reward_weights)]
+    if float(config.troop_loss_scale) != 1.0:
+        argv += ["--troop-loss-scale", str(float(config.troop_loss_scale))]
     return argv
 
 

@@ -53,6 +53,7 @@ class OpenFrontVecEnv(gymnasium.vector.VectorEnv):
         disabled_intents: Sequence[int] = (),
         disabled_builds: Sequence[str] = (),
         reward_weights: Sequence[float] | None = None,
+        troop_loss_scale: float = 1.0,
         spawn_timeout: float = 120.0,
         parallel: bool = True,
     ):
@@ -74,6 +75,7 @@ class OpenFrontVecEnv(gymnasium.vector.VectorEnv):
             disabled_intents=tuple(disabled_intents),
             disabled_builds=tuple(disabled_builds),
             reward_weights=tuple(reward_weights) if reward_weights is not None else None,
+            troop_loss_scale=float(troop_loss_scale),
             spawn_timeout=float(spawn_timeout),
         )
         self._env_root = Path(env_root) if env_root is not None else None

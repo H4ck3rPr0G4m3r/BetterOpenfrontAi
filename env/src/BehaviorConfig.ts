@@ -68,12 +68,18 @@ export interface BehaviorConfig {
   disabledBuilds?: string[];
   /** Partial override; missing fields keep phase-1 defaults. */
   rewardWeights?: Partial<RewardWeights>;
+  /** Scale applied to NEGATIVE troop deltas only (0..1, default 1.0).
+   *  Attacks spend troops, so the symmetric troop delta punishes the very
+   *  action that wins games. 0.0 ignores troop losses entirely while still
+   *  rewarding troop gains; 1.0 keeps the old symmetric behavior. */
+  troopLossScale?: number;
 }
 
 export interface NormalizedBehavior {
   disabledIntents: Set<number>;
   disabledBuilds: Set<string>;
   rewardWeights: RewardWeights;
+  troopLossScale: number;
 }
 
 /** Valid build-type names: the string values of BUILD_CANDIDATE_TYPES
@@ -114,5 +120,12 @@ export function normalizeBehavior(config?: BehaviorConfig): NormalizedBehavior {
     }
     rewardWeights[key as keyof RewardWeights] = value;
   }
-  return { disabledIntents, disabledBuilds, rewardWeights };
+  const troopLossScale = config?.troopLossScale ?? 1.0;
+  if (typeof troopLossScale !== "number" || !Number.isFinite(troopLossScale)) {
+    throw new Error(`troopLossScale must be a finite number, got ${config?.troopLossScale}`);
+  }
+  if (troopLossScale < 0 || troopLossScale > 1) {
+    throw new Error(`troopLossScale must be 0..1, got ${troopLossScale}`);
+  }
+  return { disabledIntents, disabledBuilds, rewardWeights, troopLossScale };
 }

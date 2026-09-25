@@ -22,6 +22,7 @@ from sb3_contrib import MaskablePPO
 from agents.scripted_agent import ScriptedBaselineAgent
 from action_filter import apply_aggression_batch, behavior_from_config
 from openfront_gym.vec import OpenFrontVecEnv
+from openfront_gym.normalize import ObservationNormalizer
 from openfront_policy import OpenFrontPolicy  # noqa: F401, registers the custom policy for load
 
 
@@ -113,7 +114,7 @@ def baseline_predictor(min_attack_ratio: int = 0):
 def build_vec(cfg: dict) -> OpenFrontVecEnv:
     env_cfg = cfg.get("env", {})
     behavior = behavior_from_config(cfg)
-    return OpenFrontVecEnv(
+    vec = OpenFrontVecEnv(
         1,
         1,
         map=str(env_cfg.get("map", "World")),
@@ -128,6 +129,12 @@ def build_vec(cfg: dict) -> OpenFrontVecEnv:
         parallel=bool(env_cfg.get("parallel_workers", True)),
         **behavior,
     )
+    obs_norm = (cfg.get("run", {}) or {}).get("obs_norm", None)
+    if obs_norm:
+        frozen = ObservationNormalizer(vec, training=False)
+        frozen.load(str(obs_norm), vec.single_observation_space.shape[0])
+        return frozen
+    return vec
 
 
 def evaluate(
@@ -140,9 +147,12 @@ def evaluate(
     deterministic: bool = True,
     min_attack_ratio: int = 0,
     behavior_cfg: dict | None = None,
+    obs_norm: str | None = None,
 ) -> dict:
     model = MaskablePPO.load(model_path, device=device)
     full_cfg = {"env": env_cfg, "behavior": behavior_cfg or {}}
+    if obs_norm is not None:
+        full_cfg["run"] = {"obs_norm": obs_norm}
     vec = build_vec(full_cfg)
     try:
         stats = run_episodes(
@@ -175,6 +185,11 @@ def main(argv: list[str] | None = None) -> dict:
     parser.add_argument("--baseline", action="store_true")
     parser.add_argument("--stochastic", action="store_true")
     parser.add_argument("--min-attack-ratio", type=int, default=None)
+    parser.add_argument(
+        "--obs-norm",
+        default=None,
+        help="frozen observation stats (.npz saved next to a normalized checkpoint)",
+    )
     parser.add_argument(
         "--replay-dir",
         default=None,
@@ -223,6 +238,7 @@ def main(argv: list[str] | None = None) -> dict:
         deterministic=not args.stochastic,
         min_attack_ratio=min_ratio,
         behavior_cfg=raw_behavior,
+        obs_norm=args.obs_norm,
     )
     for name, stats in result.items():
         print(

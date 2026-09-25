@@ -20,15 +20,16 @@ behavior:
   disabled_intents: []
   disabled_builds: []
   reward_weights: [1.0, 0.1, 0.1, 2.0, -2.0, 0.5, 2.0, 2.0, 0.5, 0.5, 0.3, 0.0002, 0.5]
+  troop_loss_scale: 0.0
 
 ppo:
-  n_steps: 128
-  batch_size: 512
+  n_steps: 512
+  batch_size: 1024
   n_epochs: 4
-  gamma: 0.99
+  gamma: 0.995
   gae_lambda: 0.95
   clip_range: 0.2
-  ent_coef: 0.01
+  ent_coef: 0.02
   vf_coef: 0.5
   max_grad_norm: 0.5
   learning_rate: 0.0003
@@ -45,6 +46,9 @@ run:
   tensorboard_log: runs/stage1easy
   run_name: ppo_stage1_easy
   device: auto
+  normalization:
+    enabled: true
+    clip: 5.0
   replay:
     dir: replays/stage1easy
     every: 25

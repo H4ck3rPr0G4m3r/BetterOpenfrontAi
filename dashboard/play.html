@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenFront AI — Versus (play the AI locally)</title>
+<link rel="stylesheet" href="styles.css">
+<style>
+#board { image-rendering: pixelated; border: 1px solid #444; cursor: crosshair; }
+.panel { margin: 12px 0; padding: 10px; border: 1px solid #333; border-radius: 6px; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 6px 0; }
+label { font-size: 13px; }
+#status { font-family: monospace; white-space: pre-wrap; }
+.legend span { display: inline-block; width: 12px; height: 12px; margin-right: 4px; }
+</style>
+</head>
+<body>
+<h1>Versus — you vs the AI, one local game</h1>
+<p>One paired move per click: the AI answers your move instantly on the same map.
+Blue is you, red is the AI, orange is everyone else.</p>
+
+<div class="panel">
+<h2>1. Start a match</h2>
+<div class="row">
+<label>Seed <input id="seed" value="versus" size="10"></label>
+<label>Bots <input id="bots" type="number" value="5" min="0" max="100" style="width:60px"></label>
+<label>Nations
+<select id="nations"><option value="default">default</option><option value="disabled">disabled</option></select>
+</label>
+<label>AI
+<select id="predictor"><option value="scripted">scripted</option><option value="checkpoint">checkpoint</option><option value="noop">idle</option></select>
+</label>
+<label>Model <input id="model" value="checkpoints/openfront_ppo/ppo_100k_shakedown_final.zip" size="40"></label>
+<button id="start">Start</button>
+<button id="stop">Stop</button>
+</div>
+</div>
+
+<div class="panel">
+<h2>2. Board</h2>
+<canvas id="board" width="640" height="320"></canvas>
+<div class="legend">
+<span style="background:#0b2a4a"></span>water
+<span style="background:#3a4a3a"></span>unowned
+<span style="background:#c0392b"></span>AI
+<span style="background:#2980b9"></span>you
+<span style="background:#e67e22"></span>others
+</div>
+<div id="status">no game</div>
+</div>
+
+<div class="panel">
+<h2>3. Your move (then the AI answers)</h2>
+<div class="row">
+<label>Intent
+<select id="intent">
+<option value="0">noop</option>
+<option value="1">attack</option>
+<option value="2">boat</option>
+<option value="3">build_unit</option>
+<option value="4">upgrade_structure</option>
+<option value="5">move_warship</option>
+<option value="10">embargo</option>
+<option value="13">cancel_attack</option>
+</select>
+</label>
+<label>Target slot <input id="target" type="number" value="0" min="0" max="16" style="width:50px"></label>
+<label>Ratio
+<select id="ratio">
+<option value="0">5%</option><option value="1">10%</option><option value="2">20%</option>
+<option value="3">30%</option><option value="4" selected>50%</option><option value="5">70%</option>
+<option value="6">90%</option><option value="7">100%</option>
+</select>
+</label>
+<label>Build site <input id="site" type="number" value="0" min="0" max="31" style="width:50px"></label>
+<span>Click the board to aim (spatial cell <b id="cell">0</b>).</span>
+<button id="move">Make move</button>
+</div>
+<p>Expand: attack slot 0. Attack a player: attack + their slot. Clicks only aim boat/warship moves.</p>
+</div>
+
+<script src="play.js"></script>
+</body>
+</html>

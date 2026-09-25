@@ -40,4 +40,13 @@ describe("parseWorkerArgs", () => {
     );
     expect(() => parseWorkerArgs(["--port", "1", "--nations", "tribes"])).toThrow();
   });
+
+  it("parses the troop-loss mute knob", () => {
+    expect(parseWorkerArgs(["--port", "1"]).troopLossScale).toBe(1.0);
+    expect(
+      parseWorkerArgs(["--port", "1", "--troop-loss-scale", "0"]).troopLossScale,
+    ).toBe(0);
+    expect(() => parseWorkerArgs(["--port", "1", "--troop-loss-scale", "2"])).toThrow();
+    expect(() => parseWorkerArgs(["--port", "1", "--troop-loss-scale"])).toThrow();
+  });
 });
