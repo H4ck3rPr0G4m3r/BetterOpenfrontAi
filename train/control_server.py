@@ -175,6 +175,7 @@ class JobManager:
             "reward_weights": list(preset.reward_weights)
             if preset.reward_weights
             else None,
+            "troop_loss_scale": preset.troop_loss_scale,
         }
         cfg = deep_merge(cfg, sanitize_override(body.get("config_override", {}) or {}))
         cfg["behavior"] = behavior_cfg
@@ -205,6 +206,7 @@ class JobManager:
             "reward_weights": list(preset.reward_weights)
             if preset.reward_weights
             else None,
+            "troop_loss_scale": preset.troop_loss_scale,
         }
         job = self._spawn("eval", [], cfg, write_config_only=True)
         episodes = int(body.get("episodes", 10))
@@ -388,6 +390,7 @@ def save_preset(body: dict) -> dict:
         "reward_weights": list(preset.reward_weights)
         if preset.reward_weights
         else None,
+        "troop_loss_scale": preset.troop_loss_scale,
         "env_overrides": dict(preset.env_overrides),
         "ppo_overrides": dict(preset.ppo_overrides),
     }
@@ -674,6 +677,7 @@ class LiveSession:
                 reward_weights=tuple(behavior["reward_weights"])
                 if behavior["reward_weights"]
                 else None,
+                troop_loss_scale=float(behavior.get("troop_loss_scale", 1.0)),
                 socket_timeout=10.0 if simulated else self.BOOT_SOCKET_TIMEOUT,
                 spawn_timeout=10.0 if simulated else min(boot_timeout, 600),
                 worker_factory=factory,
@@ -785,6 +789,101 @@ LIVE = LiveSession()
 
 
 # --------------------------------------------------------------------------
+# Local versus play: one human-vs-AI match on a two-seat sim.
+
+
+class VersusManager:
+    """Owns a single PlaySession; the HTTP layer only passes dicts through."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._session = None
+
+    def start(self, body: dict) -> dict:
+        from action_filter import describe_action
+        from play_session import PlaySession, PlaySpec
+
+        predictor = str(body.get("predictor", "scripted"))
+        model = body.get("model", None)
+        if predictor == "checkpoint":
+            if not model:
+                raise ValueError("checkpoint predictor needs a model path")
+            # Same containment as eval jobs: checkpoints unpickle.
+            model = str(resolve_under(TRAIN_DIR, str(model)))
+        spec = PlaySpec(
+            seed=str(body.get("seed", "versus")),
+            bots=int(body.get("bots", 5)),
+            nations=str(body.get("nations", "default")),
+            map=str(body.get("map", "World")),
+            ticks_per_step=int(body.get("ticks_per_step", 10)),
+            tick_cap=int(body.get("tick_cap", 6000)),
+            predictor=predictor,
+            model=model,
+            min_attack_ratio=int(body.get("min_attack_ratio", 0)),
+        )
+        if spec.nations not in ("default", "disabled"):
+            raise ValueError(f"nations must be default or disabled, got {spec.nations}")
+        with self._lock:
+            if self._session is not None:
+                try:
+                    self._session.close()
+                except Exception:
+                    pass
+                self._session = None
+            session = PlaySession(spec)
+            snapshot = session.start()
+            self._session = session
+        return {"active": True, "snapshot": snapshot, "moves": 0}
+
+    def move(self, body: dict) -> dict:
+        from action_filter import describe_action
+
+        with self._lock:
+            session = self._session
+            if session is None:
+                raise ValueError("no active versus game, start one first")
+            result = session.move(body.get("action", {}))
+            moves = session.moves
+        return {
+            **result,
+            "moves": moves,
+            "ai_action_text": describe_action(result["ai_action"]),
+        }
+
+    def state(self) -> dict:
+        from action_filter import describe_action
+
+        with self._lock:
+            session = self._session
+            if session is None:
+                return {"active": False}
+            try:
+                result = session.state()
+            except Exception as exc:
+                return {"active": True, "error": str(exc)}
+        return {
+            "active": True,
+            "moves": result["moves"],
+            "ai_action": result["ai_action"],
+            "ai_action_text": describe_action(result["ai_action"]),
+            **{k: result[k] for k in ("done", "ticks", "snapshot") if k in result},
+        }
+
+    def stop(self) -> dict:
+        with self._lock:
+            session, self._session = self._session, None
+        if session is not None:
+            try:
+                session.close()
+            except Exception:
+                pass
+        return {"active": False}
+
+
+PLAY = VersusManager()
+
+
+# --------------------------------------------------------------------------
 # HTTP layer
 
 
@@ -829,6 +928,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(LIVE.state())
             elif path == "/api/live/stream":
                 self.serve_live_stream()
+            elif path == "/api/play/state":
+                self.send_json(PLAY.state())
             elif path.startswith("/api/jobs/") and path.endswith("/logs"):
                 job_id = path[len("/api/jobs/") : -len("/logs")]
                 self.serve_job_logs(job_id, query)
@@ -864,6 +965,12 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(LIVE.start(body))
             elif path == "/api/live/stop":
                 self.send_json(LIVE.stop())
+            elif path == "/api/play/start":
+                self.send_json(PLAY.start(body), status=201)
+            elif path == "/api/play/move":
+                self.send_json(PLAY.move(body))
+            elif path == "/api/play/stop":
+                self.send_json(PLAY.stop())
             else:
                 self.send_error_json(404, "not found")
         except (ValueError, KeyError) as exc:

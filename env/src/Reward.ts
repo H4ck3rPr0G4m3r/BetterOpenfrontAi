@@ -42,6 +42,11 @@ export interface RewardConfig {
   /** Phase boundary overrides, in post-spawn ticks. */
   earlyEndTick?: number;
   midEndTick?: number;
+  /** Scale on negative troop deltas only (0..1, default 1.0 = symmetric).
+   *  Spending troops on an attack reads as a troop loss under the plain
+   *  delta, so the default reward punishes fighting. 0.0 keeps troop gains
+   *  while ignoring losses. */
+  troopLossScale?: number;
 }
 
 /**
@@ -61,6 +66,7 @@ export class Reward {
   private readonly weights: RewardWeights;
   private readonly earlyEndTick: number;
   private readonly midEndTick: number;
+  private readonly troopLossScale: number;
   private prevLandFraction = 0;
   private prevTroopFraction = 0;
   private prevGoldFraction = 0;
@@ -91,6 +97,11 @@ export class Reward {
     }
     this.earlyEndTick = config.earlyEndTick ?? EARLY_END_TICK;
     this.midEndTick = config.midEndTick ?? MID_END_TICK;
+    const troopLossScale = config.troopLossScale ?? 1.0;
+    if (!Number.isFinite(troopLossScale) || troopLossScale < 0 || troopLossScale > 1) {
+      throw new Error(`troopLossScale must be 0..1, got ${config.troopLossScale}`);
+    }
+    this.troopLossScale = troopLossScale;
   }
 
   /** Call once after `reset()`, before the first `step()`, to seed the
@@ -127,9 +138,15 @@ export class Reward {
           ? this.weights.landEarly
           : this.weights.land * this.weights.landLoss
         : this.weights.land;
+    // Troop spending (attack launches) reads as a troop loss under the
+    // plain delta, punishing the winning action. troopLossScale mutes only
+    // the negative side; gains always count in full.
+    const troopDelta = troopFraction - this.prevTroopFraction;
+    const scaledTroopDelta =
+      troopDelta >= 0 ? troopDelta : troopDelta * this.troopLossScale;
     let shaping =
       landCoef * landDelta +
-      this.weights.troop * (troopFraction - this.prevTroopFraction) +
+      this.weights.troop * scaledTroopDelta +
       this.weights.gold * (goldFraction - this.prevGoldFraction);
 
     if (phase === "mid") {
