@@ -268,22 +268,31 @@ class JobManager:
         return self.start("eval", title, argv, result_path=str(result))
 
     def start_match(self, body: dict) -> Job:
-        """One recorded game in the background, to watch from the replay list:
-        four copies of the AI against each other (plus tribes and nations),
-        or the AI alone against tribes and nations."""
+        """One recorded game in the background, to watch from the replay list.
+        Self-play copies the AI's own training games (seats, tribes, map,
+        length, spawns at its curriculum stage); "bots" seats it alone among
+        the tribes. Nations only when asked for."""
+        from openfront.config import match_env
+
         model = model_spec(body.get("model", "scripted"))
         mode = str(body.get("mode", "selfplay"))
         if mode not in ("selfplay", "bots"):
             raise ValueError("mode must be selfplay or bots")
-        minutes = int_in(body, "minutes", 15, 1, 120)
-        seats = [model] * (4 if mode == "selfplay" else 1)
-        with self._lock:
-            n = self._counter + 1
-        argv = ["evaluate.py", "--seats", *seats, "--games", "1", "--workers", "1", "--bots", "20",
-                "--tick-cap", str(minutes * 600), "--seed", f"match{datetime.now():%Y%m%d%H%M%S}",
-                "--replay-dir", f"replays/matches/match-{n:03d}"]
-        what = "self-play, 4 copies" if mode == "selfplay" else "vs tribes and nations"
-        return self.start("match", f"{Path(model).stem}: {what}, {minutes} min", argv)
+        cfg, stage = training_config(model)
+        env = match_env(cfg, stage, mode)
+        if body.get("minutes") not in (None, ""):
+            env["tick_cap"] = int_in(body, "minutes", 20, 1, 120) * 600
+        nations = bool(body.get("nations"))
+        # Named by time: job numbers restart with the server, folders do not.
+        seed = f"match{datetime.now():%Y%m%d%H%M%S}"
+        argv = ["evaluate.py", "--seats", *[model] * env["seats"], "--games", "1", "--workers", "1",
+                "--map", str(env["map"]), "--bots", str(env["bots"]), "--tick-cap", str(env["tick_cap"]),
+                "--close-spawn", str(env["close_spawn"]), "--nations", "default" if nations else "disabled",
+                "--seed", seed, "--replay-dir", f"replays/matches/{seed}"]
+        who = f"self-play, {env['seats']} AIs" if mode == "selfplay" else "alone"
+        extra = ", nations" if nations else ""
+        title = f"{Path(model).stem}: {who}, {env['bots']} tribes{extra}, {env['tick_cap'] // 600} min"
+        return self.start("match", title, argv)
 
     def start_watch(self, body: dict) -> Job:
         replay = resolve_under(TRAIN_DIR / "replays", str(body.get("replay", "")))
@@ -368,6 +377,18 @@ def list_replays() -> list[dict]:
         return []
     found = sorted(root.glob("**/*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
     return [_stat(p, root) for p in found]
+
+
+def training_config(model: str) -> tuple[dict | None, int]:
+    """A checkpoint's stored training config and curriculum stage
+    (None, 0 for the built-in agents or checkpoints without one)."""
+    if model in AGENTS:
+        return None, 0
+    import torch
+
+    payload = torch.load(str(TRAIN_DIR / model), map_location="cpu", weights_only=False)
+    meta = payload.get("meta") or {}
+    return meta.get("config"), int(meta.get("stage") or 0)
 
 
 def delete_replays(paths) -> dict:

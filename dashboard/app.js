@@ -540,7 +540,8 @@ async function boot() {
   submitter("match-form", $("match-error"), () => ["/api/jobs/match", {
     model: $("match-model").value,
     mode: $("match-mode").value,
-    minutes: Number($("match-minutes").value),
+    minutes: $("match-minutes").value === "" ? "" : Number($("match-minutes").value),
+    nations: $("match-nations").checked,
   }]);
   $("public-find").addEventListener("click", findPublic);
   $("public-next").addEventListener("click", (ev) => joinPublic({ public: $("public-kind").value }, ev.currentTarget));

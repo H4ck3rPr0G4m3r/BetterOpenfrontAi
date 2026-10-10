@@ -182,6 +182,36 @@ def stage_env(cfg: dict, stage: int) -> dict:
     return env
 
 
+MATCH_FALLBACK = {"map": "World", "bots": 20, "tick_cap": 12000, "close_spawn": 0.3, "seats": 4}
+
+
+def match_env(cfg: dict | None, stage: int = 0, mode: str = "selfplay") -> dict:
+    """Map, tribes, length, spawns and seats for a quick match that looks
+    like the training games of ``cfg`` (a checkpoint's stored config) at
+    curriculum ``stage``. ``mode`` "selfplay" seats several copies of the
+    AI (the recipe's own seat count, 4 if it trained alone); "bots" seats
+    it alone. Mixed recipes use their matching scenario. Nations are not
+    part of this: the caller decides."""
+    out = dict(MATCH_FALLBACK)
+    if cfg and cfg.get("env"):
+        env = stage_env({"env": cfg["env"], "curriculum": cfg.get("curriculum") or []}, stage)
+        scenarios = cfg.get("scenarios") or []
+        if mode == "selfplay":
+            pool = [s for s in scenarios if s.get("name") == "selfplay_ffa"] or \
+                   sorted((s for s in scenarios if int(s.get("seats", env["seats"])) >= 2),
+                          key=lambda s: -float(s.get("weight", 1)))
+        else:
+            pool = [s for s in scenarios if int(s.get("seats", env["seats"])) == 1]
+        if pool:
+            env.update({k: v for k, v in pool[0].items() if k in SCENARIO_ENV_KEYS})
+        out.update({k: env[k] for k in ("map", "bots", "tick_cap", "close_spawn", "seats") if k in env})
+    if mode == "selfplay":
+        out["seats"] = int(out["seats"]) if int(out["seats"]) >= 2 else 4
+    else:
+        out["seats"], out["close_spawn"] = 1, 0.0
+    return out
+
+
 def scenario_workers(cfg: dict, stage: int = 0) -> list[tuple[str, dict]]:
     """(scenario name, env) per worker at curriculum ``stage``: workers split
     by weight (the stage's ``weights`` override the scenarios' own), each

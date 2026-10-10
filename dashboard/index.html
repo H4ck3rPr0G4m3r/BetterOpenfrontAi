@@ -148,15 +148,16 @@
       <label>AI <select id="match-model" class="model-select"></select></label>
       <label>Match
         <select id="match-mode">
-          <option value="selfplay">Self-play: 4 copies of the AI</option>
-          <option value="bots">Vs tribes and nations</option>
+          <option value="selfplay">Self-play, like its training games</option>
+          <option value="bots">The AI alone vs tribes</option>
         </select>
       </label>
-      <label>Minutes <input id="match-minutes" type="number" value="15" min="1" max="120"></label>
+      <label>Minutes <input id="match-minutes" type="number" min="1" max="120" placeholder="As trained"></label>
+      <label class="check"><input id="match-nations" type="checkbox"> Nations</label>
       <div class="form-actions"><button type="submit" class="primary">Play quick match</button></div>
     </form>
     <div id="match-error" class="error" hidden></div>
-    <div id="match-jobs" class="job-cards" data-empty="Quick matches run in the background and show up in the list below when they finish."></div>
+    <div id="match-jobs" class="job-cards" data-empty="Self-play copies the AI's own training games: same number of AIs, tribes, map and length. Nations only when ticked. Finished matches show up in the list below."></div>
 
     <div class="replay-tools">
       <input id="replay-filter" placeholder="Filter by run or outcome" aria-label="Filter replays">

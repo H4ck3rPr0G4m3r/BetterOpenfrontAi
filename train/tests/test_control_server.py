@@ -103,11 +103,29 @@ def test_quick_match_records_one_game(base_url):
     assert argv[argv.index("--seats") + 1: argv.index("--games")] == ["scripted"] * 4
     assert argv[argv.index("--games") + 1] == "1" and argv[argv.index("--tick-cap") + 1] == "3000"
     assert argv[argv.index("--replay-dir") + 1].startswith("replays/matches/")
-    status, _, _ = _request("POST", f"{url}/api/jobs/match", {"model": "scripted", "mode": "bots"})
+    assert argv[argv.index("--nations") + 1] == "disabled"  # nations only when asked for
+    status, _, _ = _request("POST", f"{url}/api/jobs/match", {"model": "scripted", "mode": "bots", "nations": True,
+                                                              "minutes": ""})
     argv = launched[-1]["argv"]
     assert argv[argv.index("--seats") + 1: argv.index("--games")] == ["scripted"]
+    assert argv[argv.index("--nations") + 1] == "default"
+    assert argv[argv.index("--tick-cap") + 1] == "12000"  # blank minutes: the training length
     status, _, _ = _request("POST", f"{url}/api/jobs/match", {"model": "scripted", "mode": "chaos"})
     assert status == 400
+
+
+def test_match_env_follows_the_training_stage():
+    from openfront.config import match_env
+
+    cfg = {"env": {"map": "World", "bots": 20, "tick_cap": 12000, "close_spawn": 0.3, "seats": 4},
+           "curriculum": [{"name": "warmup", "bots": 10, "nations": "disabled"}, {"name": "full", "bots": 20}]}
+    assert match_env(cfg, 0, "selfplay") == {"map": "World", "bots": 10, "tick_cap": 12000, "close_spawn": 0.3, "seats": 4}
+    assert match_env(cfg, 1, "selfplay")["bots"] == 20
+    assert match_env(cfg, 0, "bots")["seats"] == 1
+    mixed = {"env": {"map": "World", "bots": 20, "tick_cap": 12000, "close_spawn": 0.0, "seats": 4},
+             "scenarios": [{"name": "vs_bots", "seats": 1}, {"name": "crowded", "seats": 6, "bots": 30, "weight": 1},
+                           {"name": "selfplay_ffa", "seats": 4, "weight": 3}]}
+    assert match_env(mixed, 0, "selfplay")["seats"] == 4
 
 
 def test_public_lobby_job(base_url):
