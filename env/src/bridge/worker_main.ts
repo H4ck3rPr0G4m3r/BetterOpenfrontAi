@@ -1,5 +1,5 @@
 import path from "path";
-import { GameMapType } from "../../../OpenFrontIO/src/core/game/Game";
+import { Difficulty, GameMapType } from "../../../OpenFrontIO/src/core/game/Game";
 import { ActionCodecImpl } from "../ActionCodec";
 import { BehaviorConfig, DEFAULT_TROOP_RESERVE, normalizeRewardWeights, RewardWeights } from "../BehaviorConfig";
 import { GameEnv } from "../GameEnv";
@@ -18,6 +18,7 @@ export interface WorkerOptions {
   mapsDir: string;
   bots: number;
   nations: "default" | "disabled";
+  difficulty: Difficulty;
   ticksPerStep: number;
   tickCap: number;
   disabledIntents: number[];
@@ -39,6 +40,7 @@ Usage: tsx src/bridge/worker_main.ts --port N [options]
   --maps-dir DIR       engine resources/maps dir
   --bots N             engine bots (20)
   --nations MODE       default | disabled
+  --difficulty D       nation difficulty: Easy | Medium | Hard | Impossible (Medium)
   --ticks-per-step N   (10)
   --tick-cap N         post-spawn tick cap (6000)
   --disable-intent K   shut one intent type, repeatable (1..13)
@@ -61,6 +63,7 @@ export function parseWorkerArgs(argv: string[]): WorkerOptions {
     mapsDir: path.resolve(process.cwd(), "../OpenFrontIO/resources/maps"),
     bots: 20,
     nations: "default",
+    difficulty: Difficulty.Medium,
     ticksPerStep: 10,
     tickCap: 6000,
     disabledIntents: [],
@@ -108,6 +111,12 @@ export function parseWorkerArgs(argv: string[]): WorkerOptions {
         const v = value();
         if (v !== "default" && v !== "disabled") throw new Error(`nations must be default or disabled, got ${v}`);
         o.nations = v;
+        break;
+      }
+      case "--difficulty": {
+        const v = value();
+        if (!(Object.values(Difficulty) as string[]).includes(v)) throw new Error(`unknown difficulty ${v}`);
+        o.difficulty = v as Difficulty;
         break;
       }
       case "--ticks-per-step": o.ticksPerStep = int(1, 1000); break;
@@ -165,6 +174,7 @@ async function main(): Promise<void> {
     mapsDir: o.mapsDir,
     bots: o.bots,
     nations: o.nations,
+    difficulty: o.difficulty,
     ticksPerStep: o.ticksPerStep,
     tickCap: o.tickCap,
     seats: o.seats,

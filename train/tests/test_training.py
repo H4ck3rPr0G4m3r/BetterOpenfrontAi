@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import random
+from collections import Counter
 
 import numpy as np
 import pytest
@@ -285,7 +286,34 @@ def test_scenarios_split_workers_by_weight():
     with pytest.raises(ValueError):
         load_config(overrides={"scenarios": [{"name": "x", "flavor": 1}]})
     with pytest.raises(ValueError):
-        load_config(overrides={"scenarios": [{"name": "x"}], "curriculum": [{"bots": 3}]})
+        load_config(overrides={"scenarios": [{"name": "x"}], "curriculum": [{"weights": {"nope": 1}}]})
+    with pytest.raises(ValueError):
+        load_config(overrides={"env": {"difficulty": "Brutal"}})
+
+
+def test_curriculum_stages_reweight_scenarios_and_set_difficulty():
+    from openfront.config import scenario_workers
+
+    cfg = load_config("configs/main.yaml")
+    early, late = Counter(n for n, _ in scenario_workers(cfg, 0)), Counter(n for n, _ in scenario_workers(cfg, 2))
+    assert early["easy"] > late["easy"] and early["close_rivals"] <= late["close_rivals"]
+    assert all(env["difficulty"] == "Easy" for _, env in scenario_workers(cfg, 0))
+    assert all(env["difficulty"] == "Medium" for _, env in scenario_workers(cfg, 1))
+    assert all(env["nations"] == "disabled" for n, env in scenario_workers(cfg, 0) if n == "easy")
+    assert sum(1 for _ in scenario_workers(cfg, 0)) == cfg["env"]["workers"]
+
+
+def test_promotion_is_judged_on_the_listed_scenarios(tmp_path):
+    cfg = tiny_config(tmp_path)
+    cfg["scenarios"] = [{"name": "easy", "seats": 1}, {"name": "hard", "seats": 1}]
+    cfg["curriculum"] = [{"promote": {"survival": 0.5, "min_episodes": 4, "scenarios": ["hard"]}}, {}]
+    trainer = Trainer(cfg, worker_factory=fake_factory([], game_length=5), log=lambda m: None)
+    alive = lambda sc: {"terminal": "tick_cap", "scenario": sc}
+    dead = lambda sc: {"terminal": "death", "scenario": sc}
+    trainer.stage_episodes.extend([alive("easy")] * 10 + [dead("hard")] * 4)
+    assert not trainer._maybe_promote()  # easy games cannot carry it
+    trainer.stage_episodes.extend([alive("hard")] * 4)
+    assert trainer._maybe_promote() and trainer.stage == 1
 
 
 def test_vec_games_with_mixed_seat_counts():

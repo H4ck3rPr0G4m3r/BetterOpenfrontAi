@@ -152,7 +152,7 @@ export class GameEnv {
       gameMapSize: GameMapSize.Normal,
       gameMode: GameMode.FFA,
       gameType: GameType.Public,
-      difficulty: Difficulty.Medium,
+      difficulty: this.config.difficulty ?? Difficulty.Medium,
       nations: this.config.nations ?? "default",
       donateGold: false,
       donateTroops: false,

@@ -27,6 +27,7 @@ DEFAULTS: dict = {
         "map": "World",
         "bots": 20,
         "nations": "default",
+        "difficulty": "Medium",  # nations: Easy | Medium | Hard | Impossible
         "ticks_per_step": 10,
         "tick_cap": 6000,
         "workers": 8,
@@ -89,14 +90,15 @@ DEFAULTS: dict = {
     },
     "curriculum": [],
     # Mixed training: each scenario gets a share of the workers (by weight)
-    # and its own env overrides; see configs/main.yaml. Exclusive with
-    # curriculum.
+    # and its own env overrides; see configs/main.yaml. Curriculum stages can
+    # change the weights (stage "weights": {name: w}) and the shared env.
     "scenarios": [],
     "model": {"trunk": 256, "slot_dim": 64, "site_dim": 32, "context": 128},
 }
 
-CURRICULUM_ENV_KEYS = {"bots", "nations", "seats", "tick_cap", "map"}
-SCENARIO_ENV_KEYS = {"bots", "nations", "seats", "tick_cap", "map", "close_spawn"}
+CURRICULUM_ENV_KEYS = {"bots", "nations", "seats", "tick_cap", "map", "difficulty"}
+SCENARIO_ENV_KEYS = {"bots", "nations", "seats", "tick_cap", "map", "close_spawn", "difficulty"}
+DIFFICULTIES = ("Easy", "Medium", "Hard", "Impossible")
 
 
 def _merge(base: dict, override: dict, path: str = "") -> dict:
@@ -139,8 +141,9 @@ def validate(cfg: dict) -> None:
         raise ValueError("selfplay.learner_seat_prob must be 0..1")
     if int(ppo["minibatch"]) < 1 or int(ppo["n_steps"]) < 1 or int(ppo["epochs"]) < 1:
         raise ValueError("ppo.minibatch, n_steps, epochs must be >= 1")
-    if cfg["scenarios"] and cfg["curriculum"]:
-        raise ValueError("use scenarios or curriculum, not both")
+    names = {str(sc.get("name")) for sc in cfg["scenarios"]}
+    if env["difficulty"] not in DIFFICULTIES:
+        raise ValueError(f"env.difficulty must be one of {DIFFICULTIES}")
     for i, sc in enumerate(cfg["scenarios"]):
         extra = set(sc) - SCENARIO_ENV_KEYS - {"name", "weight"}
         if extra or "name" not in sc:
@@ -149,12 +152,22 @@ def validate(cfg: dict) -> None:
             raise ValueError(f"scenarios[{i}].weight must be > 0")
         if not 1 <= int(sc.get("seats", env["seats"])) <= 8:
             raise ValueError(f"scenarios[{i}].seats must be 1..8")
+        if sc.get("difficulty", env["difficulty"]) not in DIFFICULTIES:
+            raise ValueError(f"scenarios[{i}].difficulty must be one of {DIFFICULTIES}")
     if cfg["scenarios"] and int(env["workers"]) < len(cfg["scenarios"]):
         raise ValueError("need at least one worker per scenario")
     for i, stage in enumerate(cfg["curriculum"]):
-        extra = set(stage) - CURRICULUM_ENV_KEYS - {"promote", "name"}
+        extra = set(stage) - CURRICULUM_ENV_KEYS - {"promote", "name", "weights"}
         if extra:
             raise ValueError(f"curriculum[{i}] has unknown keys {sorted(extra)}")
+        if stage.get("difficulty", env["difficulty"]) not in DIFFICULTIES:
+            raise ValueError(f"curriculum[{i}].difficulty must be one of {DIFFICULTIES}")
+        unknown = set(stage.get("weights") or {}) - names
+        if unknown:
+            raise ValueError(f"curriculum[{i}].weights names unknown scenarios {sorted(unknown)}")
+        unknown = set((stage.get("promote") or {}).get("scenarios") or []) - names
+        if unknown:
+            raise ValueError(f"curriculum[{i}].promote.scenarios names unknown scenarios {sorted(unknown)}")
 
 
 def stage_env(cfg: dict, stage: int) -> dict:
@@ -166,15 +179,20 @@ def stage_env(cfg: dict, stage: int) -> dict:
     return env
 
 
-def scenario_workers(cfg: dict) -> list[tuple[str, dict]]:
-    """(scenario name, env) per worker: workers split by weight, each
-    scenario getting at least one (largest remainder)."""
-    env = cfg["env"]
+def scenario_workers(cfg: dict, stage: int = 0) -> list[tuple[str, dict]]:
+    """(scenario name, env) per worker at curriculum ``stage``: workers split
+    by weight (the stage's ``weights`` override the scenarios' own), each
+    scenario getting at least one (largest remainder). Env: base, then the
+    stage's env keys, then the scenario's own keys."""
+    env = stage_env(cfg, stage)
     scenarios = cfg["scenarios"]
     workers = int(env["workers"])
     if not scenarios:
         return [("default", copy.deepcopy(env))] * workers
-    weights = [float(s.get("weight", 1)) for s in scenarios]
+    overrides = {}
+    if cfg["curriculum"]:
+        overrides = cfg["curriculum"][min(stage, len(cfg["curriculum"]) - 1)].get("weights") or {}
+    weights = [float(overrides.get(s["name"], s.get("weight", 1))) for s in scenarios]
     total = sum(weights)
     share = [1 + (workers - len(scenarios)) * w / total for w in weights]
     counts = [int(x) for x in share]
@@ -196,6 +214,7 @@ def worker_config(env: dict, reward: dict):
         map=str(env["map"]),
         bots=int(env["bots"]),
         nations=str(env["nations"]),
+        difficulty=str(env.get("difficulty", "Medium")),
         ticks_per_step=int(env["ticks_per_step"]),
         tick_cap=int(env["tick_cap"]),
         maps_dir=env.get("maps_dir"),

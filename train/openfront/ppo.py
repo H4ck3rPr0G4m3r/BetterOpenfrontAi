@@ -129,7 +129,7 @@ class Trainer:
         self._apply_replay_env()
         seed = f"{self.name}-s{self.stage}-u{self.update}-{self.cfg['run']['seed']}"
         if self.cfg["scenarios"]:
-            plan = scenario_workers(self.cfg)
+            plan = scenario_workers(self.cfg, self.stage)
             wcs = [worker_config(env, self.cfg["reward"]) for _, env in plan]
             names = [name for name, _ in plan]
         else:
@@ -365,13 +365,20 @@ class Trainer:
         need = int(rule.get("min_episodes", 200))
         if len(self.stage_episodes) < need:
             return False
-        recent = list(self.stage_episodes)[-need:]
+        # Judged only on the listed scenarios when given (e.g. the ones with
+        # nations), so easy games cannot carry a promotion.
+        judged = set(rule.get("scenarios") or [])
+        pool = [e for e in self.stage_episodes if not judged or e.get("scenario") in judged]
+        if len(pool) < need:
+            return False
+        recent = pool[-need:]
         survival = sum(e["terminal"] in ("tick_cap", "win") for e in recent) / need
         if survival < float(rule.get("survival", 0.6)):
             return False
         self.stage += 1
         self.stage_episodes.clear()
-        self.log(f"[{self.name}] curriculum: survival {survival:.2f} over {need} episodes, promoted to stage {self.stage}")
+        where = f" in {sorted(judged)}" if judged else ""
+        self.log(f"[{self.name}] curriculum: survival {survival:.2f}{where} over {need} episodes, promoted to stage {self.stage}")
         return True
 
     def _update(self, rollout: Rollout, adv: np.ndarray, ret: np.ndarray, total: int) -> dict:

@@ -67,6 +67,16 @@ cd train && python watch_replay.py replays/selfplay/<file>.json   # needs npm ru
 
 ## Training
 
+The main recipe trains one AI on a mix of scenarios at once (alone among
+tribes and nations, 4-AI free-for-all, two AIs spawned close, a crowded
+map, and an easy no-nations map), with a curriculum: nations start on
+Easy and the mix leans on easy games; it moves to Medium nations and a
+nation-heavy mix as survival in the nation scenarios passes 50% / 40%.
+
+```bash
+cd train && python train.py --config configs/main.yaml --set run.total_steps=3000000
+```
+
 ```bash
 cd train
 python train.py --config configs/selfplay.yaml --set run.name=selfplay_v4 --set run.total_steps=100000

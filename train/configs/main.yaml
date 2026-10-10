@@ -13,6 +13,15 @@
 #   crowded       6 AIs and extra tribes: a busy, aggressive map
 #   easy          2 AIs, fewer tribes, no nations: room to practise economy
 #
+# Curriculum: nations start on Easy and the mix leans on easy games; each
+# stage is promoted when the AI survives often enough in the scenarios WITH
+# nations (the easy scenario cannot carry a promotion). Promotion restarts
+# the games with the next stage's difficulty and worker split.
+#
+#   learn    Easy nations, easy-heavy mix      -> 50% survival with nations
+#   harden   Medium nations, balanced mix      -> 40% survival with nations
+#   full     Medium nations, nation-heavy mix  (final)
+#
 # Per-scenario survival, return and land are logged as scenario/<name>/...
 run:
   name: main
@@ -41,3 +50,16 @@ scenarios:
   - {name: close_rivals, weight: 2, seats: 2, close_spawn: 1.0}
   - {name: crowded, weight: 1, seats: 6, bots: 30}
   - {name: easy, weight: 1, seats: 2, bots: 10, nations: disabled}
+
+curriculum:
+  - name: learn
+    difficulty: Easy
+    weights: {easy: 3, vs_bots: 3, selfplay_ffa: 2, close_rivals: 1, crowded: 1}
+    promote: {survival: 0.5, min_episodes: 100, scenarios: [vs_bots, selfplay_ffa, close_rivals, crowded]}
+  - name: harden
+    difficulty: Medium
+    weights: {easy: 2, vs_bots: 3, selfplay_ffa: 3, close_rivals: 1, crowded: 1}
+    promote: {survival: 0.4, min_episodes: 100, scenarios: [vs_bots, selfplay_ffa, close_rivals, crowded]}
+  - name: full
+    difficulty: Medium
+    weights: {easy: 1, vs_bots: 3, selfplay_ffa: 3, close_rivals: 2, crowded: 1}

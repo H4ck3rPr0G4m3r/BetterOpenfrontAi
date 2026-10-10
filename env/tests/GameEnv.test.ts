@@ -4,6 +4,7 @@ import path from "path";
 import { beforeAll, describe, expect, it } from "vitest";
 import { GameRecordSchema, type Turn } from "../../OpenFrontIO/src/core/Schemas";
 import { createGameRunner } from "../../OpenFrontIO/src/core/GameRunner";
+import { Difficulty } from "../../OpenFrontIO/src/core/game/Game";
 import { NodeGameMapLoader } from "../../OpenFrontIO/tests/perf/fullgame/NodeGameMapLoader";
 import type { SeatStep } from "../src/GameEnv";
 import { GlobalField, GLOBAL_OFFSET } from "../src/Layout";
@@ -46,6 +47,12 @@ describe("GameEnv lifecycle", () => {
       const d = Math.hypot((first % w) - (t % w), Math.floor(first / w) - Math.floor(t / w));
       expect(d).toBeLessThanOrEqual(60);
     }
+  }, LONG);
+
+  it("plays nations at the configured difficulty", async () => {
+    const env = makeEnv({ difficulty: Difficulty.Easy });
+    await env.reset("difficulty-1");
+    expect(env.game.config().gameConfig().difficulty).toBe(Difficulty.Easy);
   }, LONG);
 
   it("is deterministic for a seed and action sequence", async () => {

@@ -34,6 +34,7 @@ class WorkerConfig:
     map: str = "World"
     bots: int = 20
     nations: str = "default"
+    difficulty: str = "Medium"
     ticks_per_step: int = 10
     tick_cap: int = 6000
     maps_dir: str | None = None
@@ -50,7 +51,7 @@ class WorkerConfig:
     def argv(self, port: int) -> list[str]:
         argv = [
             "--port", str(port), "--games", str(self.games), "--seats", str(self.seats),
-            "--map", self.map, "--bots", str(self.bots), "--nations", self.nations,
+            "--map", self.map, "--bots", str(self.bots), "--nations", self.nations, "--difficulty", self.difficulty,
             "--ticks-per-step", str(self.ticks_per_step), "--tick-cap", str(self.tick_cap),
         ]
         if self.maps_dir:

@@ -1,4 +1,4 @@
-import type { GameMapType } from "../../OpenFrontIO/src/core/game/Game";
+import type { Difficulty, GameMapType } from "../../OpenFrontIO/src/core/game/Game";
 
 /**
  * One seat's action: five heads, conditioned on intentType (see Layout.ts
@@ -35,6 +35,8 @@ export interface EnvConfig {
   seats: number;
   /** Scripted nations: "default" (map manifest) or "disabled". */
   nations?: "default" | "disabled";
+  /** Nation difficulty (Easy | Medium | Hard | Impossible). Default Medium. */
+  difficulty?: Difficulty;
   /** Probability that a multi-seat game spawns every seat close together. */
   closeSpawn?: number;
   /** Episode recording for data replays. Absent means off. */
