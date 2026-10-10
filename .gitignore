@@ -15,3 +15,6 @@ replays/
 *.cpuprofile
 *.heapprofile
 *.heapsnapshot
+
+# Built in-page agent bundle (npm run build:page in env/).
+env/dist/
