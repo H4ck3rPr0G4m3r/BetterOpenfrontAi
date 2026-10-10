@@ -45,6 +45,28 @@
     </form>
     <div id="lobby-error" class="error" hidden></div>
 
+    <div class="public-head">
+      <h2>Public openfront.io lobbies</h2>
+      <button id="public-find" type="button" class="ghost">Find lobbies</button>
+      <label class="inline">Kind
+        <select id="public-kind">
+          <option value="ffa">Free for all</option>
+          <option value="team">Teams</option>
+          <option value="special">Special</option>
+          <option value="any">Any</option>
+        </select>
+      </label>
+      <button id="public-next" type="button" class="primary">Join next</button>
+      <span id="public-note" class="hint">Uses the AI and name above. A browser window opens; click the Cloudflare check if it asks.</span>
+    </div>
+    <div id="public-error" class="error" hidden></div>
+    <div class="table-wrap" id="public-wrap" hidden>
+      <table id="public-table">
+        <thead><tr><th>Map</th><th>Kind</th><th class="num">Players</th><th class="num">Starts in</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
     <div class="split">
       <div>
         <h2>Active AIs</h2>

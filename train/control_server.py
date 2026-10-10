@@ -3,7 +3,7 @@
 Everything the dashboard starts is an ordinary subprocess job running the
 same CLI you would run by hand, with its output kept in a log:
 
-* lobby  play_lobby.py <lobby> ...   (AI vs Human locally, or a real lobby)
+* lobby  play_lobby.py <lobby> | --public KIND ...   (AI vs Human locally, or a real lobby)
 * train  train.py --config ... --set run.total_steps=...
 * eval   evaluate.py --seats ... --games ... --json ...
 * watch  watch_replay.py <file>      (opens the game client on a replay)
@@ -198,19 +198,32 @@ class JobManager:
     # ----- the four job kinds ------------------------------------------------
 
     def start_lobby(self, body: dict) -> Job:
-        from openfront.lobby import resolve_lobby
+        from openfront.lobby import PUBLIC_KINDS, resolve_lobby
 
-        host = str(body.get("host", "local"))
-        if host not in ("local", "openfront"):
-            raise ValueError("host must be local or openfront")
-        base, lobby = resolve_lobby(str(body.get("lobby", "")), host)
         model = model_spec(body.get("model", "scripted"))
         name = re.sub(r"[^A-Za-z0-9 _-]+", "", str(body.get("name") or "OpenFrontAI")).strip()[:24] or "OpenFrontAI"
         profile = safe_name(body.get("profile"), "default")
-        argv = ["play_lobby.py", lobby, "--host", base, "--model", model, "--name", name, "--profile", profile]
+        public = body.get("public")
+        if public:
+            # The next public openfront.io lobby of this kind, picked at join time.
+            if public not in (*PUBLIC_KINDS, "any"):
+                raise ValueError(f"public must be one of {', '.join((*PUBLIC_KINDS, 'any'))}")
+            target, where = ["--public", public, "--host", "openfront"], f"next public {public} lobby"
+        else:
+            host = str(body.get("host", "local"))
+            if host not in ("local", "openfront"):
+                raise ValueError("host must be local or openfront")
+            base, lobby = resolve_lobby(str(body.get("lobby", "")), host)
+            target, where = [lobby, "--host", base], lobby
+        argv = ["play_lobby.py", *target, "--model", model, "--name", name, "--profile", profile]
         if body.get("deterministic"):
             argv.append("--deterministic")
-        return self.start("lobby", f"{name} in {lobby} ({Path(model).stem})", argv)
+        return self.start("lobby", f"{name} in {where} ({Path(model).stem})", argv)
+
+    def profile_in_use(self, profile: str) -> bool:
+        with self._lock:
+            return any(j.kind == "lobby" and j.status == "running" and
+                       f"--profile\x00{profile}" in "\x00".join(j.argv) for j in self._jobs.values())
 
     def start_train(self, body: dict) -> Job:
         config = resolve_under(TRAIN_DIR, "configs", str(body.get("config", "selfplay.yaml")))
@@ -252,6 +265,30 @@ class JobManager:
 
 
 JOBS = JobManager()
+PUBLIC_LOCK = threading.Lock()
+
+
+def public_lobbies() -> dict:
+    """openfront.io's public lobbies, read by ``play_lobby.py --list`` in a
+    short-lived visible window. Uses the joining profile (so one bot check
+    covers both) unless a lobby job has it open."""
+    if not PUBLIC_LOCK.acquire(blocking=False):
+        raise ValueError("already looking for lobbies; finish the check in the browser window")
+    try:
+        profile = "browse" if JOBS.profile_in_use("default") else "default"
+        try:
+            proc = subprocess.run([sys.executable, "-u", "play_lobby.py", "--list", "--profile", profile],
+                                  cwd=str(TRAIN_DIR), capture_output=True, text=True, timeout=240)
+        except subprocess.TimeoutExpired:
+            raise ValueError("openfront.io did not load in time (was the Cloudflare check answered?)") from None
+        if proc.returncode != 0:
+            last = (proc.stderr.strip().splitlines() or ["lobby listing failed"])[-1]
+            raise ValueError(last)
+        out = json.loads(proc.stdout.strip().splitlines()[-1])
+        out["fetched"] = now_iso()
+        return out
+    finally:
+        PUBLIC_LOCK.release()
 
 
 # --------------------------------------------------------------------------
@@ -403,6 +440,8 @@ class Handler(BaseHTTPRequestHandler):
         raise KeyError(path)
 
     def _post(self, path: str, body: dict) -> None:
+        if path == "/api/public-lobbies":
+            return self.send_json(public_lobbies())
         starters = {"/api/jobs/lobby": JOBS.start_lobby, "/api/jobs/train": JOBS.start_train,
                     "/api/jobs/eval": JOBS.start_eval, "/api/jobs/watch": JOBS.start_watch}
         if path not in starters:

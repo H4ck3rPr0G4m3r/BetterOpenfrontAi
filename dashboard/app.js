@@ -198,6 +198,73 @@ function submitter(formId, errorBox, build) {
   });
 }
 
+/* ---------------- public openfront.io lobbies ---------------- */
+
+const KINDS = { ffa: "Free for all", team: "Teams", special: "Special", hosted: "Player hosted" };
+let publicList = { rows: [], at: 0 };
+let publicTimer = null;
+
+function lobbyBody(extra) {
+  return { model: $("lobby-model").value, name: $("lobby-name").value, ...extra };
+}
+
+async function joinPublic(body, button) {
+  button.disabled = true;
+  try {
+    await api("POST", "/api/jobs/lobby", lobbyBody(body));
+    showError($("public-error"), null);
+    await refreshState();
+  } catch (err) {
+    showError($("public-error"), err);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function renderPublic() {
+  const body = $("public-table").querySelector("tbody");
+  const elapsed = (Date.now() - publicList.at) / 1000;
+  const rows = publicList.rows.filter((r) => r.kind !== "hosted");
+  $("public-wrap").hidden = false;
+  if (!rows.length) {
+    body.replaceChildren(el("tr", { class: "empty-row" }, el("td", { colspan: "5" }, "No public lobbies are open right now.")));
+    return;
+  }
+  body.replaceChildren(...rows.map((r) => {
+    const left = r.starts_in === null ? null : Math.round(r.starts_in - elapsed);
+    const started = left !== null && left <= 0;
+    const full = r.max && r.players >= r.max;
+    const join = el("button", { type: "button", class: "small", onclick: (ev) => joinPublic({ lobby: r.id, host: "openfront" }, ev.currentTarget) }, "Join");
+    if (started || full) join.disabled = true;
+    return el("tr", {},
+      el("td", {}, r.map || "?"),
+      el("td", {}, KINDS[r.kind] || r.kind),
+      el("td", { class: "num" }, r.max ? `${r.players} / ${r.max}` : String(r.players)),
+      el("td", { class: "num" }, left === null ? "waiting" : started ? "started" : `${left}s`),
+      el("td", {}, join));
+  }));
+}
+
+async function findPublic() {
+  const button = $("public-find");
+  button.disabled = true;
+  $("public-note").textContent = "Opening openfront.io in a browser window. Click the Cloudflare check there if it asks.";
+  try {
+    const data = await api("POST", "/api/public-lobbies");
+    publicList = { rows: data.lobbies || [], at: Date.now() };
+    showError($("public-error"), null);
+    $("public-note").textContent = `Listed ${new Date().toLocaleTimeString()}.`;
+    renderPublic();
+    clearInterval(publicTimer);
+    publicTimer = setInterval(renderPublic, 1000);
+  } catch (err) {
+    showError($("public-error"), err);
+    $("public-note").textContent = "";
+  } finally {
+    button.disabled = false;
+  }
+}
+
 /* ---------------- charts ---------------- */
 
 const CHARTS = [
@@ -380,6 +447,8 @@ async function boot() {
     if (/openfront\.io/.test(ev.target.value)) $("lobby-host").value = "openfront";
     else if (/localhost|127\.0\.0\.1/.test(ev.target.value)) $("lobby-host").value = "local";
   });
+  $("public-find").addEventListener("click", findPublic);
+  $("public-next").addEventListener("click", (ev) => joinPublic({ public: $("public-kind").value }, ev.currentTarget));
   const trainError = el("div", { class: "error", hidden: "" });
   $("train-form").after(trainError);
   submitter("train-form", trainError, () => ["/api/jobs/train", {

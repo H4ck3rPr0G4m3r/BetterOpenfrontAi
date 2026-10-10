@@ -49,12 +49,17 @@ cd train && python play_lobby.py AbCd1234 --model checkpoints/selfplay_v3/selfpl
 **AI in a real openfront.io lobby**: pass the lobby link (or `--host openfront` with the ID).
 
 ```bash
-python play_lobby.py https://openfront.io/w2/game/AbCd1234 --model <checkpoint.pt>
+python play_lobby.py https://openfront.io/w2/game/cP9iiNqCDz --model <checkpoint.pt>
+python play_lobby.py --list                                  # public lobbies right now
+python play_lobby.py --public ffa --model <checkpoint.pt>    # next public FFA lobby
 ```
 
 The AI plays in a visible browser window as a normal, named player. It
 reads the client's own game state and sends intents through the client's
-own handlers. Any human check the site shows is yours to answer.
+own handlers. Any human check the site shows is yours to answer. If
+Cloudflare refuses the automated browser (the check never appears, or
+keeps coming back), openfront.io is not available to the bot; nothing here
+works around that.
 
 ## Watching replays
 

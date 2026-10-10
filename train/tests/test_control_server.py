@@ -75,6 +75,16 @@ def test_lobby_job_runs_play_lobby(base_url):
     assert argv[argv.index("--name") + 1] == "Bot script"
 
 
+def test_public_lobby_job(base_url):
+    url, launched = base_url
+    status, _, _ = _request("POST", f"{url}/api/jobs/lobby", {"public": "ffa", "model": "scripted"})
+    assert status == 201
+    argv = launched[-1]["argv"]
+    assert argv[1:5] == ["--public", "ffa", "--host", "openfront"]
+    status, _, _ = _request("POST", f"{url}/api/jobs/lobby", {"public": "ranked", "model": "scripted"})
+    assert status == 400
+
+
 @pytest.mark.parametrize("body", [
     {"lobby": "nope", "model": "scripted"},
     {"lobby": "AbCd1234", "model": "../../secrets.pt"},
