@@ -1,4 +1,4 @@
-import type { Game, Player } from "../../OpenFrontIO/src/core/game/Game";
+import { PlayerType, type Game, type Player } from "../../OpenFrontIO/src/core/game/Game";
 import type { TileRef } from "../../OpenFrontIO/src/core/game/GameMap";
 
 /** Share of our land an attack may take and still count as repelled. */
@@ -18,12 +18,13 @@ interface TrackedAttack {
  *
  * Tile captures come from a wrapper around the game's conquer() (the one
  * path every land transfer takes), so attribution is exact: who took the
- * tile, from whom, and whether the loser had fewer troops at that moment.
+ * tile, from whom, and whether the loser was a tribe or had fewer troops.
  * Repelled attacks are found by watching each incoming attack until it
  * disappears and checking how much land its attacker took meanwhile.
  */
 export class CombatTracker {
-  /** Tiles this seat took this step from players with fewer troops than it. */
+  /** Tiles this seat took this step from tribes (bots) or from players with
+   *  fewer troops than it: the easy, safe land to take first. */
   advantageTiles = 0;
   /** Real attacks (not probes) this seat repelled this step. */
   repelled = 0;
@@ -36,7 +37,7 @@ export class CombatTracker {
   onConquer(winner: Player, loser: Player | null): void {
     if (loser === null) return;
     if (winner.smallID() === this.smallID) {
-      if (loser.troops() < winner.troops()) this.advantageTiles++;
+      if (loser.type() === PlayerType.Bot || loser.troops() < winner.troops()) this.advantageTiles++;
     } else if (loser.smallID() === this.smallID) {
       const id = winner.smallID();
       this.lostTo.set(id, (this.lostTo.get(id) ?? 0) + 1);

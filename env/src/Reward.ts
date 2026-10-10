@@ -67,8 +67,8 @@ export const NO_EVENTS: SeatEvents = {
  * farmed alliance request/break cycles, spammed embargo toggles, and never
  * picked fights they could lose. The extra terms price exactly those
  * behaviours. The advantage term is the land potential's own per-tile slope
- * scaled up, so a tile taken from a weaker player is worth (1 + advantage)
- * tiles: attack from strength.
+ * scaled up, so a tile taken from a tribe or a weaker player is worth
+ * (1 + advantage) tiles: clear the easy land, attack from strength.
  *
  * v4 (from v3 replays): the policy played Territorial, land only. Cities,
  * the population cap and the income rate are now potentials too. Income is

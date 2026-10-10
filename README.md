@@ -100,7 +100,7 @@ Events and terminals:
 | lowTroops | up to -0.05 per step below 30% of max troops | do not expand yourself empty |
 | betrayal | -1 per broken alliance | no request/break farming |
 | diplomacy | -0.005 per request, break, embargo, target | no spam |
-| advantage | land from a weaker player counts 1.5x | attack from strength |
+| advantage | land from a tribe or a weaker player counts 1.5x | clear easy land, attack from strength |
 | defend | +0.3 per repelled real attack | hold the line |
 
 Action rules: donations are off (`env.allow_donations`), attacks must leave

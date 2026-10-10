@@ -43,8 +43,9 @@ export interface RewardWeights {
   /** Per diplomatic intent sent: alliance request, break, embargo, target
    *  (negative). Prices spam, not diplomacy: a few per game cost ~nothing. */
   diplomacy: number;
-  /** Extra land value for tiles taken from a player with fewer troops than
-   *  us (attacking from strength): worth (1 + advantage) times normal land. */
+  /** Extra land value for tiles taken from tribes (bots) or from a player
+   *  with fewer troops than us: worth (1 + advantage) times normal land.
+   *  Clear the easy land before fighting real opponents. */
   advantage: number;
   /** Per real attack repelled (a force of at least 20% of our troops that
    *  ended having taken under 5% of our land). */

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { CombatTracker } from "../src/Combat";
 
 const player = (smallID: number, troops: number, extra: Record<string, unknown> = {}) =>
-  ({ smallID: () => smallID, troops: () => troops, isAlive: () => true, ...extra }) as never;
+  ({ smallID: () => smallID, troops: () => troops, isAlive: () => true, type: () => "HUMAN", ...extra }) as never;
 
 describe("CombatTracker", () => {
   it("counts only tiles taken from weaker players", () => {
@@ -13,6 +13,13 @@ describe("CombatTracker", () => {
     t.onConquer(player(4, 500), player(3, 50));
     expect(t.take()).toEqual({ advantageTiles: 1, repelled: 0 });
     expect(t.take()).toEqual({ advantageTiles: 0, repelled: 0 });
+  });
+
+  it("counts every tile taken from a tribe, even a stronger one", () => {
+    const t = new CombatTracker(1);
+    t.onConquer(player(1, 100), player(2, 500, { type: () => "BOT" }));
+    t.onConquer(player(1, 100), player(3, 500));
+    expect(t.take().advantageTiles).toBe(1);
   });
 
   it("credits a repelled attack, not a lost one or a probe", () => {
