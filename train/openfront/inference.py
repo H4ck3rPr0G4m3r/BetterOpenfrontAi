@@ -77,6 +77,10 @@ class Predictor:
         if self.min_attack_ratio == 0:
             return actions
         actions = np.array(actions, copy=True)
-        attack = actions[:, 0] == L.ATTACK
-        actions[attack, 2] = np.maximum(actions[attack, 2], self.min_attack_ratio)
+        ratio_mask = L.split_masks(np.asarray(masks, dtype=bool))["ratio"]
+        for i in np.flatnonzero(actions[:, 0] == L.ATTACK):
+            # Raise to the floor, but never past the troop reserve's mask.
+            open_ = np.flatnonzero(ratio_mask[i])
+            allowed = open_[open_ <= max(self.min_attack_ratio, actions[i, 2])]
+            actions[i, 2] = int(allowed[-1]) if len(allowed) else 0
         return actions

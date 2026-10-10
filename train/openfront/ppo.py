@@ -371,6 +371,7 @@ class Trainer:
         d = self.device
         sums: Counter = Counter()
         count = 0
+        skipped = 0
         kl_stop = False
         self.model.train()
         for epoch in range(int(ppo["epochs"])):
@@ -390,7 +391,8 @@ class Trainer:
                 with torch.autocast("cuda", dtype=torch.bfloat16, enabled=self.amp):
                     logp, ent, value = self.model.evaluate(raster, feats, rows, actions)
                 logp, value = logp.float(), value.float()
-                log_ratio = logp - old_logp
+                # Clamped so one stale or corrupt sample cannot overflow exp().
+                log_ratio = (logp - old_logp).clamp(-20.0, 20.0)
                 ratio = log_ratio.exp()
                 pg_loss = -torch.min(ratio * a, ratio.clamp(1 - clip, 1 + clip) * a).mean()
                 v_loss = 0.5 * (value - target).pow(2).mean()
@@ -398,8 +400,16 @@ class Trainer:
                 entropy = sum(float(weights.get(k, 1.0)) * e for k, e in ent_terms.items())
                 loss = pg_loss + float(ppo["vf_coef"]) * v_loss - float(ppo["ent_coef"]) * entropy
                 self.optimizer.zero_grad(set_to_none=True)
+                if not torch.isfinite(loss):
+                    skipped += 1
+                    continue
                 loss.backward()
                 grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), float(ppo["max_grad_norm"]))
+                if not torch.isfinite(grad_norm):
+                    # A non-finite step would poison every weight; drop it.
+                    self.optimizer.zero_grad(set_to_none=True)
+                    skipped += 1
+                    continue
                 self.optimizer.step()
                 with torch.no_grad():
                     approx_kl = ((ratio - 1) - log_ratio).mean().item()
@@ -415,11 +425,16 @@ class Trainer:
                     **{f"entropy/{k}": v.item() for k, v in ent_terms.items()},
                 })
                 count += 1
-            if float(ppo["target_kl"]) > 0 and np.mean(epoch_kl) > float(ppo["target_kl"]):
+            if float(ppo["target_kl"]) > 0 and epoch_kl and np.mean(epoch_kl) > float(ppo["target_kl"]):
                 kl_stop = True
                 break
         self.model.eval()
-        stats = {k: v / count for k, v in sums.items()}
+        if skipped:
+            self.log(f"[{self.name}] skipped {skipped} non-finite minibatches")
+        if not all(torch.isfinite(p).all() for p in self.model.parameters()):
+            raise FloatingPointError("policy weights went non-finite; refusing to continue (last good checkpoint is intact)")
+        stats = {k: v / max(count, 1) for k, v in sums.items()}
+        stats["train/skipped_minibatches"] = skipped
         values, returns = rollout.value[t_idx, r_idx], ret[t_idx, r_idx]
         var = np.var(returns)
         stats["train/explained_variance"] = float(1 - np.var(returns - values) / var) if var > 1e-8 else 0.0
@@ -441,6 +456,9 @@ class Trainer:
         meta = {"global_step": self.global_step, "update": self.update, "stage": self.stage,
                 "config": self.cfg, "name": self.name}
         path = self.ckpt_dir / filename
+        if not all(torch.isfinite(p).all() for p in self.model.parameters()):
+            self.log(f"[{self.name}] not saving {filename}: weights are non-finite")
+            return self.ckpt_dir / f"{self.name}_latest.pt"
         save_checkpoint(path, self.model, meta=meta, optimizer=self.optimizer)
         save_checkpoint(self.ckpt_dir / f"{self.name}_latest.pt", self.model, meta=meta, optimizer=self.optimizer)
         return path

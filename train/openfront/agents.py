@@ -70,14 +70,14 @@ class ScriptedAgent:
         threats = [s for s in range(1, L.NUM_SLOTS) if attack[s] and slots[s, F_ATTACKING_US] > 0]
         if threats and ratio > 0.25:
             worst = max(threats, key=lambda s: slots[s, F_ATTACKING_US])
-            return [L.ATTACK, worst, 3, 0, 0]
+            return [L.ATTACK, worst, _ratio(m, 3), 0, 0]
         # 2. Expand into free land at a sustainable pace.
         if attack[0] and ratio > 0.45:
-            return [L.ATTACK, 0, 2, 0, 0]
+            return [L.ATTACK, 0, _ratio(m, 2), 0, 0]
         # 3. Punish a much weaker neighbour when the army is nearly full.
         weak = [s for s in range(1, L.NUM_SLOTS) if attack[s] and slots[s, F_STRENGTH] < 0.3]
         if weak and ratio > 0.8:
-            return [L.ATTACK, min(weak, key=lambda s: slots[s, F_STRENGTH]), 3, 0, 0]
+            return [L.ATTACK, min(weak, key=lambda s: slots[s, F_STRENGTH]), _ratio(m, 3), 0, 0]
         # 4. Cities raise max troops and gold.
         if m["intent"][L.BUILD]:
             sites = f[L.SLOT_TABLE : L.SLOT_TABLE + L.SITE_TABLE].reshape(L.MAX_BUILD_SITES, L.SITE_FIELDS)
@@ -85,6 +85,12 @@ class ScriptedAgent:
                 if sites[site, 1 + CITY] > 0:
                     return [L.BUILD, 0, 0, 0, int(site)]
         return [L.NOOP, 0, 0, 0, 0]
+
+
+def _ratio(m: dict, want: int) -> int:
+    """The largest open ratio bucket up to ``want`` (bucket 0 is always open)."""
+    open_ = np.flatnonzero(m["ratio"][: want + 1])
+    return int(open_[-1]) if len(open_) else 0
 
 
 def make_agent(kind: str, seed: int = 0):

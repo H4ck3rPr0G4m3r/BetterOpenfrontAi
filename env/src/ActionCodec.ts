@@ -105,6 +105,9 @@ export class ActionCodecImpl {
   private decodeInner(action: Action, ctx: Context): Intent[] {
     const ratio = RATIO_BUCKETS[action.ratioBucket];
     const intent = action.intentType;
+    if ((intent === IntentType.Attack || intent === IntentType.Boat) && !this.ratioOpen(ctx.game, ctx.agent, action.ratioBucket)) {
+      return [];
+    }
     switch (intent) {
       case IntentType.Boat:
         return this.decodeBoat(ctx, action.spatialCell, ratio);
@@ -242,7 +245,7 @@ export class ActionCodecImpl {
       }
       out.intent[intent] = any;
     }
-    out.ratio.fill(1);
+    for (let b = 0; b < NUM_RATIO_BUCKETS; b++) out.ratio[b] = this.ratioOpen(game, agent, b) ? 1 : 0;
 
     // Spatial rows: boat landings (row 0), warship water (row 1).
     const map = game.map();
@@ -291,6 +294,18 @@ export class ActionCodecImpl {
     if (!out.intent[IntentType.UpgradeStructure]) upgradeRow.fill(0);
 
     out.intent[IntentType.CancelAttack] = open(IntentType.CancelAttack) && agent.outgoingAttacks().length > 0 ? 1 : 0;
+  }
+
+  /**
+   * Troop reserve: a ratio is open when sending that share of our troops
+   * still leaves `troopReserve` of max troops at home. The smallest bucket
+   * always stays open (it is the "probe" amount when we are already low).
+   */
+  private ratioOpen(game: Game, agent: Player, bucket: number): boolean {
+    const reserve = this.behavior.troopReserve;
+    if (bucket === 0 || reserve <= 0) return true;
+    const troops = agent.troops();
+    return troops * (1 - RATIO_BUCKETS[bucket]) >= reserve * game.config().maxTroops(agent);
   }
 
   /**

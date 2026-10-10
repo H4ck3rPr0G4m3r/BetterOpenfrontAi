@@ -34,6 +34,11 @@ DEFAULTS: dict = {
         "seats": 4,
         "disabled_intents": [],
         "disabled_builds": [],
+        # Donations are off: real games rarely need them, and the v2 policy
+        # gave its troops away to allied nations. Re-enable for fine-tuning.
+        "allow_donations": False,
+        "troop_reserve": 0.1,  # attacks must leave this share of max troops home
+        "close_spawn": 0.3,  # share of multi-seat games with seats spawned close
         "maps_dir": None,
     },
     "reward": {
@@ -44,6 +49,12 @@ DEFAULTS: dict = {
         "death": -2.0,
         "placement": 1.0,
         "survive": 0.0,
+        "lowTroops": -0.05,
+        "lowTroopsBelow": 0.3,
+        "betrayal": -1.0,
+        "diplomacy": -0.005,
+        "underdog": 1.0,
+        "defend": 0.3,
     },
     "ppo": {
         "n_steps": 256,
@@ -111,6 +122,9 @@ def validate(cfg: dict) -> None:
     for key in ("workers", "games_per_worker", "ticks_per_step", "tick_cap"):
         if int(env[key]) < 1:
             raise ValueError(f"env.{key} must be >= 1")
+    for key in ("troop_reserve", "close_spawn"):
+        if not 0.0 <= float(env[key]) <= 1.0:
+            raise ValueError(f"env.{key} must be 0..1")
     if not 0.0 <= float(cfg["selfplay"]["learner_seat_prob"]) <= 1.0:
         raise ValueError("selfplay.learner_seat_prob must be 0..1")
     if int(ppo["minibatch"]) < 1 or int(ppo["n_steps"]) < 1 or int(ppo["epochs"]) < 1:
@@ -144,5 +158,8 @@ def worker_config(env: dict, reward: dict):
         maps_dir=env.get("maps_dir"),
         disabled_intents=tuple(int(v) for v in env.get("disabled_intents", [])),
         disabled_builds=tuple(str(v) for v in env.get("disabled_builds", [])),
+        allow_donations=bool(env.get("allow_donations", False)),
+        troop_reserve=float(env.get("troop_reserve", 0.1)),
+        close_spawn=float(env.get("close_spawn", 0.0)),
         reward={k: float(v) for k, v in reward.items()},
     )

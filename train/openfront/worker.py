@@ -39,6 +39,9 @@ class WorkerConfig:
     maps_dir: str | None = None
     disabled_intents: tuple = ()
     disabled_builds: tuple = ()
+    allow_donations: bool = False
+    troop_reserve: float = 0.1
+    close_spawn: float = 0.0
     reward: dict = field(default_factory=dict)
     socket_timeout: float = 300.0
     boot_timeout: float = 120.0
@@ -55,6 +58,9 @@ class WorkerConfig:
             argv += ["--disable-intent", str(int(intent))]
         for build in self.disabled_builds:
             argv += ["--disable-build", str(build)]
+        if self.allow_donations:
+            argv += ["--allow-donations"]
+        argv += ["--troop-reserve", str(float(self.troop_reserve)), "--close-spawn", str(float(self.close_spawn))]
         if self.reward:
             argv += ["--reward", json.dumps(self.reward)]
         return argv

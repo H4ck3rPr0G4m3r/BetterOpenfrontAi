@@ -1,7 +1,7 @@
 import path from "path";
 import { GameMapType } from "../../../OpenFrontIO/src/core/game/Game";
 import { ActionCodecImpl } from "../ActionCodec";
-import { BehaviorConfig, normalizeRewardWeights, RewardWeights } from "../BehaviorConfig";
+import { BehaviorConfig, DEFAULT_TROOP_RESERVE, normalizeRewardWeights, RewardWeights } from "../BehaviorConfig";
 import { GameEnv } from "../GameEnv";
 import { BUILD_TYPES, NUM_INTENTS } from "../Layout";
 import { ObservationEncoder } from "../ObservationEncoder";
@@ -22,6 +22,9 @@ export interface WorkerOptions {
   tickCap: number;
   disabledIntents: number[];
   disabledBuilds: string[];
+  allowDonations: boolean;
+  troopReserve: number;
+  closeSpawn: number;
   reward: RewardWeights;
 }
 
@@ -39,6 +42,9 @@ Usage: tsx src/bridge/worker_main.ts --port N [options]
   --tick-cap N         post-spawn tick cap (6000)
   --disable-intent K   shut one intent type, repeatable (1..13)
   --disable-build T    exclude one build type, repeatable (e.g. Factory)
+  --allow-donations    open gold/troop donations (off by default)
+  --troop-reserve F    share of max troops attacks must leave home (0.1)
+  --close-spawn P      chance a multi-seat game spawns its seats close (0)
   --reward JSON        reward weight overrides, e.g. {"land":1,"kill":0.5}`;
 
 /** Parse the CLI. Throws on bad input: a silently wrong map or tick cap
@@ -57,6 +63,9 @@ export function parseWorkerArgs(argv: string[]): WorkerOptions {
     tickCap: 6000,
     disabledIntents: [],
     disabledBuilds: [],
+    allowDonations: false,
+    troopReserve: DEFAULT_TROOP_RESERVE,
+    closeSpawn: 0,
     reward: normalizeRewardWeights(),
   };
   for (let i = 0; i < argv.length; i++) {
@@ -64,6 +73,12 @@ export function parseWorkerArgs(argv: string[]): WorkerOptions {
     const value = (): string => {
       const v = argv[++i];
       if (v === undefined || v.startsWith("--")) throw new Error(`${flag} needs a value`);
+      return v;
+    };
+    const fraction = (): number => {
+      const raw = value();
+      const v = Number(raw);
+      if (!Number.isFinite(v) || v < 0 || v > 1) throw new Error(`${flag} must be a number 0..1, got ${raw}`);
       return v;
     };
     const int = (min: number, max: number): number => {
@@ -101,6 +116,9 @@ export function parseWorkerArgs(argv: string[]): WorkerOptions {
         o.disabledBuilds.push(v);
         break;
       }
+      case "--allow-donations": o.allowDonations = true; break;
+      case "--troop-reserve": o.troopReserve = fraction(); break;
+      case "--close-spawn": o.closeSpawn = fraction(); break;
       case "--reward": {
         let parsed: unknown;
         try {
@@ -129,7 +147,12 @@ export function parseWorkerArgs(argv: string[]): WorkerOptions {
 
 async function main(): Promise<void> {
   const o = parseWorkerArgs(process.argv.slice(2));
-  const behavior: BehaviorConfig = { disabledIntents: o.disabledIntents, disabledBuilds: o.disabledBuilds };
+  const behavior: BehaviorConfig = {
+    disabledIntents: o.disabledIntents,
+    disabledBuilds: o.disabledBuilds,
+    allowDonations: o.allowDonations,
+    troopReserve: o.troopReserve,
+  };
   const codec = new ActionCodecImpl(behavior);
   const encoder = new ObservationEncoder(o.tickCap);
   const config: EnvConfig = {
@@ -140,6 +163,7 @@ async function main(): Promise<void> {
     ticksPerStep: o.ticksPerStep,
     tickCap: o.tickCap,
     seats: o.seats,
+    closeSpawn: o.closeSpawn,
     // Replays are enabled through the environment; Python sets it before spawning.
     replay: replayOptionsFromEnv(),
   };

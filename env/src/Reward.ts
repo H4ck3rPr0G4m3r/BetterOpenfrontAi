@@ -16,12 +16,37 @@ const STRUCTURE_TYPES = [
   UnitType.MissileSilo,
 ];
 
+/** What a seat did or suffered during one step, besides its state change. */
+export interface SeatEvents {
+  /** Eliminations this seat caused (engine ConquestEvent attribution). */
+  kills: number;
+  /** Alliances this seat broke. */
+  betrayals: number;
+  /** Diplomatic intents this seat sent (request, break, embargo, target). */
+  diplomacy: number;
+  /** Tiles taken from players with more troops than this seat. */
+  strongTiles: number;
+  /** Attacks repelled from players with more troops than this seat. */
+  repelled: number;
+}
+
+export const NO_EVENTS: SeatEvents = { kills: 0, betrayals: 0, diplomacy: 0, strongTiles: 0, repelled: 0 };
+
 /**
- * Per-seat reward, v2.
+ * Per-seat reward, v3.
  *
- *   r_t = Φ(s_t) − Φ(s_{t−1}) + kill · (eliminations this seat caused)
- *         + survive · alive + terminal
+ *   r_t = Φ(s_t) − Φ(s_{t−1}) + kill · kills + survive · alive + terminal
+ *         + lowTroops · max(0, 1 − troopShare / lowTroopsBelow)
+ *         + betrayal · betrayals + diplomacy · diplomatic intents
+ *         + underdog · land · strongTiles / (LAND_REF + tiles) + defend · repelled
  *   Φ(s) = land · log(1 + tiles / LAND_REF) + structures · log(1 + structure levels)
+ *
+ * v3 (from watching v2 replays): seats expanded themselves to zero troops,
+ * farmed alliance request/break cycles, spammed embargo toggles, and never
+ * picked fights they could lose. The extra terms price exactly those
+ * behaviours. The underdog term is the land potential's own per-tile slope
+ * scaled up, so a tile taken from a stronger player is worth (1 + underdog)
+ * tiles.
  *
  * Why this shape (2026-10 diagnosis): the v1 reward paid `kill` for every
  * elimination anywhere on the map (~70 per World game, nearly all bots dying
@@ -39,6 +64,8 @@ const STRUCTURE_TYPES = [
  */
 export class Reward {
   readonly weights: RewardWeights;
+  /** Episode sums per term, for probes and diagnostics. */
+  readonly terms: Record<string, number> = {};
   private prevPotential = 0;
 
   constructor(weights: Partial<RewardWeights> = {}) {
@@ -48,27 +75,38 @@ export class Reward {
   /** Seed the potential from the post-spawn state. */
   init(game: Game, playerID: PlayerID): void {
     this.prevPotential = this.potential(game.player(playerID));
+    for (const k of Object.keys(this.terms)) delete this.terms[k];
   }
 
-  /**
-   * @param kills eliminations this seat caused since the last step
-   */
-  step(game: Game, playerID: PlayerID, terminal: TerminalReason, kills: number): number {
+  private add(term: string, value: number): number {
+    if (value !== 0) this.terms[term] = (this.terms[term] ?? 0) + value;
+    return value;
+  }
+
+  step(game: Game, playerID: PlayerID, terminal: TerminalReason, events: SeatEvents = NO_EVENTS): number {
+    const w = this.weights;
     const player = game.player(playerID);
     const potential = this.potential(player);
-    let r = potential - this.prevPotential;
+    let r = this.add("potential", potential - this.prevPotential);
     this.prevPotential = potential;
-    r += this.weights.kill * kills;
-    if (player.isAlive()) r += this.weights.survive;
+    r += this.add("kill", w.kill * events.kills);
+    r += this.add("betrayal", w.betrayal * events.betrayals);
+    r += this.add("diplomacy", w.diplomacy * events.diplomacy);
+    if (player.isAlive()) {
+      r += this.add("survive", w.survive);
+      r += this.add("lowTroops", w.lowTroops * lowTroopDeficit(game, player, w.lowTroopsBelow));
+      r += this.add("underdog", (w.underdog * w.land * events.strongTiles) / (LAND_REF + player.numTilesOwned()));
+      r += this.add("defend", w.defend * events.repelled);
+    }
     switch (terminal) {
       case "win":
-        r += this.weights.win;
+        r += this.add("win", w.win);
         break;
       case "death":
-        r += this.weights.death;
+        r += this.add("death", w.death);
         break;
       case "tick_cap":
-        r += this.weights.placement * placementScore(game, player);
+        r += this.add("placement", w.placement * placementScore(game, player));
         break;
       default:
         break;
@@ -81,6 +119,13 @@ export class Reward {
     const land = Math.log1p(player.numTilesOwned() / LAND_REF);
     return this.weights.land * land + this.weights.structures * Math.log1p(structureLevels(player));
   }
+}
+
+/** 0 at or above `below` of max troops, rising linearly to 1 at zero troops. */
+export function lowTroopDeficit(game: Game, player: Player, below: number): number {
+  if (below <= 0) return 0;
+  const share = player.troops() / Math.max(1, game.config().maxTroops(player));
+  return Math.max(0, 1 - share / below);
 }
 
 export function structureLevels(player: Player): number {

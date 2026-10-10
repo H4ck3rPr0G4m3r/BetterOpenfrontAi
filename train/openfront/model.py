@@ -77,10 +77,16 @@ def categorical_stats(logits: torch.Tensor, mask: torch.Tensor, index: torch.Ten
 
 
 def sample(logits: torch.Tensor, mask: torch.Tensor, deterministic: bool) -> torch.Tensor:
+    """Masked sample by Gumbel-max. Not Categorical.sample(): CUDA
+    multinomial can (rarely) return a zero-probability index, which stores
+    a log-prob of ~-1e9; PPO's ratio exp(new - old) then overflows and the
+    whole network goes NaN (selfplay_v2 died that way at update 150). A
+    masked logit plus Gumbel noise (< ~50) can never beat an open one."""
     masked = masked_logits(logits, mask)
     if deterministic:
         return masked.argmax(-1)
-    return torch.distributions.Categorical(logits=masked).sample()
+    u = torch.rand_like(masked).clamp_(1e-20, 1.0 - 1e-7)
+    return (masked - torch.log(-torch.log(u))).argmax(-1)
 
 
 class OpenFrontPolicy(nn.Module):

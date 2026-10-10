@@ -3,8 +3,10 @@
 # live learner (50%) or a frozen snapshot from the opponent pool. Only
 # learner seats are trained on. Curriculum: start without nations and with
 # fewer bots, promote once 60% of learner episodes survive to the tick cap.
+# Reward v3 and the v3 action rules (no donations, troop reserve, typed build
+# sites, close spawns) come from the defaults in openfront/config.py.
 run:
-  name: selfplay
+  name: selfplay_v3
   total_steps: 20000000
   checkpoint_every: 20
   replay: {dir: replays/selfplay, every: 100}
@@ -16,6 +18,7 @@ env:
   bots: 20
   nations: default
   tick_cap: 6000
+  close_spawn: 0.3
 
 selfplay:
   learner_seat_prob: 0.5

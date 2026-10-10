@@ -11,6 +11,7 @@
  *
  * Usage (from env/):
  *   TSX_TSCONFIG_PATH=tsconfig.probes.json npx tsx probes/DeathProbe.ts [policy] [games] [bots] [seats]
+ *   (optional 5th argument: close-spawn probability)
  * policy: noop | random | spam50 | paced   (every seat plays the same policy)
  */
 import path from "path";
@@ -63,11 +64,11 @@ const POLICIES: Record<string, Policy> = {
 };
 
 async function main(): Promise<void> {
-  const [policyName = "random", gamesRaw = "3", botsRaw = "20", seatsRaw = "1"] = process.argv.slice(2);
+  const [policyName = "random", gamesRaw = "3", botsRaw = "20", seatsRaw = "1", closeRaw = "0"] = process.argv.slice(2);
   const policy = POLICIES[policyName];
   if (!policy) throw new Error(`unknown policy ${policyName}`);
   const seats = Number(seatsRaw);
-  const env = new GameEnv({ map: GameMapType.World, mapsDir: MAPS, bots: Number(botsRaw), ticksPerStep: 10, tickCap: 6000, seats });
+  const env = new GameEnv({ map: GameMapType.World, mapsDir: MAPS, bots: Number(botsRaw), ticksPerStep: 10, tickCap: 6000, seats, closeSpawn: Number(closeRaw) });
   const results: string[] = [];
   let stepMs = 0;
   let steps = 0;
@@ -99,7 +100,16 @@ async function main(): Promise<void> {
         }
       }
     }
-    results.push(...returns.map((r, s) => `game${g} seat${s}: ${ends[s]} return ${r.toFixed(2)}`));
+    // Per-term episode sums: which reward terms actually moved the return.
+    const seatState = (env as unknown as { seats: { reward: { terms: Record<string, number> } }[] }).seats;
+    results.push(
+      ...returns.map((r, s) => {
+        const terms = Object.entries(seatState[s].reward.terms)
+          .map(([k, v]) => `${k} ${v.toFixed(2)}`)
+          .join(", ");
+        return `game${g} seat${s}: ${ends[s]} return ${r.toFixed(2)}  [${terms}]`;
+      }),
+    );
   }
   console.log(results.join("\n"));
   console.log(`${policyName}: mean step ${(stepMs / steps).toFixed(1)} ms over ${steps} steps (${seats} seats)`);

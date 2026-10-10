@@ -35,6 +35,8 @@ export interface EnvConfig {
   seats: number;
   /** Scripted nations: "default" (map manifest) or "disabled". */
   nations?: "default" | "disabled";
+  /** Probability that a multi-seat game spawns every seat close together. */
+  closeSpawn?: number;
   /** Episode recording for data replays. Absent means off. */
   replay?: ReplayOptions;
 }

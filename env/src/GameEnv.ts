@@ -11,6 +11,7 @@ import {
   PlayerType,
 } from "../../OpenFrontIO/src/core/game/Game";
 import {
+  BrokeAllianceUpdate,
   ConquestUpdate,
   ErrorUpdate,
   GameUpdateType,
@@ -24,11 +25,12 @@ import { PseudoRandom } from "../../OpenFrontIO/src/core/PseudoRandom";
 import type { GameConfig, GameStartInfo, Turn } from "../../OpenFrontIO/src/core/Schemas";
 import { simpleHash } from "../../OpenFrontIO/src/core/Util";
 import { ActionCodecImpl } from "./ActionCodec";
+import { CombatTracker, observeConquests } from "./Combat";
 import { RewardWeights } from "./BehaviorConfig";
 import { createMasks, Masks } from "./Layout";
 import { createSeatObservation, ObservationEncoder, SeatObservation, MAX_SEATS } from "./ObservationEncoder";
 import { buildGameRecord, replayGameID, seatClientID, shouldRecordReplay, writeReplayFile } from "./Replay";
-import { placementScore, Reward } from "./Reward";
+import { placementScore, Reward, SeatEvents } from "./Reward";
 import { loadFreshTerrainMap } from "./Terrain";
 import { TurnFeeder } from "./TurnFeeder";
 import type { Action, EnvConfig, TerminalReason } from "./types";
@@ -54,14 +56,23 @@ export interface SeatStep {
 interface Seat {
   id: PlayerID;
   clientID: string;
+  smallID: number;
   reward: Reward;
   active: boolean;
   kills: number;
   pendingKills: number;
+  pendingBetrayals: number;
+  combat: CombatTracker;
 }
 
 /** Minimum tile distance between seat spawns, halved until it fits. */
 const SEAT_SPAWN_DISTANCE = 150;
+/** Close-spawn games: every seat within this distance of seat 0. */
+const CLOSE_SPAWN_MAX = 60;
+const CLOSE_SPAWN_MIN = 15;
+
+/** Decoded intents priced by the `diplomacy` reward weight. */
+const DIPLOMATIC_INTENTS = new Set(["allianceRequest", "breakAlliance", "embargo", "targetPlayer"]);
 
 /**
  * One game with `config.seats` agent-controlled human seats plus engine bots
@@ -163,18 +174,27 @@ export class GameEnv {
     }
     const nations = createNationsForGame(gameStart, terrain.nations, terrain.additionalNations, S, random);
     const game = createGame(humans, nations, terrain.gameMap, terrain.miniGameMap, new Config(gameConfig, null, false), terrain.teamGameSpawnAreas);
+    observeConquests(game, (winner, loser) => {
+      for (const seat of this.seats) seat.combat.onConquer(winner, loser);
+    });
     this.runner = new GameRunner(game, new Executor(game, gameStart.gameID, undefined), (gu) => this.onGameUpdate(gu));
     this.runner.init();
     this.feeder = new TurnFeeder(this.runner);
     this.replayHashes = new Map();
-    this.seats = humans.map((h) => ({
-      id: h.id,
-      clientID: h.clientID!,
-      reward: new Reward(this.rewardWeights),
-      active: true,
-      kills: 0,
-      pendingKills: 0,
-    }));
+    this.seats = humans.map((h) => {
+      const smallID = game.player(h.id).smallID();
+      return {
+        id: h.id,
+        clientID: h.clientID!,
+        smallID,
+        reward: new Reward(this.rewardWeights),
+        active: true,
+        kills: 0,
+        pendingKills: 0,
+        pendingBetrayals: 0,
+        combat: new CombatTracker(smallID),
+      };
+    });
 
     // Spawn tiles come from their own stream; they are recorded in the turns,
     // so replays never resample them.
@@ -202,20 +222,32 @@ export class GameEnv {
     // decode() throws RangeError only for out-of-range heads (a caller bug):
     // kept outside the sim try so it fails loudly instead of as sim_error.
     const intents: Turn["intents"] = [];
+    const diplomacy = this.seats.map(() => 0);
     this.seats.forEach((seat, i) => {
+      if (!seat.active) return;
       // decode() stamps each intent with the seat's clientID.
-      if (seat.active) intents.push(...(this.codec.decode(actions[i], this.runner.game, seat.id) as Turn["intents"]));
+      const decoded = this.codec.decode(actions[i], this.runner.game, seat.id) as Turn["intents"];
+      diplomacy[i] = decoded.filter((intent) => DIPLOMATIC_INTENTS.has(intent.type)).length;
+      intents.push(...decoded);
     });
     try {
       const result = this.feeder.step(this.config.ticksPerStep, intents);
       if (!result.ok || this.fatalError !== undefined) return this.simError(new Error(this.fatalError ?? "tick failed"));
       const terminals = this.computeTerminals();
+      const game = this.runner.game;
       const rewards = this.seats.map((seat, i) => {
         if (!seat.active) return 0;
-        const kills = seat.pendingKills;
-        seat.kills += kills;
+        seat.combat.update(game.player(seat.id));
+        const events: SeatEvents = {
+          kills: seat.pendingKills,
+          betrayals: seat.pendingBetrayals,
+          diplomacy: diplomacy[i],
+          ...seat.combat.take(),
+        };
+        seat.kills += events.kills;
         seat.pendingKills = 0;
-        return seat.reward.step(this.runner.game, seat.id, terminals[i], kills);
+        seat.pendingBetrayals = 0;
+        return seat.reward.step(game, seat.id, terminals[i], events);
       });
       const out = this.observe(terminals, rewards);
       this.seats.forEach((seat, i) => {
@@ -322,6 +354,10 @@ export class GameEnv {
       const seat = this.seats.find((s) => s.id === cu.conquerorId);
       if (seat !== undefined) seat.pendingKills++;
     }
+    for (const bu of gu.updates[GameUpdateType.BrokeAlliance] as BrokeAllianceUpdate[]) {
+      const seat = this.seats.find((s) => s.smallID === bu.traitorID);
+      if (seat !== undefined) seat.pendingBetrayals++;
+    }
     const wins = gu.updates[GameUpdateType.Win];
     if (wins.length > 0) {
       const winner = wins[wins.length - 1].winner;
@@ -354,8 +390,11 @@ export class GameEnv {
   }
 
   /**
-   * Seeded spawn tiles: neutral land with four neutral land neighbours,
-   * spread at least SEAT_SPAWN_DISTANCE apart (halved until all seats fit).
+   * Seeded spawn tiles: neutral land with four neutral land neighbours.
+   * Usually spread at least SEAT_SPAWN_DISTANCE apart (halved until all
+   * seats fit); with probability `closeSpawn` every seat lands within
+   * CLOSE_SPAWN_MAX of seat 0, so the policy also learns openings with a
+   * hostile neighbour from tick one.
    */
   private pickSpawnTiles(random: PseudoRandom, count: number): number[] {
     const map = this.runner.game.map();
@@ -368,11 +407,22 @@ export class GameEnv {
       if (neutral === 4) candidates.push(i);
     }
     if (candidates.length < count) throw new Error("reset(): not enough free land for spawns");
+    const dist = (a: number, b: number) => Math.hypot((a % w) - (b % w), Math.floor(a / w) - Math.floor(b / w));
     const picked = [random.randElement(candidates)];
+    const closeSpawn = this.config.closeSpawn ?? 0;
+    if (count > 1 && closeSpawn > 0 && random.nextInt(0, 1000) < closeSpawn * 1000) {
+      const near = candidates.filter((t) => dist(t, picked[0]) <= CLOSE_SPAWN_MAX);
+      for (let tries = 0; tries < 500 && picked.length < count && near.length > 0; tries++) {
+        const t = random.randElement(near);
+        if (picked.every((p) => dist(p, t) >= CLOSE_SPAWN_MIN)) picked.push(t);
+      }
+      if (picked.length === count) return picked;
+      picked.length = 1; // too little land around seat 0: fall back to spread
+    }
     for (let minDist = SEAT_SPAWN_DISTANCE; picked.length < count; minDist = Math.floor(minDist / 2)) {
       for (let tries = 0; tries < 2000 && picked.length < count; tries++) {
         const t = random.randElement(candidates);
-        const far = picked.every((p) => Math.hypot((p % w) - (t % w), Math.floor(p / w) - Math.floor(t / w)) >= minDist);
+        const far = picked.every((p) => dist(p, t) >= minDist);
         if (far) picked.push(t);
       }
     }

@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { ActionCodecImpl } from "../src/ActionCodec";
-import { BUILD_UNIT_TYPES } from "../src/BuildSites";
+import { UnitType } from "../../OpenFrontIO/src/core/game/Game";
+import { BUILD_UNIT_TYPES, buildCandidates } from "../src/BuildSites";
 import type { SeatStep } from "../src/GameEnv";
 import {
   BUILD_TYPES,
@@ -9,7 +10,9 @@ import {
   IntentType,
   MASK_SIZE,
   NUM_INTENTS,
+  NUM_RATIO_BUCKETS,
   NUM_SLOTS,
+  RATIO_BUCKETS,
   siteRow,
   targetRow,
 } from "../src/Layout";
@@ -52,7 +55,7 @@ describe("ActionCodec masks and decode", () => {
         const row = targetRow(masks, intent);
         expect(masks.intent[intent]).toBe(row.some((v) => v === 1) ? 1 : 0);
         for (let slot = 0; slot < NUM_SLOTS; slot++) {
-          const action = { ...NOOP_ACTION, intentType: intent, target: slot, ratioBucket: 7 };
+          const action = { ...NOOP_ACTION, intentType: intent, target: slot, ratioBucket: 0 };
           const intents = codec.decode(action, env.game, env.seatIDs[s]);
           check(s, action, intents);
           if (row[slot]) expect(intents.length, `intent ${intent} slot ${slot} open but void`).toBe(1);
@@ -91,6 +94,52 @@ describe("ActionCodec masks and decode", () => {
       const slot = openIndices(targetRow(masks, IntentType.Attack))[0];
       const [intent] = codec.decode({ ...NOOP_ACTION, intentType: IntentType.Attack, target: slot }, env.game, env.seatIDs[s]);
       expect((intent as unknown as { clientID: string }).clientID).toBe(env.game.player(env.seatIDs[s]).clientID());
+    }
+  });
+
+  it("keeps a troop reserve: ratios that would empty the seat are shut and never fire", () => {
+    for (const id of env.seatIDs) {
+      const masks = createMasks();
+      codec.masks(env.game, id, masks);
+      const player = env.game.player(id);
+      if (!player.isAlive()) continue;
+      const max = env.game.config().maxTroops(player);
+      expect(masks.ratio[0]).toBe(1);
+      for (let b = 1; b < NUM_RATIO_BUCKETS; b++) {
+        expect(masks.ratio[b]).toBe(player.troops() * (1 - RATIO_BUCKETS[b]) >= 0.1 * max ? 1 : 0);
+      }
+      expect(masks.ratio[NUM_RATIO_BUCKETS - 1]).toBe(0); // sending everything is never allowed
+      if (!masks.intent[IntentType.Attack]) continue;
+      const slot = openIndices(targetRow(masks, IntentType.Attack))[0];
+      const fired = codec.decode({ ...NOOP_ACTION, intentType: IntentType.Attack, target: slot, ratioBucket: NUM_RATIO_BUCKETS - 1 }, env.game, id);
+      expect(fired).toEqual([]);
+    }
+  });
+
+  it("keeps donations off unless allowed", () => {
+    for (const id of env.seatIDs) {
+      const masks = createMasks();
+      codec.masks(env.game, id, masks);
+      expect(masks.intent[IntentType.DonateGold]).toBe(0);
+      expect(masks.intent[IntentType.DonateTroops]).toBe(0);
+    }
+    const allowed = new ActionCodecImpl({ allowDonations: true });
+    expect(() => allowed.masks(env.game, env.seatIDs[0], createMasks())).not.toThrow();
+  });
+
+  it("offers each structure only where it belongs (no defense posts facing the sea)", () => {
+    const map = env.game.map();
+    for (const id of env.seatIDs) {
+      const player = env.game.player(id);
+      if (!player.isAlive()) continue;
+      for (const c of buildCandidates(env.game, player)) {
+        const ns = map.neighbors(c.tile);
+        if (c.type === UnitType.DefensePost) {
+          expect(ns.some((n) => map.isLand(n) && map.ownerID(n) !== player.smallID() && map.ownerID(n) !== 0)).toBe(true);
+        }
+        if (c.type === UnitType.Port || c.type === UnitType.Warship) expect(ns.some((n) => !map.isLand(n))).toBe(true);
+        if (c.type === UnitType.City) expect(c.border && ns.some((n) => !map.isLand(n))).toBe(false);
+      }
     }
   });
 

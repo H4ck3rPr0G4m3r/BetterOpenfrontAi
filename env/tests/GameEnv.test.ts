@@ -35,6 +35,19 @@ describe("GameEnv lifecycle", () => {
     }
   }, LONG);
 
+  it("spawns every seat close together when closeSpawn fires", async () => {
+    const env = makeEnv({ seats: 3, closeSpawn: 1 });
+    await env.reset("close-1");
+    const w = env.game.map().width();
+    const spawn = (id: string) => env.game.player(id).spawnTile()!;
+    const first = spawn(env.seatIDs[0]);
+    for (const id of env.seatIDs.slice(1)) {
+      const t = spawn(id);
+      const d = Math.hypot((first % w) - (t % w), Math.floor(first / w) - Math.floor(t / w));
+      expect(d).toBeLessThanOrEqual(60);
+    }
+  }, LONG);
+
   it("is deterministic for a seed and action sequence", async () => {
     const run = async () => {
       const env = makeEnv({ seats: 2 });

@@ -25,18 +25,39 @@ export interface BuildCandidate {
   border: boolean;
 }
 
-const MAX_BORDER_SITES = 10;
+const MAX_FRONT_SITES = 8;
+const MAX_SHORE_SITES = 3;
 const MAX_INTERIOR_SITES = 4;
-const TYPES_PER_SITE = 3;
+const FRONT_TYPES: PlayerBuildableUnitType[] = [UnitType.DefensePost];
+const SHORE_TYPES: PlayerBuildableUnitType[] = [UnitType.Port];
+/** The first WARSHIP_SITES shore tiles also offer a warship. */
+const WARSHIP_SITES = 2;
+const INTERIOR_TYPES: PlayerBuildableUnitType[] = [UnitType.City, UnitType.Factory, UnitType.SAMLauncher, UnitType.MissileSilo];
+
+/** Up to `n` entries spread evenly over `list`. */
+function spread<T>(list: T[], n: number): T[] {
+  if (list.length <= n) return list.slice();
+  const out: T[] = [];
+  const stride = list.length / n;
+  for (let i = 0; i < n; i++) out.push(list[Math.floor(i * stride)]);
+  return out;
+}
 
 /**
- * Bounded build-site candidates: spread-sampled border tiles plus a few
- * interior tiles, each offering TYPES_PER_SITE rotated unit types, capped at
- * MAX_BUILD_SITES. Dense per-cell build masking was measured at ~100x the
- * step budget, hence a short list. Deterministic for a given state, and the
- * same list feeds the observation's site table and the codec's site head, so
- * site index i means the same (tile, type) on both sides. Disabled build
- * types are masked, never filtered, for the same reason.
+ * Bounded build-site candidates, each tile offered only the structures that
+ * belong there:
+ *
+ *   front    border land touching another player's land  -> Defense Post
+ *   shore    border land touching water                  -> Port (+ Warship)
+ *   interior owned land off the border                   -> City, Factory, SAM, Silo
+ *
+ * v2 rotated every type across every border tile, and since most of a
+ * coastal empire's border is shoreline, defense posts went up facing the
+ * sea. Dense per-cell build masking was measured at ~100x the step budget,
+ * hence a short list. Deterministic for a given state, and the same list
+ * feeds the observation's site table and the codec's site head, so site
+ * index i means the same (tile, type) on both sides. Disabled build types
+ * are masked, never filtered, for the same reason.
  */
 export function buildCandidates(game: Game, agent: Player): BuildCandidate[] {
   let entry = cache.get(game);
@@ -47,37 +68,53 @@ export function buildCandidates(game: Game, agent: Player): BuildCandidate[] {
   const hit = entry.byPlayer.get(agent.smallID());
   if (hit !== undefined) return hit;
 
+  const map = game.map();
+  const me = agent.smallID();
   const border = [...agent.borderTiles()].sort((a, b) => a - b);
-  const borderSites: TileRef[] = [];
-  if (border.length > 0) {
-    const stride = Math.max(1, Math.floor(border.length / MAX_BORDER_SITES));
-    for (let i = 0; i < border.length && borderSites.length < MAX_BORDER_SITES; i += stride) {
-      borderSites.push(border[i]);
+  const front: TileRef[] = [];
+  const shore: TileRef[] = [];
+  const inland: TileRef[] = [];
+  for (const tile of border) {
+    let water = false;
+    let enemy = false;
+    for (const n of map.neighbors(tile)) {
+      if (!map.isLand(n)) water = true;
+      else {
+        const owner = map.ownerID(n);
+        if (owner !== me && owner !== 0) enemy = true;
+      }
     }
+    if (enemy) front.push(tile);
+    if (water) shore.push(tile);
+    if (!enemy && !water) inland.push(tile);
   }
-  const interiorSites: TileRef[] = [];
-  const owned = agent.numTilesOwned();
-  if (owned > border.length) {
+
+  let interior: TileRef[] = [];
+  if (agent.numTilesOwned() > border.length) {
     const borderSet = new Set<TileRef>(border);
-    const step = Math.max(1, Math.floor(owned / MAX_INTERIOR_SITES));
+    const step = Math.max(1, Math.floor(agent.numTilesOwned() / MAX_INTERIOR_SITES));
     let i = 0;
     for (const tile of agent.tiles()) {
       if (!borderSet.has(tile) && i++ % step === 0) {
-        interiorSites.push(tile);
-        if (interiorSites.length >= MAX_INTERIOR_SITES) break;
+        interior.push(tile);
+        if (interior.length >= MAX_INTERIOR_SITES) break;
       }
     }
-    interiorSites.sort((a, b) => a - b);
+    interior.sort((a, b) => a - b);
   }
+  // A territory with no interior yet builds behind its unowned-land border.
+  if (interior.length === 0) interior = spread(inland, MAX_INTERIOR_SITES);
 
   const out: BuildCandidate[] = [];
-  const sites = [...borderSites.map((t) => [t, true] as const), ...interiorSites.map((t) => [t, false] as const)];
-  for (let s = 0; s < sites.length && out.length < MAX_BUILD_SITES; s++) {
-    for (let j = 0; j < TYPES_PER_SITE && out.length < MAX_BUILD_SITES; j++) {
-      const typeIndex = (s + j) % BUILD_UNIT_TYPES.length;
-      out.push({ tile: sites[s][0], typeIndex, type: BUILD_UNIT_TYPES[typeIndex], border: sites[s][1] });
-    }
-  }
+  const add = (tile: TileRef, type: PlayerBuildableUnitType, border: boolean) => {
+    if (out.length < MAX_BUILD_SITES) out.push({ tile, typeIndex: BUILD_UNIT_TYPES.indexOf(type), type, border });
+  };
+  for (const tile of spread(front, MAX_FRONT_SITES)) for (const type of FRONT_TYPES) add(tile, type, true);
+  spread(shore, MAX_SHORE_SITES).forEach((tile, i) => {
+    for (const type of SHORE_TYPES) add(tile, type, true);
+    if (i < WARSHIP_SITES) add(tile, UnitType.Warship, true);
+  });
+  for (const tile of interior) for (const type of INTERIOR_TYPES) add(tile, type, false);
   entry.byPlayer.set(agent.smallID(), out);
   return out;
 }
