@@ -2,6 +2,7 @@ import { Config } from "../../OpenFrontIO/src/core/configuration/Config";
 import { Executor } from "../../OpenFrontIO/src/core/execution/ExecutionManager";
 import {
   Difficulty,
+  Game,
   GameMapSize,
   GameMode,
   GameType,
@@ -10,6 +11,7 @@ import {
   PlayerType,
 } from "../../OpenFrontIO/src/core/game/Game";
 import {
+  ConquestUpdate,
   ErrorUpdate,
   GameUpdateType,
   GameUpdateViewData,
@@ -17,94 +19,120 @@ import {
 } from "../../OpenFrontIO/src/core/game/GameUpdates";
 import { createGame } from "../../OpenFrontIO/src/core/game/GameImpl";
 import { createNationsForGame } from "../../OpenFrontIO/src/core/game/NationCreation";
-import { loadFreshTerrainMap } from "./Terrain";
 import { GameRunner } from "../../OpenFrontIO/src/core/GameRunner";
 import { PseudoRandom } from "../../OpenFrontIO/src/core/PseudoRandom";
-import { GameConfig, GameStartInfo } from "../../OpenFrontIO/src/core/Schemas";
+import type { GameConfig, GameStartInfo, Turn } from "../../OpenFrontIO/src/core/Schemas";
 import { simpleHash } from "../../OpenFrontIO/src/core/Util";
-import { Reward, TerminalReason } from "./Reward";
-import {
-  buildGameRecord,
-  replayGameID,
-  shouldRecordReplay,
-  writeReplayFile,
-} from "./Replay";
+import { ActionCodecImpl } from "./ActionCodec";
+import { RewardWeights } from "./BehaviorConfig";
+import { createMasks, Masks } from "./Layout";
+import { createSeatObservation, ObservationEncoder, SeatObservation, MAX_SEATS } from "./ObservationEncoder";
+import { buildGameRecord, replayGameID, seatClientID, shouldRecordReplay, writeReplayFile } from "./Replay";
+import { placementScore, Reward } from "./Reward";
+import { loadFreshTerrainMap } from "./Terrain";
 import { TurnFeeder } from "./TurnFeeder";
-import { createMaskBuffers } from "./ActionCodec";
-import {
-  Action,
-  ActionCodec,
-  EnvConfig,
-  MaskBuffers,
-  ObservationEncoder,
-  Observation,
-  StepResult,
-} from "./types";
+import type { Action, EnvConfig, TerminalReason } from "./types";
 
-const AGENT_CLIENT_ID = "client0";
-/** Pre-reset placeholder; reset() replaces it with the first draw of the
- *  episode stream (see below). */
-const UNSEATED_AGENT_ID: PlayerID = "agent0";
+/** What one seat sees after a reset or step. */
+export interface SeatStep {
+  obs: SeatObservation;
+  masks: Masks;
+  reward: number;
+  /** This seat's episode ended on this step (terminal says why). */
+  done: boolean;
+  /** The seat acted on this step / will act on the next one. Dead seats go
+   *  inactive until the game resets; their rows carry no data. */
+  active: boolean;
+  terminal: TerminalReason;
+  /** Episode-end readouts for logging, valid on every row. */
+  tiles: number;
+  troops: number;
+  kills: number;
+  placement: number;
+}
+
+interface Seat {
+  id: PlayerID;
+  clientID: string;
+  reward: Reward;
+  active: boolean;
+  kills: number;
+  pendingKills: number;
+}
+
+/** Minimum tile distance between seat spawns, halved until it fits. */
+const SEAT_SPAWN_DISTANCE = 150;
+
 /**
- * Owns one episode's lifecycle (spec §5.1). Constructed the way
- * FullGamePerf.ts constructs its game — real Config, production map via
- * NodeGameMapLoader — except the human seat is passed to createGame()
- * instead of left empty. The agent's actions become ordinary Intents
- * inside a Turn, the same path the real browser client uses (verified
- * §2.7).
+ * One game with `config.seats` agent-controlled human seats plus engine bots
+ * and nations. seats = 1 is classic training vs bots; seats > 1 is real
+ * self-play: several policies (the learner and pool snapshots, chosen by the
+ * trainer) fight inside the same simulation, alongside the bots.
  *
- * Phase-1 simplification, flagged rather than hidden: `reset()` picks the
- * agent's spawn tile by seeded sampling (not a policy action) among neutral
- * land tiles with four neutral neighbours. Real spawn placement is a
- * legitimate thing to learn eventually, but gating GameEnv's own lifecycle on
- * that design isn't worth it. Swapping this for an action-driven spawn is a
- * local change inside reset(), not a GameEnv interface change.
+ * Constructed the way the real game is: production Config and map, nations
+ * from the manifest, and every seat a PlayerType.Human whose actions are
+ * ordinary Intents inside Turns — the path the browser client uses. Seat
+ * IDs are drawn from the game's PRNG before nations, exactly like
+ * createGameRunner, so recorded games replay hash-for-hash.
+ *
+ * Episode end per seat: death (seat goes inactive, the game continues for
+ * the others), win, or the post-spawn tick cap (placement reward). The game
+ * ends when every seat is done or on a sim error; the caller resets it.
  */
 export class GameEnv {
+  readonly encoder: ObservationEncoder;
   private runner!: GameRunner;
   private feeder!: TurnFeeder;
+  private seats: Seat[] = [];
   private fatalError: string | undefined;
-  private winnerAgentID: PlayerID | undefined;
+  private winnerClientID: string | null | undefined;
   private ticksAtSpawnEnd = 0;
   private lastSeed = "";
-  private readonly reward: Reward;
-  /** Phase-8 replay bookkeeping: when the episode started, the config it
-   *  runs, and how many episodes have completed (recording cadence counts
-   *  completions, so an unconcluded boot reset never consumes a slot). */
-  private episodesCompleted = 0;
-  private replayStart = 0;
-  private lastGameConfig: GameConfig | undefined;
-  /** State hashes by tick, collected from HashUpdates for replay records. */
+  private over = true;
+  private gamesCompleted = 0;
+  private gameConfig: GameConfig | undefined;
+  private startedAt = 0;
   private replayHashes = new Map<number, number>();
-  /**
-   * This episode's agent player ID. Drawn as the first value of the episode
-   * stream — mirroring tests/replay/ReplayGame.ts, which draws the human ID
-   * before nations — so a recorded episode replays with identical IDs and
-   * identical state hashes. The string ID never affects behavior (the sim
-   * keys on smallIDs and clientIDs), only the hash, but parity there is the
-   * whole point of a verifiable replay.
-   */
-  private agentID: PlayerID = UNSEATED_AGENT_ID;
-
-  /** This episode's agent player ID. Valid after reset(). */
-  get agentPlayerID(): PlayerID {
-    return this.agentID;
-  }
+  private readonly obs: SeatObservation[];
+  private readonly maskBufs: Masks[];
 
   constructor(
     private readonly config: EnvConfig,
-    private readonly encoder: ObservationEncoder,
-    private readonly codec: ActionCodec,
-    reward?: Reward,
+    private readonly codec: ActionCodecImpl = new ActionCodecImpl(),
+    private readonly rewardWeights: Partial<RewardWeights> = {},
+    encoder?: ObservationEncoder,
   ) {
-    this.reward = reward ?? new Reward();
+    if (!Number.isInteger(config.seats) || config.seats < 1 || config.seats > MAX_SEATS) {
+      throw new Error(`seats must be 1..${MAX_SEATS}, got ${config.seats}`);
+    }
+    this.encoder = encoder ?? new ObservationEncoder(config.tickCap);
+    this.obs = Array.from({ length: config.seats }, createSeatObservation);
+    this.maskBufs = Array.from({ length: config.seats }, () => createMasks());
   }
 
-  async reset(seed: string): Promise<Observation> {
+  get numSeats(): number {
+    return this.config.seats;
+  }
+  get seatIDs(): PlayerID[] {
+    return this.seats.map((s) => s.id);
+  }
+  get game(): Game {
+    return this.runner.game;
+  }
+  get ticks(): number {
+    return this.runner.game.ticks();
+  }
+  /** True once every seat is done (or a sim error hit); reset() next. */
+  get gameOver(): boolean {
+    return this.over;
+  }
+
+  async reset(seed: string): Promise<SeatStep[]> {
     console.debug = () => {};
     this.fatalError = undefined;
-    this.winnerAgentID = undefined;
+    this.winnerClientID = undefined;
     this.lastSeed = seed;
+    const S = this.config.seats;
 
     const gameConfig: GameConfig = {
       gameMap: this.config.map,
@@ -121,275 +149,166 @@ export class GameEnv {
       instantBuild: false,
       randomSpawn: false,
     };
-    this.lastGameConfig = gameConfig;
-    this.replayStart = Date.now();
-    const gameStart: GameStartInfo = {
-      // Phase-8 replay fidelity: the replay harness rederives everything
-      // from the RECORD's game ID (seeded nations, executor, bot spawns),
-      // so training must derive from it too. Same seed still means same
-      // game; the derivation just moved one hash earlier.
-      gameID: replayGameID(seed),
-      lobbyCreatedAt: 0,
-      config: gameConfig,
-      players: [],
-    };
+    this.gameConfig = gameConfig;
+    this.startedAt = Date.now();
+    const gameStart: GameStartInfo = { gameID: replayGameID(seed), lobbyCreatedAt: 0, config: gameConfig, players: [] };
 
-    const coreConfig = new Config(gameConfig, null, false);
     // Fresh terrain every reset: the engine's loadTerrainMap() caches the
-    // LIVE GameMap by map:size with no eviction, so reusing it would build
-    // episode N on episode 1's dirt (see Terrain.ts).
-    const terrain = await loadFreshTerrainMap(
-      gameConfig.gameMap,
-      gameConfig.gameMapSize,
-      this.config.mapsDir,
-    );
+    // LIVE map, so reuse would start game N on game N-1's ownership.
+    const terrain = await loadFreshTerrainMap(gameConfig.gameMap, gameConfig.gameMapSize, this.config.mapsDir);
     const random = new PseudoRandom(simpleHash(gameStart.gameID));
-    // First draw seats the agent (see agentID). This mirrors
-    // tests/replay/ReplayGame.ts exactly — human ID, then nations — so a
-    // recorded episode replays with identical IDs and hashes. (numHumans
-    // stays 0: the count is unused on the FFA full-size branch both sides
-    // run; HvN would need parity.)
-    this.agentID = random.nextID();
-    const nations = createNationsForGame(
-      gameStart,
-      terrain.nations,
-      terrain.additionalNations,
-      0,
-      random,
-    );
-
-    const human = new PlayerInfo(
-      "RLAgent",
-      PlayerType.Human,
-      AGENT_CLIENT_ID,
-      this.agentID,
-    );
-    const game = createGame(
-      [human],
-      nations,
-      terrain.gameMap,
-      terrain.miniGameMap,
-      coreConfig,
-      terrain.teamGameSpawnAreas,
-    );
-
-    this.runner = new GameRunner(
-      game,
-      new Executor(game, gameStart.gameID, undefined),
-      (gu: GameUpdateViewData | ErrorUpdate) => this.onGameUpdate(gu),
-    );
+    const humans: PlayerInfo[] = [];
+    for (let i = 0; i < S; i++) {
+      humans.push(new PlayerInfo(`RLAgent${i}`, PlayerType.Human, seatClientID(i), random.nextID()));
+    }
+    const nations = createNationsForGame(gameStart, terrain.nations, terrain.additionalNations, S, random);
+    const game = createGame(humans, nations, terrain.gameMap, terrain.miniGameMap, new Config(gameConfig, null, false), terrain.teamGameSpawnAreas);
+    this.runner = new GameRunner(game, new Executor(game, gameStart.gameID, undefined), (gu) => this.onGameUpdate(gu));
     this.runner.init();
     this.feeder = new TurnFeeder(this.runner);
     this.replayHashes = new Map();
+    this.seats = humans.map((h) => ({
+      id: h.id,
+      clientID: h.clientID!,
+      reward: new Reward(this.rewardWeights),
+      active: true,
+      kills: 0,
+      pendingKills: 0,
+    }));
 
-    // Spawn sampling runs on its own stream: the spawn tile is recorded in
-    // the turns, so replay never resamples it.
-    const spawnRandom = new PseudoRandom(simpleHash(`${seed}:spawn`));
-    const spawnTile = this.pickSpawnTile(spawnRandom);
-    if (spawnTile < 0) {
-      throw new Error("reset(): no free land tile found for agent spawn");
-    }
-    this.feeder.step(1, [
-      { clientID: AGENT_CLIENT_ID, playerID: this.agentID, type: "spawn", tile: spawnTile },
-    ] as any);
-    while (this.runner.game.inSpawnPhase()) {
-      this.assertNoFatalError();
+    // Spawn tiles come from their own stream; they are recorded in the turns,
+    // so replays never resample them.
+    const spawns = this.pickSpawnTiles(new PseudoRandom(simpleHash(`${seed}:spawn`)), S);
+    this.feeder.step(
+      1,
+      this.seats.map((s, i) => ({ type: "spawn", clientID: s.clientID, tile: spawns[i] })) as Turn["intents"],
+    );
+    while (game.inSpawnPhase()) {
+      if (this.fatalError !== undefined) throw new Error(`sim error during reset(): ${this.fatalError}`);
       this.feeder.step(1, []);
     }
-    this.assertNoFatalError();
-
-    this.ticksAtSpawnEnd = this.runner.game.ticks();
-    this.reward.init(this.runner.game, this.agentID);
-
-    return this.encodeObservation();
+    if (this.fatalError !== undefined) throw new Error(`sim error during reset(): ${this.fatalError}`);
+    this.ticksAtSpawnEnd = game.ticks();
+    for (const seat of this.seats) seat.reward.init(game, seat.id);
+    this.over = false;
+    return this.observe(this.seats.map(() => null), this.seats.map(() => 0));
   }
 
-  step(action: Action): StepResult {
-    // Intentionally asymmetric with the other three terminal reasons. After
-    // win/death/tick_cap the episode is over but the engine underneath is
-    // perfectly healthy — GameEnv doesn't police re-stepping a done episode
-    // (see GameEnv.test.ts's "does not auto-reset" case; that's the
-    // caller's contract to honor, same as any Gym env). A sim_error means a
-    // caught exception happened *inside* GameRunner.executeNextTick() —
-    // engine-internal state may be left inconsistent, so continuing to
-    // drive it is unsafe in a way the other three terminals aren't. Hence
-    // the hard stop here applies only to this one case.
-    if (this.fatalError !== undefined) {
-      throw new Error("step() called after a terminal episode; call reset() first");
+  step(actions: Action[]): SeatStep[] {
+    if (this.over) throw new Error("step() after the game ended; call reset() first");
+    if (actions.length !== this.seats.length) {
+      throw new Error(`need ${this.seats.length} actions, got ${actions.length}`);
     }
-
-    // decode() stays outside the try below on purpose: it never throws on
-    // in-range heads (illegal combinations decode to []), so a throw here is
-    // a caller bug (out-of-range head), not a simulation failure, and must
-    // keep failing fast rather than masquerading as sim_error.
-    const intents = this.codec.decode(action, this.runner.game, this.agentID);
+    // decode() throws RangeError only for out-of-range heads (a caller bug):
+    // kept outside the sim try so it fails loudly instead of as sim_error.
+    const intents: Turn["intents"] = [];
+    this.seats.forEach((seat, i) => {
+      // decode() stamps each intent with the seat's clientID.
+      if (seat.active) intents.push(...(this.codec.decode(actions[i], this.runner.game, seat.id) as Turn["intents"]));
+    });
     try {
-      const result = this.feeder.step(this.config.ticksPerStep, intents as any);
-
-      const terminal = this.computeTerminal(result.ok);
-      const obs = this.encodeObservation();
-      const reward = this.reward.step(this.runner.game, this.agentID, terminal);
-      const masks = createMaskBuffers();
-      this.codec.masks(this.runner.game, this.agentID, masks);
-      if (terminal !== null) this.maybeWriteReplay(terminal);
-
-      return {
-        obs,
-        reward,
-        done: terminal !== null,
-        info: { terminalReason: terminal, ticks: this.runner.game.ticks(), masks },
-      };
+      const result = this.feeder.step(this.config.ticksPerStep, intents);
+      if (!result.ok || this.fatalError !== undefined) return this.simError(new Error(this.fatalError ?? "tick failed"));
+      const terminals = this.computeTerminals();
+      const rewards = this.seats.map((seat, i) => {
+        if (!seat.active) return 0;
+        const kills = seat.pendingKills;
+        seat.kills += kills;
+        seat.pendingKills = 0;
+        return seat.reward.step(this.runner.game, seat.id, terminals[i], kills);
+      });
+      const out = this.observe(terminals, rewards);
+      this.seats.forEach((seat, i) => {
+        if (terminals[i] !== null) seat.active = false;
+      });
+      if (this.seats.every((s) => !s.active)) this.finish();
+      return out;
     } catch (e) {
-      // GameRunner catches tick errors into ErrorUpdate (handled above via
-      // fatalError), but NOT everything it runs: the per-tick view-data pass
-      // (placeName over every player) throws raw past executeNextTick's
-      // try/catch, as do engine queries on state a caught error already left
-      // inconsistent. A raw throw must end the episode as sim_error, never
-      // escape into the training batch or kill the worker (§7).
       return this.simError(e);
     }
   }
 
-  close(): void {
-    // Nothing to release yet — no worker threads, no open handles. Exists
-    // so callers have a stable lifecycle method as the bridge (§5.6) grows.
-  }
-
-  /** Test/debug escape hatch onto the underlying engine state. Also what
-   *  phase 3's shadow-sim hash check (§10.3) will read the state hash
-   *  through, once that's built. */
-  get game() {
-    return this.runner.game;
-  }
-
   /**
-   * Current tick count. The bridge (§5.6) reports it on every reply,
-   * including RESET replies whose StepResult never exists.
+   * End the game now (the trainer has no use for the remaining seats, e.g.
+   * every learner seat is dead). Active seats report done with "aborted"
+   * and zero reward.
    */
-  get ticks(): number {
-    if (this.runner === undefined) {
-      throw new Error("ticks read before reset()");
-    }
-    return this.runner.game.ticks();
+  abort(): SeatStep[] {
+    if (this.over) return this.observe(this.seats.map(() => null), this.seats.map(() => 0));
+    const terminals: TerminalReason[] = this.seats.map((s) => (s.active ? "aborted" : null));
+    const out = this.observe(terminals, this.seats.map(() => 0), false);
+    for (const seat of this.seats) seat.active = false;
+    this.finish();
+    return out;
   }
 
-  /**
-   * Next step masks for the current state. Same call the step path makes,
-   * exposed so the bridge can answer RESET with honest masks instead of
-   * all open bits. A damaged state yields zeroed masks, matching the
-   * sim_error reply contract.
-   */
-  currentMasks(): MaskBuffers {
-    if (this.runner === undefined) {
-      throw new Error("currentMasks read before reset()");
-    }
-    const masks = createMaskBuffers();
-    try {
-      this.codec.masks(this.runner.game, this.agentID, masks);
-    } catch {
-      masks.intentType.fill(0);
-      masks.target.fill(0);
-      masks.ratioBucket.fill(0);
-      masks.spatialCell.fill(0);
-      masks.buildSite.fill(0);
-    }
-    return masks;
+  /** Rows for the current state. Masks are computed only for seats that act next. */
+  private observe(terminals: TerminalReason[], rewards: number[], encode = true): SeatStep[] {
+    const game = this.runner.game;
+    if (encode) this.encoder.encode(game, this.seatIDs, this.obs);
+    return this.seats.map((seat, i) => {
+      const masks = this.maskBufs[i];
+      const done = terminals[i] !== null;
+      if (seat.active && !done) {
+        this.codec.masks(game, seat.id, masks);
+      } else {
+        masks.flat.fill(0);
+        masks.intent[0] = 1;
+      }
+      const player = game.player(seat.id);
+      return {
+        obs: this.obs[i],
+        masks,
+        reward: rewards[i],
+        done,
+        active: seat.active,
+        terminal: terminals[i],
+        tiles: player.numTilesOwned(),
+        troops: player.troops(),
+        kills: seat.kills,
+        placement: placementScore(game, player),
+      };
+    });
   }
 
-  private computeTerminal(feederOk: boolean): TerminalReason {
-    if (!feederOk || this.fatalError !== undefined) return "sim_error";
-    if (this.winnerAgentID !== undefined) {
-      return this.winnerAgentID === this.agentID ? "win" : "death";
-    }
-    const agent = this.runner.game.player(this.agentID);
-    if (!agent.isAlive()) return "death";
-    if (this.runner.game.ticks() - this.ticksAtSpawnEnd >= this.config.tickCap) {
-      return "tick_cap";
-    }
-    return null;
+  private computeTerminals(): TerminalReason[] {
+    const game = this.runner.game;
+    const capped = game.ticks() - this.ticksAtSpawnEnd >= this.config.tickCap;
+    const gameEnded = this.winnerClientID !== undefined;
+    return this.seats.map((seat) => {
+      if (!seat.active) return null;
+      if (gameEnded && this.winnerClientID === seat.clientID) return "win";
+      if (!game.player(seat.id).isAlive()) return "death";
+      // Someone else won, or time is up: scored by placement.
+      if (gameEnded || capped) return "tick_cap";
+      return null;
+    });
   }
 
-  /**
-   * Convert a raw engine throw into a non-scoring sim_error terminal (§7).
-   * Latches fatalError so further step() calls fail fast until reset(), and
-   * returns zeroed obs/masks — all-masked is the only honest mask for a
-   * state we no longer trust. Reward is still routed through Reward.step()
-   * for the terminal term, falling back to 0 if even reading state throws.
-   */
-  private simError(e: unknown): StepResult {
+  private simError(e: unknown): SeatStep[] {
     const detail = e instanceof Error ? (e.stack ?? e.message) : String(e);
-    this.fatalError = `raw engine throw: ${detail}`;
+    this.fatalError ??= `raw engine throw: ${detail}`;
     console.warn(`GameEnv sim_error, seed ${this.lastSeed}: ${detail}`);
-    this.maybeWriteReplay("sim_error");
-
-    let reward = 0;
-    try {
-      reward = this.reward.step(this.runner.game, this.agentID, "sim_error");
-    } catch {
-      reward = 0;
-    }
-    return {
-      obs: new Float32Array(this.encoder.size),
-      reward,
-      done: true,
-      info: {
-        terminalReason: "sim_error",
-        ticks: this.runner.game.ticks(),
-        masks: createMaskBuffers(),
-      },
-    };
+    const terminals: TerminalReason[] = this.seats.map((s) => (s.active ? "sim_error" : null));
+    const rows = this.seats.map((seat, i): SeatStep => {
+      const masks = this.maskBufs[i];
+      masks.flat.fill(0);
+      masks.intent[0] = 1;
+      this.obs[i].raster.fill(0);
+      this.obs[i].features.fill(0);
+      return { obs: this.obs[i], masks, reward: 0, done: terminals[i] !== null, active: seat.active, terminal: terminals[i], tiles: 0, troops: 0, kills: seat.kills, placement: 0 };
+    });
+    for (const seat of this.seats) seat.active = false;
+    this.finish();
+    return rows;
   }
 
-  private encodeObservation(): Observation {
-    const obs = new Float32Array(this.encoder.size);
-    this.encoder.encode(this.runner.game, this.agentID, obs);
-    return obs;
+  private finish(): void {
+    if (this.over) return;
+    this.over = true;
+    this.maybeWriteReplay();
   }
 
-  private assertNoFatalError(): void {
-    if (this.fatalError !== undefined) {
-      throw new Error(`sim error during reset(): ${this.fatalError}`);
-    }
-  }
-
-  /**
-   * Phase-8 data replay. Writes every Nth episode as a GameRecord file the
-   * dev client can play back. Best effort by design: a failed write logs
-   * and never breaks the episode result or the training batch.
-   */
-  private maybeWriteReplay(terminal: string): void {
-    const replay = this.config.replay;
-    const index = this.episodesCompleted++;
-    if (
-      replay === undefined ||
-      this.lastGameConfig === undefined ||
-      !shouldRecordReplay(index, replay.every)
-    ) {
-      return;
-    }
-    try {
-      const record = buildGameRecord({
-        seed: this.lastSeed,
-        gameConfig: this.lastGameConfig,
-        turns: this.feeder.turns,
-        agentClientID: AGENT_CLIENT_ID,
-        agentWon: terminal === "win",
-        startedAt: this.replayStart,
-        endedAt: Date.now(),
-        hashes: this.replayHashes,
-      });
-      const file = writeReplayFile(
-        replay,
-        this.lastSeed,
-        index,
-        terminal,
-        record,
-      );
-      if (file !== undefined) console.log(`replay recorded: ${file}`);
-    } catch (e) {
-      console.warn(`replay build failed, seed ${this.lastSeed}: ${String(e)}`);
-    }
-  }
   private onGameUpdate(gu: GameUpdateViewData | ErrorUpdate): void {
     if ("errMsg" in gu) {
       this.fatalError = `${gu.errMsg}\n${gu.stack ?? ""}`;
@@ -398,37 +317,65 @@ export class GameEnv {
     for (const hu of gu.updates[GameUpdateType.Hash] as HashUpdate[]) {
       this.replayHashes.set(hu.tick, hu.hash);
     }
-    const winUpdates = gu.updates[GameUpdateType.Win];
-    if (winUpdates.length > 0) {
-      const winner = winUpdates[winUpdates.length - 1].winner;
-      // ["player", clientID, ...] per GameImpl.makeWinner — the second
-      // element is the client ID, not the player ID or a small ID. Team
-      // and nation wins never name our single-player client, so they're
-      // always an opponent win from the agent's point of view.
-      const agentWon = winner !== undefined
-        && winner[0] === "player"
-        && winner[1] === AGENT_CLIENT_ID;
-      this.winnerAgentID = agentWon ? this.agentID : "opponent";
+    // Honest kill credit: the engine names the conqueror of every eliminated player.
+    for (const cu of gu.updates[GameUpdateType.ConquestEvent] as ConquestUpdate[]) {
+      const seat = this.seats.find((s) => s.id === cu.conquerorId);
+      if (seat !== undefined) seat.pendingKills++;
+    }
+    const wins = gu.updates[GameUpdateType.Win];
+    if (wins.length > 0) {
+      const winner = wins[wins.length - 1].winner;
+      // ["player", clientID] per GameImpl.makeWinner; any other shape is not a seat.
+      this.winnerClientID = winner !== undefined && winner[0] === "player" ? String(winner[1]) : null;
     }
   }
 
-  private pickSpawnTile(random: PseudoRandom): number {
-    // Sampled from every qualifying tile via the episode's seeded PRNG, not
-    // the first one found scanning from index 0 — the latter would spawn
-    // every episode on a given map in the same corner regardless of seed,
-    // baking a positional prior into the policy before training even starts.
+  private maybeWriteReplay(): void {
+    const replay = this.config.replay;
+    const index = this.gamesCompleted++;
+    if (replay === undefined || this.gameConfig === undefined || !shouldRecordReplay(index, replay.every)) return;
+    try {
+      const record = buildGameRecord({
+        seed: this.lastSeed,
+        gameConfig: this.gameConfig,
+        turns: this.feeder.turns,
+        seats: this.config.seats,
+        winnerClientID: this.winnerClientID ?? null,
+        startedAt: this.startedAt,
+        endedAt: Date.now(),
+        hashes: this.replayHashes,
+      });
+      const outcome = this.seats[0] !== undefined && this.runner.game.player(this.seats[0].id).isAlive() ? "alive" : "dead";
+      const file = writeReplayFile(replay, this.lastSeed, index, outcome, record);
+      if (file !== undefined) console.log(`replay recorded: ${file}`);
+    } catch (e) {
+      console.warn(`replay build failed, seed ${this.lastSeed}: ${String(e)}`);
+    }
+  }
+
+  /**
+   * Seeded spawn tiles: neutral land with four neutral land neighbours,
+   * spread at least SEAT_SPAWN_DISTANCE apart (halved until all seats fit).
+   */
+  private pickSpawnTiles(random: PseudoRandom, count: number): number[] {
     const map = this.runner.game.map();
     const w = map.width();
-    const h = map.height();
     const candidates: number[] = [];
-    for (let i = 0; i < w * h; i++) {
+    for (let i = 0; i < w * map.height(); i++) {
       if (!map.isLand(i) || map.hasOwner(i)) continue;
-      let neutralNeighbours = 0;
-      for (const n of map.neighbors(i)) {
-        if (map.isLand(n) && !map.hasOwner(n)) neutralNeighbours++;
-      }
-      if (neutralNeighbours === 4) candidates.push(i);
+      let neutral = 0;
+      for (const n of map.neighbors(i)) if (map.isLand(n) && !map.hasOwner(n)) neutral++;
+      if (neutral === 4) candidates.push(i);
     }
-    return candidates.length > 0 ? random.randElement(candidates) : -1;
+    if (candidates.length < count) throw new Error("reset(): not enough free land for spawns");
+    const picked = [random.randElement(candidates)];
+    for (let minDist = SEAT_SPAWN_DISTANCE; picked.length < count; minDist = Math.floor(minDist / 2)) {
+      for (let tries = 0; tries < 2000 && picked.length < count; tries++) {
+        const t = random.randElement(candidates);
+        const far = picked.every((p) => Math.hypot((p % w) - (t % w), Math.floor(p / w) - Math.floor(t / w)) >= minDist);
+        if (far) picked.push(t);
+      }
+    }
+    return picked;
   }
 }

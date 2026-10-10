@@ -1,6 +1,8 @@
 import type { Game, PlayerID } from "../../../OpenFrontIO/src/core/game/Game";
 import type { Intent, Turn } from "../../../OpenFrontIO/src/core/Schemas";
-import type { Action, MaskBuffers } from "../types";
+import type { Masks } from "../Layout";
+import type { SeatObservation } from "../ObservationEncoder";
+import type { Action } from "../types";
 import { RateLimiter } from "./rate_limiter";
 import type { ShadowSim } from "./shadow_sim";
 
@@ -14,15 +16,15 @@ export interface AgentLoopConfig {
 }
 
 export interface Predictor {
-  predict(obs: Float32Array, masks: MaskBuffers): Action;
+  predict(obs: SeatObservation, masks: Masks): Action;
 }
 
 export interface LoopHooks {
-  encode(game: Game, playerID: PlayerID, out: Float32Array): void;
-  masks(game: Game, playerID: PlayerID, out: MaskBuffers): void;
+  encode(game: Game, playerID: PlayerID, out: SeatObservation): void;
+  masks(game: Game, playerID: PlayerID, out: Masks): void;
   decode(action: Action, game: Game, playerID: PlayerID): Intent[];
-  createMaskBuffers(): MaskBuffers;
-  obsSize(): number;
+  createObservation(): SeatObservation;
+  createMasks(): Masks;
 }
 
 /**
@@ -65,9 +67,9 @@ export class AgentLoop {
       // Hash disagreement: we are playing a different game. Stop acting.
       return { intents: [], dropped: "hash-mismatch" };
     }
-    const obs = new Float32Array(this.hooks.obsSize());
+    const obs = this.hooks.createObservation();
     this.hooks.encode(shadow.game, agentPlayerID, obs);
-    const masks = this.hooks.createMaskBuffers();
+    const masks = this.hooks.createMasks();
     this.hooks.masks(shadow.game, agentPlayerID, masks);
     const action = this.predictor.predict(obs, masks);
     const intents = this.hooks.decode(action, shadow.game, agentPlayerID);

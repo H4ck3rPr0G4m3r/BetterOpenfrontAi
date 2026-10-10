@@ -1,158 +1,188 @@
+import fs from "fs";
+import os from "os";
 import path from "path";
-import { fileURLToPath } from "url";
-import { describe, expect, it } from "vitest";
-import { GameMapType } from "../../OpenFrontIO/src/core/game/Game";
-import { NUM_INTENT_TYPES, NUM_TARGET_SLOTS } from "../src/ActionCodec";
-import { GameEnv } from "../src/GameEnv";
-import type { EnvConfig } from "../src/types";
-import { NOOP_ACTION, NoopActionCodec, StubObservationEncoder } from "./helpers/stubs";
+import { beforeAll, describe, expect, it } from "vitest";
+import { GameRecordSchema, type Turn } from "../../OpenFrontIO/src/core/Schemas";
+import { createGameRunner } from "../../OpenFrontIO/src/core/GameRunner";
+import { NodeGameMapLoader } from "../../OpenFrontIO/tests/perf/fullgame/NodeGameMapLoader";
+import type { SeatStep } from "../src/GameEnv";
+import { GlobalField, GLOBAL_OFFSET } from "../src/Layout";
+import { NOOP_ACTION } from "../src/types";
+import { MAPS_DIR, makeEnv, randomAction, seededRandom, stateHash } from "./helpers/env";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const MAPS_DIR = path.join(__dirname, "../../OpenFrontIO/resources/maps");
+const LONG = 180_000;
 
-function findAgentSpawnTile(env: GameEnv): number | undefined {
-  return env.game.player(env.agentPlayerID).spawnTile();
-}
-
-function makeConfig(overrides: Partial<EnvConfig> = {}): EnvConfig {
-  return {
-    map: GameMapType.World,
-    mapsDir: MAPS_DIR,
-    bots: 20,
-    ticksPerStep: 10,
-    tickCap: 6000,
-    ...overrides,
-  };
-}
-
-describe("GameEnv", () => {
-  it("refuses ticks and masks before the first reset", async () => {
-    const env = new GameEnv(makeConfig(), new StubObservationEncoder(), new NoopActionCodec());
-
-    expect(() => env.ticks).toThrow();
-    expect(() => env.currentMasks()).toThrow();
-  });
-
-  it("reset() spawns the agent and returns a correctly-sized observation", async () => {
-    const encoder = new StubObservationEncoder();
-    const env = new GameEnv(makeConfig(), encoder, new NoopActionCodec());
-
-    const obs = await env.reset("gameenv-reset");
-
-    expect(obs.length).toBe(encoder.size);
-    expect(env.game.player(env.agentPlayerID).isAlive()).toBe(true);
-    expect(env.game.player(env.agentPlayerID).numTilesOwned()).toBeGreaterThan(0);
-    expect(env.game.inSpawnPhase()).toBe(false);
-  });
-
-  it("step() advances exactly ticksPerStep ticks and isn't done early", async () => {
-    const env = new GameEnv(
-      makeConfig({ ticksPerStep: 10 }),
-      new StubObservationEncoder(),
-      new NoopActionCodec(),
-    );
-    await env.reset("gameenv-step");
-    const before = env.game.ticks();
-
-    const result = env.step(NOOP_ACTION);
-
-    expect(env.game.ticks()).toBe(before + 10);
-    expect(result.done).toBe(false);
-    expect(result.info.terminalReason).toBeNull();
-    expect(result.obs.length).toBe(4);
-    // The bridge protocol (§5.6) needs next-step masks on every reply.
-    expect(result.info.masks.intentType.length).toBe(NUM_INTENT_TYPES);
-    expect(result.info.masks.target.length).toBe(NUM_TARGET_SLOTS);
-  });
-
-  it("terminates with tick_cap once the post-spawn tick budget is exhausted", async () => {
-    const env = new GameEnv(
-      makeConfig({ ticksPerStep: 10, tickCap: 25 }),
-      new StubObservationEncoder(),
-      new NoopActionCodec(),
-    );
-    await env.reset("gameenv-tickcap");
-
-    let result = env.step(NOOP_ACTION); // ticks 1-10, not done
-    expect(result.done).toBe(false);
-    result = env.step(NOOP_ACTION); // ticks 11-20, not done
-    expect(result.done).toBe(false);
-    result = env.step(NOOP_ACTION); // ticks 21-30, past the cap of 25
-    expect(result.done).toBe(true);
-    expect(result.info.terminalReason).toBe("tick_cap");
-  });
-
-  it("does not auto-reset after a terminal episode — that's the caller's job", async () => {
-    const env = new GameEnv(
-      makeConfig({ ticksPerStep: 10, tickCap: 5 }),
-      new StubObservationEncoder(),
-      new NoopActionCodec(),
-    );
-    await env.reset("gameenv-poststep");
-    const result = env.step(NOOP_ACTION);
-    expect(result.done).toBe(true);
-
-    // GameEnv only throws on a caught simulation exception (fatalError);
-    // a plain tick-cap/win/death terminal doesn't latch that flag, so
-    // calling step() again is the caller's bug to avoid, not GameEnv's to
-    // reject — matching the auto-reset contract the bridge (§5.6) owns.
-    expect(() => env.step(NOOP_ACTION)).not.toThrow();
-  });
-
-  it("converts a raw engine throw inside step() into a sim_error terminal", async () => {
-    // GameRunner catches tick errors into ErrorUpdate, but its own
-    // per-tick view-data pass (and engine queries on already-damaged state)
-    // throw raw past that catch. Those must end the episode, not escape.
-    class ThrowingMasksCodec extends NoopActionCodec {
-      override masks(): void {
-        throw new Error("boom");
+describe("GameEnv lifecycle", () => {
+  it("seats several agents in one game with distinct ids and spread spawns", async () => {
+    const env = makeEnv({ seats: 3 });
+    const rows = await env.reset("seats-1");
+    expect(new Set(env.seatIDs).size).toBe(3);
+    expect(rows).toHaveLength(3);
+    for (const row of rows) {
+      expect(row.active).toBe(true);
+      expect(row.done).toBe(false);
+      expect(row.masks.intent[0]).toBe(1);
+      expect(row.tiles).toBeGreaterThan(0);
+      expect(row.obs.features[GLOBAL_OFFSET + GlobalField.Alive]).toBe(1);
+    }
+    const w = env.game.map().width();
+    const centers = env.seatIDs.map((id) => [...env.game.player(id).tiles()][0]);
+    for (let i = 0; i < centers.length; i++) {
+      for (let j = i + 1; j < centers.length; j++) {
+        const d = Math.hypot((centers[i] % w) - (centers[j] % w), Math.floor(centers[i] / w) - Math.floor(centers[j] / w));
+        expect(d).toBeGreaterThan(30);
       }
     }
-    const env = new GameEnv(
-      makeConfig(),
-      new StubObservationEncoder(),
-      new ThrowingMasksCodec(),
+  }, LONG);
+
+  it("is deterministic for a seed and action sequence", async () => {
+    const run = async () => {
+      const env = makeEnv({ seats: 2 });
+      let rows = await env.reset("determinism");
+      const rand = seededRandom(7);
+      for (let i = 0; i < 30 && !env.gameOver; i++) {
+        rows = env.step(rows.map((r) => (r.active ? randomAction(r.masks, rand) : NOOP_ACTION)));
+      }
+      return stateHash(env.game);
+    };
+    expect(await run()).toBe(await run());
+  }, LONG);
+
+  it("ends every seat at the tick cap with a placement reward, then refuses to step", async () => {
+    const env = makeEnv({ seats: 2, tickCap: 50 });
+    let rows = await env.reset("cap");
+    for (let i = 0; i < 5; i++) rows = env.step([NOOP_ACTION, NOOP_ACTION]);
+    for (const row of rows) {
+      expect(row.done).toBe(true);
+      expect(row.terminal).toBe("tick_cap");
+      expect(row.placement).toBeGreaterThanOrEqual(0);
+    }
+    expect(env.gameOver).toBe(true);
+    expect(() => env.step([NOOP_ACTION, NOOP_ACTION])).toThrow(/reset/);
+  }, LONG);
+
+  it("aborts on request with zero reward", async () => {
+    const env = makeEnv({ seats: 2 });
+    await env.reset("abort");
+    const rows = env.abort();
+    expect(rows.map((r) => r.terminal)).toEqual(["aborted", "aborted"]);
+    expect(rows.every((r) => r.reward === 0 && r.done)).toBe(true);
+    expect(env.gameOver).toBe(true);
+  }, LONG);
+
+  it("takes a dead seat out of play while the game goes on", async () => {
+    // A passive seat gets eaten within a couple hundred steps (measured).
+    const env = makeEnv({ seats: 2, bots: 20 });
+    let rows: SeatStep[] = await env.reset("death-1");
+    let deathStep = -1;
+    for (let i = 0; i < 400 && deathStep < 0 && !env.gameOver; i++) {
+      rows = env.step([NOOP_ACTION, NOOP_ACTION]);
+      const dead = rows.findIndex((r) => r.terminal === "death");
+      if (dead >= 0) {
+        deathStep = i;
+        expect(rows[dead].done).toBe(true);
+        expect(rows[dead].reward).toBeLessThan(-2);
+      }
+    }
+    expect(deathStep).toBeGreaterThanOrEqual(0);
+    if (!env.gameOver) {
+      const deadSeat = rows.findIndex((r) => r.terminal === "death");
+      rows = env.step([NOOP_ACTION, NOOP_ACTION]);
+      expect(rows[deadSeat].active).toBe(false);
+      expect(rows[deadSeat].reward).toBe(0);
+      expect(Array.from(rows[deadSeat].masks.intent)).toEqual([1, ...new Array(13).fill(0)]);
+    }
+  }, LONG);
+});
+
+describe("replays", () => {
+  it("records a multi-seat game that re-simulates to the same state hash", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "of-replay-"));
+    const env = makeEnv({ seats: 2, tickCap: 120, replay: { dir, every: 1 } });
+    let rows = await env.reset("replay-1");
+    const rand = seededRandom(3);
+    while (!env.gameOver) rows = env.step(rows.map((r) => (r.active ? randomAction(r.masks, rand) : NOOP_ACTION)));
+    const finalHash = stateHash(env.game);
+    const finalTick = env.game.ticks();
+
+    const files = fs.readdirSync(dir);
+    expect(files).toHaveLength(1);
+    const record = JSON.parse(fs.readFileSync(path.join(dir, files[0]), "utf8"));
+    const parsed = GameRecordSchema.safeParse(record);
+    expect(parsed.success).toBe(true);
+    expect(record.info.players.map((p: { clientID: string }) => p.clientID)).toEqual(["RLSEAT00", "RLSEAT01"]);
+
+    // Re-simulate exactly as the real client does (createGameRunner), with
+    // the record's sparse turns expanded back to one turn per tick.
+    const runner = await createGameRunner(
+      { gameID: record.info.gameID, lobbyCreatedAt: 0, config: record.info.config, players: record.info.players },
+      undefined,
+      new NodeGameMapLoader(MAPS_DIR),
+      () => {},
     );
-    await env.reset("gameenv-simerror");
+    const byNumber = new Map<number, Turn>(record.turns.map((t: Turn) => [t.turnNumber, t]));
+    for (let n = 0; n < finalTick; n++) {
+      runner.addTurn({ turnNumber: n, intents: byNumber.get(n)?.intents ?? [] });
+      runner.executeNextTick();
+    }
+    expect(stateHash(runner.game)).toBe(finalHash);
+  }, LONG);
+});
 
-    const result = env.step(NOOP_ACTION);
+describe("ObservationEncoder", () => {
+  let env: ReturnType<typeof makeEnv>;
+  let rows: SeatStep[];
+  beforeAll(async () => {
+    env = makeEnv({ seats: 3, bots: 20 });
+    rows = await env.reset("encoder-1");
+    const rand = seededRandom(11);
+    for (let i = 0; i < 60 && !env.gameOver; i++) {
+      rows = env.step(rows.map((r) => (r.active ? randomAction(r.masks, rand) : NOOP_ACTION)));
+    }
+  }, LONG);
 
-    expect(result.done).toBe(true);
-    expect(result.info.terminalReason).toBe("sim_error");
-    expect(result.obs.every((v) => v === 0)).toBe(true);
-    expect([...result.info.masks.intentType].every((v) => v === 0)).toBe(true);
-    // Latched: the engine underneath is untrusted, so the next step()
-    // fails fast until reset() instead of driving damaged state.
-    expect(() => env.step(NOOP_ACTION)).toThrow();
+  it("keeps every feature finite and in [0, 1]", () => {
+    for (const row of rows) {
+      for (const v of row.obs.features) {
+        expect(Number.isFinite(v)).toBe(true);
+        expect(v).toBeGreaterThanOrEqual(0);
+        expect(v).toBeLessThanOrEqual(1);
+      }
+    }
   });
 
-  it("reset() rebuilds the game rather than reusing the previous episode", async () => {
-    const env = new GameEnv(
-      makeConfig(),
-      new StubObservationEncoder(),
-      new NoopActionCodec(),
-    );
-    await env.reset("gameenv-fresh-1");
-    const firstEpisodeTicks = env.game.ticks();
-    const firstEpisodeSpawnTile = findAgentSpawnTile(env);
-    env.step(NOOP_ACTION); // advance episode 1 so a stale reset would be visible
-    env.step(NOOP_ACTION);
-    const ticksAfterStepping = env.game.ticks();
-    expect(ticksAfterStepping).toBeGreaterThan(firstEpisodeTicks);
+  it("partitions land ownership in every land cell", () => {
+    const raster = rows[0].obs.raster;
+    const cells = 128 * 64;
+    let landCells = 0;
+    for (let c = 0; c < cells; c++) {
+      if (raster[c] === 0) continue;
+      landCells++;
+      const sum = raster[1 * cells + c] + raster[2 * cells + c] + raster[3 * cells + c] + raster[4 * cells + c];
+      if (raster[c] > 64) expect(Math.abs(sum - 255)).toBeLessThanOrEqual(4);
+    }
+    expect(landCells).toBeGreaterThan(1000);
+  });
 
-    const obs = await env.reset("gameenv-fresh-2");
+  it("gives each seat the same answer as encoding it alone", () => {
+    for (let s = 0; s < env.numSeats; s++) {
+      const alone = { raster: new Uint8Array(rows[s].obs.raster.length), features: new Float32Array(rows[s].obs.features.length) };
+      env.encoder.encodeOne(env.game, env.seatIDs[s], alone);
+      expect(Buffer.from(alone.raster).equals(Buffer.from(rows[s].obs.raster))).toBe(true);
+      expect(Array.from(alone.features)).toEqual(Array.from(rows[s].obs.features));
+    }
+  });
 
-    expect(obs.length).toBe(4);
-    expect(env.game.player(env.agentPlayerID).isAlive()).toBe(true);
-    expect(env.game.player(env.agentPlayerID).numTilesOwned()).toBeGreaterThan(0);
-    // A stale/reused game would still be sitting at ticksAfterStepping (or
-    // beyond); a genuinely fresh one is back down near the post-spawn tick
-    // count of a new episode.
-    expect(env.game.ticks()).toBeLessThan(ticksAfterStepping);
-    expect(Math.abs(env.game.ticks() - firstEpisodeTicks)).toBeLessThanOrEqual(5);
-    // Different seeds feed different PRNG streams into spawn-tile
-    // selection (§ pickSpawnTile) — a stale game would trivially "pass" a
-    // tile-count check since it's the same object.
-    expect(findAgentSpawnTile(env)).not.toBe(firstEpisodeSpawnTile);
+  it("reports attacks and army size from the engine", () => {
+    for (let s = 0; s < env.numSeats; s++) {
+      const p = env.game.player(env.seatIDs[s]);
+      const f = rows[s].obs.features;
+      expect(f[GLOBAL_OFFSET + GlobalField.IncomingCount]).toBeCloseTo(Math.min(1, p.incomingAttacks().length / 4), 5);
+      expect(f[GLOBAL_OFFSET + GlobalField.OutgoingCount]).toBeCloseTo(Math.min(1, p.outgoingAttacks().length / 4), 5);
+      if (p.isAlive()) {
+        const ratio = p.troops() / env.game.config().maxTroops(p);
+        expect(f[GLOBAL_OFFSET + GlobalField.TroopRatio]).toBeCloseTo(Math.min(1, ratio), 5);
+      }
+    }
   });
 });

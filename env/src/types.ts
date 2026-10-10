@@ -1,13 +1,8 @@
-import type { Game, GameMapType, PlayerID } from "../../OpenFrontIO/src/core/game/Game";
-import type { Intent } from "../../OpenFrontIO/src/core/Schemas";
-import type { TerminalReason } from "./Reward";
-
-export type Observation = Float32Array;
+import type { GameMapType } from "../../OpenFrontIO/src/core/game/Game";
 
 /**
- * The five action heads from spec §5.4. `buildSite` indexes the bounded
- * candidate list (§11.1 resolution), not a raster cell — dense per-cell
- * build masking was measured and rejected.
+ * One seat's action: five heads, conditioned on intentType (see Layout.ts
+ * HEAD_USAGE). Heads the intent does not use are ignored by decode().
  */
 export interface Action {
   intentType: number;
@@ -17,68 +12,35 @@ export interface Action {
   buildSite: number;
 }
 
-/** One boolean-as-0/1 mask per head, same indexing as `Action`. */
-export interface MaskBuffers {
-  intentType: Uint8Array;
-  target: Uint8Array;
-  ratioBucket: Uint8Array;
-  spatialCell: Uint8Array;
-  buildSite: Uint8Array;
-}
+export const NOOP_ACTION: Action = {
+  intentType: 0,
+  target: 0,
+  ratioBucket: 0,
+  spatialCell: 0,
+  buildSite: 0,
+};
 
-export interface ObservationEncoder {
-  /** Fixed length of the encoded observation this encoder produces. */
-  readonly size: number;
-  encode(game: Game, agentPlayerID: PlayerID, out: Float32Array): void;
-}
-
-export interface ActionCodec {
-  decode(action: Action, game: Game, playerID: PlayerID): Intent[];
-  masks(game: Game, playerID: PlayerID, out: MaskBuffers): void;
-}
-
-export interface Info {
-  terminalReason: TerminalReason;
-  ticks: number;
-  /** Next-step legality masks, computed from the post-step state (§5.6). */
-  masks: MaskBuffers;
-}
-
-export interface StepResult {
-  obs: Observation;
-  reward: number;
-  done: boolean;
-  info: Info;
-}
+/** Why a seat's episode ended. "aborted" = the trainer ended the game early. */
+export type TerminalReason = "win" | "death" | "tick_cap" | "sim_error" | "aborted" | null;
 
 export interface EnvConfig {
   map: GameMapType;
   mapsDir: string;
   bots: number;
-  /** Simulation ticks advanced per `step()` call. Spec default: 10. */
+  /** Simulation ticks advanced per `step()` call. */
   ticksPerStep: number;
-  /** Post-spawn tick cap — nations don't eliminate each other within 3300
-   *  ticks (§5.1), so episodes need a hard cap, not a natural winner. */
+  /** Post-spawn tick cap. Episodes end there with a placement reward. */
   tickCap: number;
-  /** Scripted nation peoples: "default" (map manifest) or "disabled".
-   *  Curriculum knob — disabled plus few bots is the easiest stage. */
+  /** Agent-controlled human seats in one game (1 = solo vs bots). */
+  seats: number;
+  /** Scripted nations: "default" (map manifest) or "disabled". */
   nations?: "default" | "disabled";
-  /** Episode recording for data replays (phase 8). Absent means off. */
+  /** Episode recording for data replays. Absent means off. */
   replay?: ReplayOptions;
 }
 
-/**
- * Data-replay recording. Every Nth episode per env is written to `dir` as
- * a GameRecord-compatible JSON file the dev client can play back.
- */
+/** Every Nth game per env is written to `dir` as a GameRecord JSON file. */
 export interface ReplayOptions {
   dir: string;
-  /** Record every Nth episode (1 means every episode). Must be >= 1. */
   every: number;
 }
-
-export const DEFAULT_ENV_CONFIG: Omit<EnvConfig, "map" | "mapsDir"> = {
-  bots: 50,
-  ticksPerStep: 10,
-  tickCap: 6000,
-};

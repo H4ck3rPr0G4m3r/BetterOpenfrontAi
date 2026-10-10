@@ -1,269 +1,163 @@
 import path from "path";
 import { GameMapType } from "../../../OpenFrontIO/src/core/game/Game";
 import { ActionCodecImpl } from "../ActionCodec";
-import {
-  BehaviorConfig,
-  DEFAULT_REWARD_WEIGHTS,
-  KNOWN_BUILD_TYPES,
-  RewardWeights,
-} from "../BehaviorConfig";
+import { BehaviorConfig, normalizeRewardWeights, RewardWeights } from "../BehaviorConfig";
 import { GameEnv } from "../GameEnv";
+import { BUILD_TYPES, NUM_INTENTS } from "../Layout";
 import { ObservationEncoder } from "../ObservationEncoder";
 import { replayOptionsFromEnv } from "../Replay";
-import { Reward } from "../Reward";
 import type { EnvConfig } from "../types";
 import { WorkerServer } from "./WorkerServer";
 
-export interface WorkerMainOptions {
+export interface WorkerOptions {
   host: string;
-  port: number | undefined;
-  path: string | undefined;
-  numEnvs: number;
+  port: number;
+  games: number;
+  seats: number;
   map: GameMapType;
   mapsDir: string;
   bots: number;
+  nations: "default" | "disabled";
   ticksPerStep: number;
   tickCap: number;
-  strictIllegalActions: boolean;
-  /** Curriculum knob: scripted nation peoples, default or disabled. */
-  nations: "default" | "disabled";
-  /** Side-quest AI control UI: intent types to keep shut. */
   disabledIntents: number[];
-  /** Side-quest AI control UI: buildable unit types to exclude. */
   disabledBuilds: string[];
-  /** Side-quest AI control UI: shaping override, defaults are phase 1. */
-  rewardWeights: RewardWeights;
-  /** Mute negative troop deltas so attacks stop punishing themselves. */
-  troopLossScale: number;
+  reward: RewardWeights;
 }
 
-export const DEFAULT_WORKER_OPTIONS: WorkerMainOptions = {
-  host: "127.0.0.1",
-  port: undefined,
-  path: undefined,
-  numEnvs: 1,
-  map: GameMapType.World,
-  mapsDir: path.resolve(process.cwd(), "../OpenFrontIO/resources/maps"),
-  bots: 20,
-  ticksPerStep: 10,
-  tickCap: 6000,
-  strictIllegalActions: true,
-  nations: "default",
-  disabledIntents: [],
-  disabledBuilds: [],
-  rewardWeights: { ...DEFAULT_REWARD_WEIGHTS },
-  troopLossScale: 1.0,
-};
+const USAGE = `openfront worker: hosts G games x S seats behind the bridge protocol.
+Usage: tsx src/bridge/worker_main.ts --port N [options]
+  --host NAME          bind host (127.0.0.1)
+  --port N             TCP port (required)
+  --games G            games hosted by this process (1)
+  --seats S            agent seats per game, 1..8 (1)
+  --map NAME           GameMapType key (World)
+  --maps-dir DIR       engine resources/maps dir
+  --bots N             engine bots (20)
+  --nations MODE       default | disabled
+  --ticks-per-step N   (10)
+  --tick-cap N         post-spawn tick cap (6000)
+  --disable-intent K   shut one intent type, repeatable (1..13)
+  --disable-build T    exclude one build type, repeatable (e.g. Factory)
+  --reward JSON        reward weight overrides, e.g. {"land":1,"kill":0.5}`;
 
-/**
- * Parse the worker CLI. Exported for tests. Throws on bad input rather
- * than guessing, since a silently wrong map or tick cap would corrupt
- * training data far from where it was misconfigured.
- */
-export function parseWorkerArgs(argv: string[]): WorkerMainOptions {
-  // Fresh copies of the mutable defaults: the spread below would share
-  // the array/object references with DEFAULT_WORKER_OPTIONS.
-  const options: WorkerMainOptions = {
-    ...DEFAULT_WORKER_OPTIONS,
-    disabledIntents: [...DEFAULT_WORKER_OPTIONS.disabledIntents],
-    disabledBuilds: [...DEFAULT_WORKER_OPTIONS.disabledBuilds],
-    rewardWeights: { ...DEFAULT_WORKER_OPTIONS.rewardWeights },
-    troopLossScale: DEFAULT_WORKER_OPTIONS.troopLossScale,
+/** Parse the CLI. Throws on bad input: a silently wrong map or tick cap
+ *  would corrupt training data far from where it was misconfigured. */
+export function parseWorkerArgs(argv: string[]): WorkerOptions {
+  const o: WorkerOptions = {
+    host: "127.0.0.1",
+    port: -1,
+    games: 1,
+    seats: 1,
+    map: GameMapType.World,
+    mapsDir: path.resolve(process.cwd(), "../OpenFrontIO/resources/maps"),
+    bots: 20,
+    nations: "default",
+    ticksPerStep: 10,
+    tickCap: 6000,
+    disabledIntents: [],
+    disabledBuilds: [],
+    reward: normalizeRewardWeights(),
   };
   for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i];
-    const next = (): string => {
-      const value = argv[i + 1];
-      if (value === undefined || value.startsWith("--")) {
-        throw new Error(`${arg} needs a value`);
-      }
-      i++;
-      return value;
+    const flag = argv[i];
+    const value = (): string => {
+      const v = argv[++i];
+      if (v === undefined || v.startsWith("--")) throw new Error(`${flag} needs a value`);
+      return v;
     };
-    const integer = (raw: string, name: string): number => {
-      const value = Number(raw);
-      if (!Number.isInteger(value)) throw new Error(`${name} must be an integer, got ${raw}`);
-      return value;
+    const int = (min: number, max: number): number => {
+      const raw = value();
+      const v = Number(raw);
+      if (!Number.isInteger(v) || v < min || v > max) throw new Error(`${flag} must be an integer ${min}..${max}, got ${raw}`);
+      return v;
     };
-    switch (arg) {
-      case "--host":
-        options.host = next();
-        break;
-      case "--port":
-        options.port = integer(next(), "port");
-        break;
-      case "--path":
-        options.path = next();
-        break;
-      case "--num-envs":
-        options.numEnvs = integer(next(), "num-envs");
-        break;
+    switch (flag) {
+      case "--host": o.host = value(); break;
+      case "--port": o.port = int(1, 65535); break;
+      case "--games": o.games = int(1, 256); break;
+      case "--seats": o.seats = int(1, 8); break;
       case "--map": {
-        const name = next();
+        const name = value();
         const map = (GameMapType as Record<string, GameMapType>)[name];
         if (map === undefined) throw new Error(`unknown map ${name}`);
-        options.map = map;
+        o.map = map;
         break;
       }
-      case "--maps-dir":
-        options.mapsDir = next();
-        break;
-      case "--bots":
-        options.bots = integer(next(), "bots");
-        break;
-      case "--ticks-per-step":
-        options.ticksPerStep = integer(next(), "ticks-per-step");
-        break;
-      case "--tick-cap":
-        options.tickCap = integer(next(), "tick-cap");
-        break;
+      case "--maps-dir": o.mapsDir = value(); break;
+      case "--bots": o.bots = int(0, 400); break;
       case "--nations": {
-        const value = next();
-        if (value !== "default" && value !== "disabled") {
-          throw new Error(`nations must be default or disabled, got ${value}`);
-        }
-        options.nations = value;
+        const v = value();
+        if (v !== "default" && v !== "disabled") throw new Error(`nations must be default or disabled, got ${v}`);
+        o.nations = v;
         break;
       }
-      case "--strict":
-        options.strictIllegalActions = true;
-        break;
-      case "--lenient":
-        options.strictIllegalActions = false;
-        break;
-      case "--disable-intent": {
-        const value = integer(next(), "disable-intent");
-        if (value < 1 || value > 13) {
-          throw new Error(`disable-intent must be 1..13, got ${value}`);
-        }
-        options.disabledIntents = [...options.disabledIntents, value];
-        break;
-      }
+      case "--ticks-per-step": o.ticksPerStep = int(1, 1000); break;
+      case "--tick-cap": o.tickCap = int(1, 1_000_000); break;
+      case "--disable-intent": o.disabledIntents.push(int(1, NUM_INTENTS - 1)); break;
       case "--disable-build": {
-        const name = next();
-        if (!(KNOWN_BUILD_TYPES as readonly string[]).includes(name)) {
-          throw new Error(`unknown build type ${name}`);
-        }
-        options.disabledBuilds = [...options.disabledBuilds, name];
+        const v = value();
+        if (!(BUILD_TYPES as readonly string[]).includes(v)) throw new Error(`unknown build type ${v}`);
+        o.disabledBuilds.push(v);
         break;
       }
-      case "--reward-weights": {
-        const parts = next().split(",");
-        if (parts.length !== 5 && parts.length !== 6 && parts.length !== 13) {
-          throw new Error(
-            "--reward-weights needs land,troop,gold,win,death[,kill] or the full 13",
-          );
+      case "--reward": {
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(value());
+        } catch {
+          throw new Error("--reward must be a JSON object");
         }
-        const values = parts.map((raw) => Number(raw));
-        if (values.some((v) => !Number.isFinite(v))) {
-          throw new Error(`--reward-weights must be finite numbers, got ${parts}`);
+        if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+          throw new Error("--reward must be a JSON object");
         }
-        // Old 5- and 6-value configs keep working: missing phase-7 weights
-        // fall back to neutral defaults, restoring earlier behavior.
-        const [
-          land, troop, gold, win, death, kill = 0,
-          landEarly = 1, landLoss = 1, city = 0, factory = 0,
-          troopHold = 0, survive = 0, rich = 0,
-        ] = values;
-        options.rewardWeights = {
-          land, troop, gold, win, death, kill,
-          landEarly, landLoss, city, factory, troopHold, survive, rich,
-        };
-        break;
-      }
-      case "--troop-loss-scale": {
-        const value = Number(next());
-        if (!Number.isFinite(value) || value < 0 || value > 1) {
-          throw new Error(`troop-loss-scale must be 0..1, got ${value}`);
-        }
-        options.troopLossScale = value;
+        o.reward = normalizeRewardWeights(parsed as Record<string, unknown>);
         break;
       }
       case "--help":
       case "-h":
-        printUsage();
+        console.log(USAGE);
         process.exit(0);
         break;
       default:
-        throw new Error(`unknown flag ${arg}`);
+        throw new Error(`unknown flag ${flag}`);
     }
   }
-  if (options.port === undefined && options.path === undefined) {
-    throw new Error("one of --port or --path is required");
-  }
-  if (options.numEnvs < 1 || options.numEnvs > 1024) {
-    throw new Error(`num-envs must be 1..1024, got ${options.numEnvs}`);
-  }
-  return options;
-}
-
-function printUsage(): void {
-  console.log(`openfront worker: hosts M GameEnvs behind the bridge protocol.
-Usage: tsx src/bridge/worker_main.ts --port 5001 [options]
-  --host NAME        bind host, default 127.0.0.1
-  --port N           TCP port to listen on (or --path for IPC)
-  --path P           IPC path or Windows named pipe, wins over --port
-  --num-envs M       envs hosted in this process, default 1
-  --map NAME         GameMapType key such as World, default World
-  --maps-dir DIR     engine resources/maps dir
-  --bots N           default 20
-  --ticks-per-step N default 10
-  --tick-cap N       default 6000
-  --nations MODE     default or disabled (curriculum: disabled is easiest)
-  --strict           illegal actions fail loudly (default)
-  --lenient          count illegal actions and retry as noop
-  --disable-intent N keep one intent type shut, repeatable, 1..13 (side quest)
-  --disable-build T  exclude one build type, repeatable, e.g. Factory
-  --reward-weights L,T,G,W,D[,K] or full 13
-                      shaping override: land,troop,gold,win,death,kill,
-                      landEarly,landLoss,city,factory,troopHold,survive,rich
-  --troop-loss-scale S mute negative troop deltas 0..1, default 1.0
-                      (0.0 stops attacks punishing themselves)`);
+  if (o.port < 0) throw new Error("--port is required");
+  return o;
 }
 
 async function main(): Promise<void> {
-  const options = parseWorkerArgs(process.argv.slice(2));
-  const encoder = new ObservationEncoder();
-  const behavior: BehaviorConfig = {
-    disabledIntents: options.disabledIntents,
-    disabledBuilds: options.disabledBuilds,
-    rewardWeights: options.rewardWeights,
-    troopLossScale: options.troopLossScale,
-  };
+  const o = parseWorkerArgs(process.argv.slice(2));
+  const behavior: BehaviorConfig = { disabledIntents: o.disabledIntents, disabledBuilds: o.disabledBuilds };
   const codec = new ActionCodecImpl(behavior);
+  const encoder = new ObservationEncoder(o.tickCap);
   const config: EnvConfig = {
-    map: options.map,
-    mapsDir: options.mapsDir,
-    bots: options.bots,
-    ticksPerStep: options.ticksPerStep,
-    tickCap: options.tickCap,
-    nations: options.nations,
-    // Phase-8 replays arrive via environment, not the wire protocol, so the
-    // bridge schema stays at version 1. Python sets these before spawning.
+    map: o.map,
+    mapsDir: o.mapsDir,
+    bots: o.bots,
+    nations: o.nations,
+    ticksPerStep: o.ticksPerStep,
+    tickCap: o.tickCap,
+    seats: o.seats,
+    // Replays are enabled through the environment; Python sets it before spawning.
     replay: replayOptionsFromEnv(),
   };
   const server = new WorkerServer({
-    numEnvs: options.numEnvs,
-    createEnv: () => new GameEnv(config, encoder, codec, new Reward({ weights: behavior.rewardWeights, troopLossScale: behavior.troopLossScale })),
-    obsSize: encoder.size,
-    strictIllegalActions: options.strictIllegalActions,
-    listen:
-      options.path !== undefined
-        ? { path: options.path }
-        : { host: options.host, port: options.port },
+    games: o.games,
+    seats: o.seats,
+    host: o.host,
+    port: o.port,
+    createGame: () => new GameEnv(config, codec, o.reward, encoder),
   });
-  const shutdown = (): void => {
-    void server.close().finally(() => process.exit(0));
-  };
+  const shutdown = (): void => void server.close().finally(() => process.exit(0));
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);
-  await server.start();
-  console.error(`worker listening: ${JSON.stringify(server.getAddress())}`);
+  const addr = await server.start();
+  console.error(`worker listening on ${addr.host}:${addr.port} (${o.games} games x ${o.seats} seats)`);
 }
 
-const invokedDirectly =
-  process.argv[1] !== undefined &&
-  (process.argv[1].endsWith("worker_main.ts") || process.argv[1].endsWith("worker_main.js"));
+const invokedDirectly = process.argv[1]?.endsWith("worker_main.ts") || process.argv[1]?.endsWith("worker_main.js");
 if (invokedDirectly) {
   main().catch((err) => {
     console.error(err instanceof Error ? (err.stack ?? err.message) : String(err));

@@ -42,11 +42,11 @@ describe("checkVersionParity", () => {
 
 describe("AgentLoop", () => {
   const hooks: LoopHooks = {
-    encode: (_game, _id, out) => out.fill(1),
+    encode: (_game, _id, out) => out.features.fill(1),
     masks: (_game, _id, _out) => {},
     decode: (_action, _game, _id) => [{ type: "noop" }] as never,
-    createMaskBuffers: () => ({}) as never,
-    obsSize: () => 8,
+    createObservation: () => ({ raster: new Uint8Array(4), features: new Float32Array(4) }),
+    createMasks: () => ({}) as never,
   };
   const predictor: Predictor = {
     predict: () => ({ intentType: 0, target: 0, ratioBucket: 0, spatialCell: 0, buildSite: 0 }),
