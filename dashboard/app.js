@@ -2,6 +2,7 @@
 
 const $ = (id) => document.getElementById(id);
 const NONE = "";
+const ACCENT = "#6fc287";
 
 async function api(method, path, body) {
   const opts = { method, headers: {} };
@@ -29,15 +30,37 @@ function el(tag, attrs = {}, ...children) {
 function ago(iso) {
   if (!iso) return "";
   const s = Math.max(0, (Date.now() - Date.parse(iso)) / 1000);
-  if (s < 60) return `${Math.round(s)}s ago`;
+  if (s < 60) return "just now";
   if (s < 3600) return `${Math.round(s / 60)} min ago`;
   if (s < 86400) return `${Math.round(s / 3600)} h ago`;
   return new Date(iso).toLocaleDateString();
 }
 
+function fmt(v) {
+  if (v === undefined || v === null || Number.isNaN(v)) return "-";
+  if (Math.abs(v) >= 1000) return Math.round(v).toLocaleString();
+  if (Math.abs(v) >= 100 || Number.isInteger(v)) return v.toFixed(0);
+  return v.toFixed(2);
+}
+const pct = (v) => (v === undefined ? "-" : `${Math.round(v * 100)}%`);
+const NAMES = { vs_bots: "Vs bots", selfplay_ffa: "Self-play FFA", close_rivals: "Close rivals", crowded: "Crowded", easy: "Easy" };
+const pretty = (name) => NAMES[name] || name.replace(/_/g, " ");
+
 function showError(box, err) {
   box.textContent = err ? String(err.message || err) : "";
   box.hidden = !err;
+}
+
+/* ---------------- tabs ---------------- */
+
+const TABS = ["play", "training", "eval", "replays"];
+
+function showTab(name) {
+  const tab = TABS.includes(name) ? name : "play";
+  for (const t of TABS) $(t).hidden = t !== tab;
+  document.querySelectorAll(".tabs a").forEach((a) => a.setAttribute("aria-selected", String(a.dataset.tab === tab)));
+  if (tab === "training") loadMetrics();
+  if (tab === "replays") loadReplays().catch(() => {});
 }
 
 /* ---------------- catalog: models, recipes, runs ---------------- */
@@ -47,15 +70,17 @@ let catalog = { checkpoints: [], agents: [], configs: [], runs: [] };
 function fillModelSelect(select) {
   const keep = select.value;
   select.innerHTML = "";
-  if (select.dataset.optional) select.append(el("option", { value: NONE }, "(empty)"));
-  const group = el("optgroup", { label: "Trained checkpoints" });
-  for (const c of catalog.checkpoints) {
-    group.append(el("option", { value: c.path }, c.path.replace(/^checkpoints\//, "")));
+  if (select.dataset.optional) select.append(el("option", { value: NONE }, "Empty seat"));
+  if (catalog.checkpoints.length) {
+    const group = el("optgroup", { label: "Trained models" });
+    for (const c of catalog.checkpoints) {
+      group.append(el("option", { value: c.path }, c.path.replace(/^checkpoints\//, "").replace(/\.pt$/, "")));
+    }
+    select.append(group);
   }
-  if (catalog.checkpoints.length) select.append(group);
-  const scripted = el("optgroup", { label: "Built-in" });
-  for (const a of catalog.agents) scripted.append(el("option", { value: a }, a));
-  select.append(scripted);
+  const builtin = el("optgroup", { label: "Built-in" });
+  for (const a of catalog.agents) builtin.append(el("option", { value: a }, a));
+  select.append(builtin);
   if ([...select.options].some((o) => o.value === keep)) select.value = keep;
 }
 
@@ -63,64 +88,65 @@ async function loadCatalog() {
   catalog = await api("GET", "/api/catalog");
   document.querySelectorAll(".model-select").forEach(fillModelSelect);
   const cfg = $("train-config");
-  const keep = cfg.value || "selfplay.yaml";
+  const keep = cfg.value || "main.yaml";
   cfg.innerHTML = "";
-  catalog.configs.forEach((c) => cfg.append(el("option", { value: c }, c)));
+  catalog.configs.forEach((c) => cfg.append(el("option", { value: c }, c.replace(/\.yaml$/, ""))));
   cfg.value = catalog.configs.includes(keep) ? keep : catalog.configs[0] || "";
   const run = $("metrics-run");
   const keepRun = run.value;
   run.innerHTML = "";
-  catalog.runs.forEach((r) => run.append(el("option", { value: r.name }, `${r.name} (${ago(r.modified)})`)));
+  catalog.runs.forEach((r) => run.append(el("option", { value: r.name }, `${r.name}  (${ago(r.modified)})`)));
   if (catalog.runs.some((r) => r.name === keepRun)) run.value = keepRun;
 }
 
 /* ---------------- jobs ---------------- */
 
-const STATUS_TEXT = { running: "running", done: "finished", error: "failed", stopped: "stopped" };
+const STATUS_TEXT = { running: "Running", done: "Finished", error: "Failed", stopped: "Stopped" };
 const openLogs = new Set();
 
 function jobCard(job) {
-  const status = el("span", { class: `pill ${job.status}` }, STATUS_TEXT[job.status] || job.status);
   const action = job.status === "running"
-    ? el("button", { type: "button", onclick: () => stopJob(job.id) }, job.kind === "lobby" ? "Leave" : "Stop")
-    : el("button", { type: "button", class: "quiet", onclick: () => stopJob(job.id) }, "Dismiss");
+    ? el("button", { type: "button", class: "small", onclick: () => stopJob(job.id) }, job.kind === "lobby" ? "Leave" : "Stop")
+    : el("button", { type: "button", class: "small ghost", onclick: () => stopJob(job.id) }, "Dismiss");
   const head = el("div", { class: "job-head" },
-    el("strong", {}, job.title), status, el("span", { class: "hint" }, ago(job.started)), action);
-  const card = el("div", { class: "job-card" }, head);
+    el("strong", {}, job.title),
+    el("span", { class: `pill ${job.status}` }, STATUS_TEXT[job.status] || job.status),
+    el("span", { class: "hint" }, ago(job.started)),
+    action);
+  const card = el("div", { class: `job-card ${job.status}` }, head);
   if (job.result) card.append(evalTable(job.result));
   const lines = job.log_tail || [];
   if (lines.length) {
-    const log = el("pre", { class: "log" }, lines.join("\n"));
-    const more = el("details", {}, el("summary", {}, `Output (${job.id})`), log);
+    const more = el("details", {}, el("summary", {}, "Output"), el("pre", { class: "log" }, lines.join("\n")));
     if (openLogs.has(job.id)) more.open = true;
     more.addEventListener("toggle", () => (more.open ? openLogs.add(job.id) : openLogs.delete(job.id)));
     card.append(more);
   } else if (job.status === "running") {
-    card.append(el("div", { class: "hint" }, "starting"));
+    card.append(el("div", { class: "hint" }, "Starting up"));
   }
   return card;
 }
 
 function evalTable(result) {
   const table = el("table", { class: "compact" });
-  table.append(el("thead", {}, el("tr", {}, ...["AI", "games", "survive", "win", "tiles", "placement", "kills"]
+  table.append(el("thead", {}, el("tr", {}, ...["AI", "Games", "Survived", "Won", "Land", "Placement", "Kills"]
     .map((h) => el("th", {}, h)))));
   const body = el("tbody");
   for (const [spec, s] of Object.entries(result.predictors || {})) {
     body.append(el("tr", {},
       el("td", {}, spec.split(/[\\/]/).pop().replace(/\.pt$/, "")),
-      el("td", {}, String(s.episodes)),
-      el("td", {}, `${Math.round(s.survival_rate * 100)}%`),
-      el("td", {}, `${Math.round(s.win_rate * 100)}%`),
-      el("td", {}, Math.round(s.mean_tiles).toLocaleString()),
-      el("td", {}, s.mean_placement.toFixed(2)),
-      el("td", {}, s.mean_kills.toFixed(2))));
+      el("td", { class: "num" }, String(s.episodes)),
+      el("td", { class: "num" }, pct(s.survival_rate)),
+      el("td", { class: "num" }, pct(s.win_rate)),
+      el("td", { class: "num" }, Math.round(s.mean_tiles).toLocaleString()),
+      el("td", { class: "num" }, s.mean_placement.toFixed(2)),
+      el("td", { class: "num" }, s.mean_kills.toFixed(2))));
   }
   table.append(body);
   const wrap = el("div", {}, table);
   const pairs = Object.entries(result.head_to_head || {});
   if (pairs.length) {
-    wrap.append(el("div", { class: "hint" }, pairs.map(([p, r]) => `${p}: ${Math.round(r * 100)}%`).join("   ")));
+    wrap.append(el("div", { class: "hint" }, pairs.map(([p, r]) => `${p}: ${pct(r)}`).join("   ")));
   }
   return wrap;
 }
@@ -128,8 +154,7 @@ function evalTable(result) {
 function renderJobs(jobs) {
   const boxes = { lobby: $("lobby-jobs"), train: $("train-jobs"), eval: $("eval-jobs") };
   for (const [kind, box] of Object.entries(boxes)) {
-    const mine = jobs.filter((j) => j.kind === kind);
-    box.replaceChildren(...mine.map(jobCard));
+    box.replaceChildren(...jobs.filter((j) => j.kind === kind).map(jobCard));
   }
 }
 
@@ -147,10 +172,10 @@ async function refreshState() {
     const st = await api("GET", "/api/state");
     renderJobs(st.jobs);
     const running = st.jobs.filter((j) => j.status === "running").length;
-    status.textContent = running ? `${running} running` : "idle";
+    status.textContent = running ? `${running} running` : "Idle";
     status.className = "status ok";
   } catch {
-    status.textContent = "server offline";
+    status.textContent = "Server offline";
     status.className = "status bad";
   }
 }
@@ -173,80 +198,123 @@ function submitter(formId, errorBox, build) {
   });
 }
 
-/* ---------------- metrics ---------------- */
+/* ---------------- charts ---------------- */
 
 const CHARTS = [
-  ["rollout/survival_rate", "Survival rate"],
-  ["rollout/ep_rew_mean", "Episode return"],
-  ["rollout/final_tiles", "Final tiles"],
-  ["selfplay/learner_beats_pool", "Beats past selves"],
-  ["train/explained_variance", "Value fit (explained variance)"],
-  ["time/steps_per_second", "Steps per second"],
+  ["rollout/survival_rate", "Survival rate", pct],
+  ["rollout/ep_rew_mean", "Episode return", fmt],
+  ["rollout/final_tiles", "Land at the end", fmt],
+  ["selfplay/learner_beats_pool", "Beats past selves", pct],
+  ["train/explained_variance", "Value fit", fmt],
+  ["time/steps_per_second", "Steps per second", fmt],
 ];
 
-function drawChart(container, title, points) {
+/** A crisp line chart sized to its box, with min/max shown under it. */
+function drawChart(container, title, points, format = fmt, mini = false) {
   const values = points.map((p) => p.value);
   const min = Math.min(...values);
   const max = Math.max(...values);
-  const last = values[values.length - 1];
-  const head = el("div", { class: "chart-title" }, el("span", {}, title),
-    el("span", { class: "chart-last" }, Math.abs(last) >= 100 ? Math.round(last).toLocaleString() : last.toFixed(3)));
-  const canvas = el("canvas", { class: "chart", width: "520", height: "140" });
-  container.append(el("div", { class: "chart-box" }, head, canvas));
+  const canvas = el("canvas", { class: "chart" });
+  const box = el("div", { class: "chart-box" },
+    el("div", { class: "chart-title" }, el("span", {}, title), el("span", { class: "chart-last" }, format(values[values.length - 1]))),
+    canvas);
+  if (!mini) box.append(el("div", { class: "chart-range" }, el("span", {}, `low ${format(min)}`), el("span", {}, `high ${format(max)}`)));
+  container.append(box);
+
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth;
+  const h = canvas.clientHeight;
+  canvas.width = Math.round(w * dpr);
+  canvas.height = Math.round(h * dpr);
   const ctx = canvas.getContext("2d");
+  ctx.scale(dpr, dpr);
+  const pad = 3;
   const span = max - min || 1;
-  const x = (i) => (i / Math.max(1, points.length - 1)) * (canvas.width - 8) + 4;
-  const y = (v) => canvas.height - 8 - ((v - min) / span) * (canvas.height - 16);
-  ctx.fillStyle = "rgba(111, 194, 135, 0.10)";
+  const x = (i) => pad + (i / Math.max(1, points.length - 1)) * (w - 2 * pad);
+  const y = (v) => h - pad - ((v - min) / span) * (h - 2 * pad);
+
+  ctx.strokeStyle = "rgba(141, 155, 171, 0.12)";
+  ctx.lineWidth = 1;
+  for (const f of [0.25, 0.5, 0.75]) {
+    ctx.beginPath();
+    ctx.moveTo(0, Math.round(h * f) + 0.5);
+    ctx.lineTo(w, Math.round(h * f) + 0.5);
+    ctx.stroke();
+  }
+  const grad = ctx.createLinearGradient(0, 0, 0, h);
+  grad.addColorStop(0, "rgba(111, 194, 135, 0.22)");
+  grad.addColorStop(1, "rgba(111, 194, 135, 0)");
+  ctx.fillStyle = grad;
   ctx.beginPath();
-  ctx.moveTo(x(0), canvas.height);
+  ctx.moveTo(x(0), h);
   points.forEach((p, i) => ctx.lineTo(x(i), y(p.value)));
-  ctx.lineTo(x(points.length - 1), canvas.height);
+  ctx.lineTo(x(points.length - 1), h);
   ctx.fill();
-  ctx.strokeStyle = "#6fc287";
-  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = ACCENT;
+  ctx.lineWidth = 1.75;
+  ctx.lineJoin = "round";
   ctx.beginPath();
   points.forEach((p, i) => (i ? ctx.lineTo(x(i), y(p.value)) : ctx.moveTo(x(i), y(p.value))));
   ctx.stroke();
+  ctx.fillStyle = ACCENT;
+  ctx.beginPath();
+  ctx.arc(x(points.length - 1), y(values[values.length - 1]), 2.5, 0, Math.PI * 2);
+  ctx.fill();
 }
 
-function drawIntents(container, intents) {
+function renderStats(data) {
+  const last = data.last || {};
+  const stage = last["curriculum/stage"];
+  const stats = [
+    ["Steps trained", fmt(data.last_step), `${data.updates} updates`],
+    ["Survival", pct(last["rollout/survival_rate"]), "recent games"],
+    ["Episode return", fmt(last["rollout/ep_rew_mean"]), "recent games"],
+    ["Land at the end", fmt(last["rollout/final_tiles"]), "tiles"],
+    ["Curriculum stage", stage === undefined ? "-" : String(stage + 1), "of the recipe's stages"],
+  ];
+  $("run-stats").replaceChildren(...stats.map(([label, value, sub]) =>
+    el("div", { class: "stat" }, el("div", { class: "label" }, label), el("div", { class: "value" }, value), el("div", { class: "sub" }, sub))));
+}
+
+function renderIntents(intents) {
   const entries = Object.entries(intents).filter(([, v]) => v > 0.001).sort((a, b) => b[1] - a[1]);
-  if (!entries.length) return;
-  const box = el("div", { class: "chart-box wide" }, el("div", { class: "chart-title" }, el("span", {}, "What the AI does (latest update)")));
-  for (const [name, value] of entries) {
-    box.append(el("div", { class: "bar" },
-      el("span", { class: "name" }, name.replace(/_/g, " ")),
-      el("span", { class: "fill", style: `width:${Math.max(2, value * 360)}px` }),
-      el("span", { class: "n" }, `${(value * 100).toFixed(1)}%`)));
-  }
-  container.append(box);
+  $("intent-block").hidden = !entries.length;
+  const top = entries.length ? entries[0][1] : 1;
+  $("intent-bars").replaceChildren(...entries.map(([name, value]) => {
+    const label = name === "noop" ? "wait" : pretty(name);
+    return el("div", { class: "bar" },
+      el("span", { class: "name" }, label.charAt(0).toUpperCase() + label.slice(1)),
+      el("span", { class: "track" }, el("span", { class: "fill", style: `display:block;width:${Math.max(1, (value / top) * 100)}%` })),
+      el("span", { class: "n" }, `${(value * 100).toFixed(1)}%`));
+  }));
 }
 
 async function loadMetrics() {
   const run = $("metrics-run").value;
-  const box = $("charts");
+  const charts = $("charts");
   if (!run) {
-    $("metrics-note").textContent = "No runs yet. Start a training run above.";
-    box.replaceChildren();
+    $("metrics-note").textContent = "No runs yet. Start one above.";
+    for (const id of ["charts", "run-stats", "scenario-charts", "intent-bars"]) $(id).replaceChildren();
+    $("scenario-block").hidden = $("intent-block").hidden = true;
     return;
   }
-  $("metrics-note").textContent = "loading";
+  $("metrics-note").textContent = "Loading";
   try {
     const data = await api("GET", `/api/runstats?run=${encodeURIComponent(run)}`);
-    box.replaceChildren();
-    for (const [key, title] of CHARTS) {
-      if (data.series[key]?.length) drawChart(box, title, data.series[key]);
+    renderStats(data);
+    charts.replaceChildren();
+    for (const [key, title, format] of CHARTS) {
+      if (data.series[key]?.length > 1) drawChart(charts, title, data.series[key], format);
     }
-    // Mixed-scenario runs: survival per scenario.
+    const minis = $("scenario-charts");
+    minis.replaceChildren();
     for (const [key, points] of Object.entries(data.series)) {
       const m = key.match(/^scenario\/(.+)\/survival_rate$/);
-      if (m && points.length) drawChart(box, `Survival: ${m[1].replace(/_/g, " ")}`, points);
+      if (m && points.length > 1) drawChart(minis, pretty(m[1]), points, pct, true);
     }
-    drawIntents(box, data.intents || {});
-    $("metrics-note").textContent = data.last_step
-      ? `${data.updates} updates, ${data.last_step.toLocaleString()} steps`
-      : data.note || "";
+    $("scenario-block").hidden = !minis.children.length;
+    renderIntents(data.intents || {});
+    $("metrics-note").textContent = data.note || "";
   } catch (err) {
     $("metrics-note").textContent = String(err.message || err);
   }
@@ -259,30 +327,37 @@ let replays = [];
 function renderReplays() {
   const filter = $("replay-filter").value.trim().toLowerCase();
   const body = $("replay-table").querySelector("tbody");
-  const shown = replays.filter((r) => !filter || r.path.toLowerCase().includes(filter)).slice(0, 200);
+  const rows = replays.map((r) => {
+    const outcome = /-alive\.json$/.test(r.path) ? "Survived" : /-dead\.json$/.test(r.path) ? "Eliminated" : "";
+    const parts = r.path.split("/");
+    return { ...r, outcome, run: parts.length > 1 ? parts[0] : "", file: parts[parts.length - 1] };
+  });
+  const shown = rows.filter((r) => !filter || `${r.path} ${r.outcome}`.toLowerCase().includes(filter)).slice(0, 300);
+  $("replay-count").textContent = replays.length ? `${shown.length} of ${replays.length}` : "";
   if (!shown.length) {
-    body.replaceChildren(el("tr", {}, el("td", { colspan: "4", class: "hint" },
-      replays.length ? "No replay matches the filter." : "No replays yet. Training records every 100th game; Evaluate records all of them.")));
+    body.replaceChildren(el("tr", { class: "empty-row" }, el("td", { colspan: "5" },
+      replays.length ? "No replay matches the filter." : "No replays yet. Training records every 50th game; evaluation records all of them.")));
     return;
   }
   body.replaceChildren(...shown.map((r) => {
-    const outcome = /-alive\.json$/.test(r.path) ? "survived" : /-dead\.json$/.test(r.path) ? "eliminated" : "";
-    const watch = el("button", { type: "button", onclick: async (ev) => {
-      ev.target.disabled = true;
+    const watch = el("button", { type: "button", class: "small", onclick: async (ev) => {
+      const b = ev.currentTarget;
+      b.disabled = true;
       try {
         await api("POST", "/api/jobs/watch", { replay: r.path });
-        ev.target.textContent = "Opening";
+        b.textContent = "Opening";
       } catch (err) {
-        ev.target.textContent = "Failed";
-        ev.target.title = String(err.message || err);
+        b.textContent = "Failed";
+        b.title = String(err.message || err);
       }
-      setTimeout(() => { ev.target.disabled = false; ev.target.textContent = "Watch"; }, 4000);
+      setTimeout(() => { b.disabled = false; b.textContent = "Watch"; b.title = ""; }, 4000);
     } }, "Watch");
     return el("tr", {},
-      el("td", { class: "mono" }, r.path),
-      el("td", { class: outcome === "survived" ? "good" : "" }, outcome),
-      el("td", {}, ago(r.modified)),
-      el("td", { class: "right" }, watch));
+      el("td", { class: "file" }, r.file.replace(/\.json$/, "")),
+      el("td", {}, r.run),
+      el("td", {}, r.outcome ? el("span", { class: `badge ${r.outcome === "Survived" ? "good" : ""}` }, r.outcome) : ""),
+      el("td", { class: "hint" }, ago(r.modified)),
+      el("td", {}, watch));
   }));
 }
 
@@ -300,7 +375,7 @@ async function boot() {
     model: $("lobby-model").value,
     name: $("lobby-name").value,
   }]);
-  // A pasted openfront.io link implies the real server.
+  // A pasted link picks its own server.
   $("lobby-id").addEventListener("input", (ev) => {
     if (/openfront\.io/.test(ev.target.value)) $("lobby-host").value = "openfront";
     else if (/localhost|127\.0\.0\.1/.test(ev.target.value)) $("lobby-host").value = "local";
@@ -325,11 +400,17 @@ async function boot() {
   }]);
   $("metrics-load").addEventListener("click", loadMetrics);
   $("metrics-run").addEventListener("change", loadMetrics);
-  $("replay-refresh").addEventListener("click", loadReplays);
+  $("replay-refresh").addEventListener("click", () => loadReplays().catch(() => {}));
   $("replay-filter").addEventListener("input", renderReplays);
+  window.addEventListener("hashchange", () => showTab(location.hash.slice(1)));
+  let resizeTimer;
+  window.addEventListener("resize", () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => { if (!$("training").hidden) loadMetrics(); }, 200);
+  });
 
-  await Promise.all([loadCatalog().catch(() => {}), refreshState(), loadReplays().catch(() => {})]);
-  loadMetrics();
+  await Promise.all([loadCatalog().catch(() => {}), refreshState()]);
+  showTab(location.hash.slice(1));
   setInterval(refreshState, 2000);
   setInterval(() => loadCatalog().catch(() => {}), 30000);
 }

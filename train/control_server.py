@@ -338,7 +338,8 @@ def read_metrics(run: str) -> dict:
             series[key] = points
     last = rows[-1] if rows else {}
     intents = {k[len("intents/"):]: v for k, v in last.items() if k.startswith("intents/")}
-    return {"series": series, "intents": intents, "last_step": last.get("step"), "updates": len(rows)}
+    latest = {k: v for k, v in last.items() if isinstance(v, (int, float)) and v == v and not k.startswith("intents/")}
+    return {"series": series, "intents": intents, "last": latest, "last_step": last.get("step"), "updates": len(rows)}
 
 
 # --------------------------------------------------------------------------
