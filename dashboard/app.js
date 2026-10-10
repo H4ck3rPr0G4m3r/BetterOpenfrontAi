@@ -117,7 +117,7 @@ function jobCard(job) {
   if (job.result) card.append(evalTable(job.result));
   const lines = job.log_tail || [];
   if (lines.length) {
-    const more = el("details", {}, el("summary", {}, "Output"), el("pre", { class: "log" }, lines.join("\n")));
+    const more = el("details", {}, el("summary", {}, "Output"), el("pre", { class: "log", "data-job": job.id }, lines.join("\n")));
     if (openLogs.has(job.id)) more.open = true;
     more.addEventListener("toggle", () => (more.open ? openLogs.add(job.id) : openLogs.delete(job.id)));
     card.append(more);
@@ -152,11 +152,28 @@ function evalTable(result) {
 }
 
 function renderJobs(jobs) {
-  const boxes = { lobby: $("lobby-jobs"), train: $("train-jobs"), eval: $("eval-jobs") };
+  // Logs are rebuilt on every poll: keep each one where it was scrolled, and
+  // keep following the end when it was at the bottom.
+  const scroll = new Map();
+  document.querySelectorAll("pre.log[data-job]").forEach((pre) => {
+    scroll.set(pre.dataset.job, { top: pre.scrollTop, end: pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 4 });
+  });
+  const boxes = { lobby: $("lobby-jobs"), train: $("train-jobs"), eval: $("eval-jobs"), match: $("match-jobs") };
   for (const [kind, box] of Object.entries(boxes)) {
     box.replaceChildren(...jobs.filter((j) => j.kind === kind).map(jobCard));
   }
+  document.querySelectorAll("pre.log[data-job]").forEach((pre) => {
+    const was = scroll.get(pre.dataset.job);
+    pre.scrollTop = !was || was.end ? pre.scrollHeight : was.top;
+  });
+  // A finished quick match has a new replay to show.
+  const done = jobs.filter((j) => j.kind === "match" && j.status === "done").map((j) => j.id).join();
+  if (done !== lastMatchesDone) {
+    if (lastMatchesDone !== null) loadReplays().catch(() => {});
+    lastMatchesDone = done;
+  }
 }
+let lastMatchesDone = null;
 
 async function stopJob(id) {
   try {
@@ -403,7 +420,7 @@ function renderReplays() {
   $("replay-count").textContent = replays.length ? `${shown.length} of ${replays.length}` : "";
   if (!shown.length) {
     body.replaceChildren(el("tr", { class: "empty-row" }, el("td", { colspan: "5" },
-      replays.length ? "No replay matches the filter." : "No replays yet. Training records every 50th game; evaluation records all of them.")));
+      replays.length ? "No replay matches the filter." : "No replays yet. Training records one game in 20; evaluation and quick matches record every game.")));
     return;
   }
   body.replaceChildren(...shown.map((r) => {
@@ -447,6 +464,11 @@ async function boot() {
     if (/openfront\.io/.test(ev.target.value)) $("lobby-host").value = "openfront";
     else if (/localhost|127\.0\.0\.1/.test(ev.target.value)) $("lobby-host").value = "local";
   });
+  submitter("match-form", $("match-error"), () => ["/api/jobs/match", {
+    model: $("match-model").value,
+    mode: $("match-mode").value,
+    minutes: Number($("match-minutes").value),
+  }]);
   $("public-find").addEventListener("click", findPublic);
   $("public-next").addEventListener("click", (ev) => joinPublic({ public: $("public-kind").value }, ev.currentTarget));
   const trainError = el("div", { class: "error", hidden: "" });

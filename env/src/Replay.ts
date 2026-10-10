@@ -100,10 +100,16 @@ export function buildGameRecord(args: BuildRecordArgs) {
   return { ...record, gitCommit: TRAINING_ENGINE_COMMIT };
 }
 
-/** True when this game index is due for recording. Game 0 always records,
- *  so `every: 1` means every game. */
-export function shouldRecordReplay(index: number, every: number): boolean {
-  return every >= 1 && index % every === 0;
+/** True when this env's game `index` is due for recording. Each of the
+ *  run's `stride` parallel games records one in `every` of its own games
+ *  (so one in `every` overall), starting at an offset set by its `slot`:
+ *  the recordings are spread through the run instead of all landing on
+ *  game 0. With one game (stride 1) game 0 always records and `every: 1`
+ *  means every game. */
+export function shouldRecordReplay(index: number, every: number, slot = 0, stride = 1): boolean {
+  if (every < 1 || stride < 1) return false;
+  const offset = Math.floor(((slot % stride) * every) / stride);
+  return index >= offset && (index - offset) % every === 0;
 }
 
 function safeFileStem(seed: string): string {
@@ -145,5 +151,12 @@ export function replayOptionsFromEnv(
       `OPENFRONT_REPLAY_EVERY must be a positive integer, got ${env.OPENFRONT_REPLAY_EVERY}`,
     );
   }
-  return { dir, every };
+  const slot = Number(env.OPENFRONT_REPLAY_SLOT ?? "0");
+  const stride = Number(env.OPENFRONT_REPLAY_STRIDE ?? "1");
+  return {
+    dir,
+    every,
+    slot: Number.isInteger(slot) && slot >= 0 ? slot : 0,
+    stride: Number.isInteger(stride) && stride >= 1 ? stride : 1,
+  };
 }

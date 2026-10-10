@@ -27,7 +27,7 @@ run:
   name: main
   total_steps: 100000
   checkpoint_every: 20
-  replay: {dir: replays/main, every: 50}
+  replay: {dir: replays/main, every: 20}  # one game in 20, over all workers
 
 env:
   workers: 10

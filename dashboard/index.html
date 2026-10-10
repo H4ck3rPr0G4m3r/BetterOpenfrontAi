@@ -143,6 +143,21 @@
       <h1>Replays</h1>
       <p>Watch opens the local game client with the replay loaded (needs <code>npm run dev</code> in OpenFrontIO/).</p>
     </div>
+
+    <form id="match-form" class="panel form-grid match-grid">
+      <label>AI <select id="match-model" class="model-select"></select></label>
+      <label>Match
+        <select id="match-mode">
+          <option value="selfplay">Self-play: 4 copies of the AI</option>
+          <option value="bots">Vs tribes and nations</option>
+        </select>
+      </label>
+      <label>Minutes <input id="match-minutes" type="number" value="15" min="1" max="120"></label>
+      <div class="form-actions"><button type="submit" class="primary">Play quick match</button></div>
+    </form>
+    <div id="match-error" class="error" hidden></div>
+    <div id="match-jobs" class="job-cards" data-empty="Quick matches run in the background and show up in the list below when they finish."></div>
+
     <div class="replay-tools">
       <input id="replay-filter" placeholder="Filter by run or outcome" aria-label="Filter replays">
       <button id="replay-refresh" type="button" class="ghost">Refresh</button>

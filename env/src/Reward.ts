@@ -17,12 +17,15 @@ export const POP_REF = 100_000;
 export const INCOME_REF = 100_000;
 /** Steps per minute at 10 ticks per step, and the smoothing window. */
 const STEPS_PER_MINUTE = 60;
+/** A new defense post this close (tiles) to another own post is crowded. */
+export const POST_SPACING = 20;
 
+/** Paid by the structures potential. Defense posts are left out: they are
+ *  priced per build (defensePost, crowdedPost) instead. */
 const STRUCTURE_TYPES = [
   UnitType.City,
   UnitType.Port,
   UnitType.Factory,
-  UnitType.DefensePost,
   UnitType.SAMLauncher,
   UnitType.MissileSilo,
 ];
@@ -41,6 +44,10 @@ export interface SeatEvents {
   repelled: number;
   /** Gold earned this step beyond the flat worker income. */
   earned: number;
+  /** Defense posts this seat started this step. */
+  postsBuilt: number;
+  /** Of those, posts within POST_SPACING tiles of another own post. */
+  postsCrowded: number;
 }
 
 export const NO_EVENTS: SeatEvents = {
@@ -50,6 +57,8 @@ export const NO_EVENTS: SeatEvents = {
   advantageTiles: 0,
   repelled: 0,
   earned: 0,
+  postsBuilt: 0,
+  postsCrowded: 0,
 };
 
 /**
@@ -59,6 +68,7 @@ export const NO_EVENTS: SeatEvents = {
  *         + lowTroops · max(0, 1 − troopShare / lowTroopsBelow)
  *         + betrayal · betrayals + diplomacy · diplomatic intents
  *         + advantage · land · advantageTiles / (LAND_REF + tiles) + defend · repelled
+ *         + defensePost · posts built + crowdedPost · posts built near another post
  *   Φ(s) = land · log(1 + tiles / LAND_REF) + structures · log(1 + structure levels)
  *          + cities · log(1 + city levels) + popCap · log(1 + max troops / POP_REF)
  *          + income · log(1 + income per minute / INCOME_REF)
@@ -75,6 +85,10 @@ export const NO_EVENTS: SeatEvents = {
  * the population cap and the income rate are now potentials too. Income is
  * a rate, not a sum: paying per gold earned let a city builder that died
  * at minute 10 out-score every survivor (DeathProbe, +17.5).
+ *
+ * v7: defense posts were cheap structure-potential points, so policies
+ * stacked them side by side. They now pay nothing by existing, cost a
+ * little each, and cost more when built next to another own post.
  *
  * Why this shape (2026-10 diagnosis): the v1 reward paid `kill` for every
  * elimination anywhere on the map (~70 per World game, nearly all bots dying
@@ -124,6 +138,8 @@ export class Reward {
     r += this.add("kill", w.kill * events.kills);
     r += this.add("betrayal", w.betrayal * events.betrayals);
     r += this.add("diplomacy", w.diplomacy * events.diplomacy);
+    r += this.add("defensePost", w.defensePost * events.postsBuilt);
+    r += this.add("crowdedPost", w.crowdedPost * events.postsCrowded);
     if (player.isAlive()) {
       r += this.add("survive", w.survive);
       r += this.add("lowTroops", w.lowTroops * lowTroopDeficit(game, player, w.lowTroopsBelow));
@@ -191,6 +207,26 @@ export function lowTroopDeficit(game: Game, player: Player, below: number): numb
   if (below <= 0) return 0;
   const share = player.troops() / Math.max(1, game.config().maxTroops(player));
   return Math.max(0, 1 - share / below);
+}
+
+/**
+ * Defense posts started since the last call, and how many of them sit within
+ * POST_SPACING tiles of another of the player's posts. `known` holds the post
+ * IDs seen last time and is updated in place.
+ */
+export function newDefensePosts(game: Game, player: Player, known: Set<number>): { built: number; crowded: number } {
+  const posts = player.isAlive() ? player.units(UnitType.DefensePost) : [];
+  const limit = POST_SPACING * POST_SPACING;
+  let built = 0;
+  let crowded = 0;
+  for (const post of posts) {
+    if (known.has(post.id())) continue;
+    built++;
+    if (posts.some((other) => other !== post && game.euclideanDistSquared(post.tile(), other.tile()) <= limit)) crowded++;
+  }
+  known.clear();
+  for (const post of posts) known.add(post.id());
+  return { built, crowded };
 }
 
 export function structureLevels(player: Player): number {

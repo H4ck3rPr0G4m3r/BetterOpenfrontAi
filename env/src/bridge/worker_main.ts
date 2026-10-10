@@ -25,6 +25,7 @@ export interface WorkerOptions {
   disabledBuilds: string[];
   allowDonations: boolean;
   allowBetrayal: boolean;
+  allowEmbargo: boolean;
   troopReserve: number;
   closeSpawn: number;
   reward: RewardWeights;
@@ -70,6 +71,7 @@ export function parseWorkerArgs(argv: string[]): WorkerOptions {
     disabledBuilds: [],
     allowDonations: false,
     allowBetrayal: false,
+    allowEmbargo: false,
     troopReserve: DEFAULT_TROOP_RESERVE,
     closeSpawn: 0,
     reward: normalizeRewardWeights(),
@@ -130,6 +132,7 @@ export function parseWorkerArgs(argv: string[]): WorkerOptions {
       }
       case "--allow-donations": o.allowDonations = true; break;
       case "--allow-betrayal": o.allowBetrayal = true; break;
+      case "--allow-embargo": o.allowEmbargo = true; break;
       case "--troop-reserve": o.troopReserve = fraction(); break;
       case "--close-spawn": o.closeSpawn = fraction(); break;
       case "--reward": {
@@ -165,6 +168,7 @@ async function main(): Promise<void> {
     disabledBuilds: o.disabledBuilds,
     allowDonations: o.allowDonations,
     allowBetrayal: o.allowBetrayal,
+    allowEmbargo: o.allowEmbargo,
     troopReserve: o.troopReserve,
   };
   const codec = new ActionCodecImpl(behavior);
@@ -187,7 +191,11 @@ async function main(): Promise<void> {
     seats: o.seats,
     host: o.host,
     port: o.port,
-    createGame: () => new GameEnv(config, codec, o.reward, encoder),
+    // Each hosted game takes the next replay slot after the worker's first.
+    createGame: (g) => {
+      const replay = config.replay && { ...config.replay, slot: (config.replay.slot ?? 0) + g };
+      return new GameEnv({ ...config, replay }, codec, o.reward, encoder);
+    },
   });
   const shutdown = (): void => void server.close().finally(() => process.exit(0));
   process.on("SIGTERM", shutdown);

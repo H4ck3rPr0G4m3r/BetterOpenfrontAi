@@ -53,6 +53,13 @@ export interface RewardWeights {
   /** Per real attack repelled (a force of at least 20% of our troops that
    *  ended having taken under 5% of our land). */
   defend: number;
+  /** Per defense post this seat starts building (negative). Posts earn
+   *  nothing in the structures potential; this makes each one a cost that
+   *  only fights won near it can repay. */
+  defensePost: number;
+  /** Extra, per new defense post within POST_SPACING tiles of another of
+   *  this seat's posts (negative): spread them along the front. */
+  crowdedPost: number;
 }
 
 export const DEFAULT_REWARD_WEIGHTS: RewardWeights = {
@@ -73,6 +80,8 @@ export const DEFAULT_REWARD_WEIGHTS: RewardWeights = {
   diplomacy: -0.005,
   advantage: 0.5,
   defend: 0.3,
+  defensePost: -0.1,
+  crowdedPost: -0.5,
 };
 
 /**
@@ -92,6 +101,9 @@ export interface BehaviorConfig {
    *  it away slowly: a fresh policy starts uniform over legal actions, so it
    *  broke alliances on 14% of steps and still on ~1% after 100k. */
   allowBetrayal?: boolean;
+  /** Embargoes are off unless this is set: the policy toggled them on 12-30%
+   *  of its actions, and they rarely matter in the games it plays. */
+  allowEmbargo?: boolean;
   /** Attack and boat ratios that would leave less than this share of max
    *  troops at home are masked (the smallest ratio always stays open). */
   troopReserve?: number;
@@ -119,6 +131,7 @@ export function normalizeBehavior(config?: BehaviorConfig): NormalizedBehavior {
     disabledIntents.add(IntentType.DonateTroops);
   }
   if (config?.allowBetrayal !== true) disabledIntents.add(IntentType.BreakAlliance);
+  if (config?.allowEmbargo !== true) disabledIntents.add(IntentType.Embargo);
   const troopReserve = config?.troopReserve ?? DEFAULT_TROOP_RESERVE;
   if (!(troopReserve >= 0 && troopReserve < 1)) throw new Error(`troopReserve must be in [0, 1), got ${troopReserve}`);
   const disabledBuilds = new Set<string>();

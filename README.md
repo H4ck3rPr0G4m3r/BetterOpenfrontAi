@@ -101,7 +101,7 @@ Potentials (paid as they change, all given back on death):
 | Term | Default | Why |
 | --- | --- | --- |
 | land | `1.0 * log(1 + tiles/100)` | territory |
-| structures | `0.2 * log(1 + levels)` | building |
+| structures | `0.2 * log(1 + levels)` | building (defense posts excluded) |
 | cities | `0.5 * log(1 + city levels)` | the economy core |
 | population cap | `0.3 * log(1 + max troops/100k)` | land and cities raise it |
 | income | `1.0 * log(1 + gold per minute/100k)` | trade, trains, conquest (smoothed over a minute) |
@@ -117,8 +117,11 @@ Events and terminals:
 | diplomacy | -0.005 per request, break, embargo, target | no spam |
 | advantage | land from a tribe or a weaker player counts 1.5x | clear easy land, attack from strength |
 | defend | +0.3 per repelled real attack | hold the line |
+| defensePost | -0.1 per post started | posts must earn their keep |
+| crowdedPost | extra -0.5 per post within 20 tiles of another own post | spread posts along the front |
 
-Action rules: donations are off (`env.allow_donations`), attacks must leave
+Action rules: donations, alliance breaking and embargoes are off
+(`env.allow_donations`, `env.allow_betrayal`, `env.allow_embargo`), attacks must leave
 10% of max troops at home (`env.troop_reserve`), and build sites are typed
 by terrain (defense posts ~10 tiles behind a front with another player,
 ports on the coast, cities and factories inside the territory). Training

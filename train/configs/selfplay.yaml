@@ -9,7 +9,7 @@ run:
   name: selfplay_v3
   total_steps: 20000000
   checkpoint_every: 20
-  replay: {dir: replays/selfplay, every: 100}
+  replay: {dir: replays/selfplay, every: 20}  # one game in 20, over all workers
 
 env:
   workers: 10

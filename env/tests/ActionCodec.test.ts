@@ -127,6 +127,16 @@ describe("ActionCodec masks and decode", () => {
     }
   });
 
+  it("keeps embargoes off unless allowed", () => {
+    for (const id of env.seatIDs) {
+      const masks = createMasks();
+      codec.masks(env.game, id, masks);
+      expect(masks.intent[IntentType.Embargo]).toBe(0);
+      const fired = codec.decode({ ...NOOP_ACTION, intentType: IntentType.Embargo, target: 1 }, env.game, id);
+      expect(fired).toEqual([]);
+    }
+  });
+
   it("flags build sites that join the rail network exactly like the engine", () => {
     const max = env.game.config().trainStationMaxRange();
     for (const id of env.seatIDs) {

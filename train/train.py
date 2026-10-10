@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from pathlib import Path
 
 import yaml
 
@@ -40,10 +41,18 @@ def parse_set(items: list[str]) -> dict:
 def main(argv: list[str] | None = None) -> dict:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--config", default="configs/selfplay.yaml")
-    parser.add_argument("--resume", default=None, help="v2 checkpoint (.pt) to continue from")
+    parser.add_argument("--resume", nargs="?", const="latest", default=None,
+                        help="checkpoint (.pt) to continue from; bare --resume = this run's latest")
     parser.add_argument("--set", action="append", default=[], metavar="KEY=VALUE", help="override a config key")
     args = parser.parse_args(argv)
     cfg = load_config(args.config, parse_set(args.set))
+    if args.resume == "latest":
+        run = cfg["run"]
+        latest = Path(run["checkpoint_dir"]) / run["name"] / f"{run['name']}_latest.pt"
+        if not latest.is_file():
+            raise SystemExit(f"--resume: no checkpoint at {latest} to continue from")
+        args.resume = str(latest)
+        print(f"resuming from {latest}", flush=True)
     trainer = Trainer(cfg, resume=args.resume, log=lambda msg: print(msg, flush=True))
     try:
         result = trainer.train()

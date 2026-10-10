@@ -30,7 +30,7 @@ import { RewardWeights } from "./BehaviorConfig";
 import { createMasks, Masks } from "./Layout";
 import { createSeatObservation, ObservationEncoder, SeatObservation, MAX_SEATS } from "./ObservationEncoder";
 import { buildGameRecord, replayGameID, seatClientID, shouldRecordReplay, writeReplayFile } from "./Replay";
-import { earnedGold, placementScore, Reward, SeatEvents } from "./Reward";
+import { earnedGold, newDefensePosts, placementScore, Reward, SeatEvents } from "./Reward";
 import { loadFreshTerrainMap } from "./Terrain";
 import { TurnFeeder } from "./TurnFeeder";
 import type { Action, EnvConfig, TerminalReason } from "./types";
@@ -65,6 +65,8 @@ interface Seat {
   combat: CombatTracker;
   /** earnedGold() at the previous step. */
   earned: number;
+  /** Own defense post IDs at the previous step. */
+  posts: Set<number>;
 }
 
 /** Minimum tile distance between seat spawns, halved until it fits. */
@@ -196,6 +198,7 @@ export class GameEnv {
         pendingBetrayals: 0,
         combat: new CombatTracker(smallID),
         earned: 0,
+        posts: new Set<number>(),
       };
     });
 
@@ -246,8 +249,11 @@ export class GameEnv {
         const player = game.player(seat.id);
         seat.combat.update(player);
         const earned = earnedGold(game, player);
+        const posts = newDefensePosts(game, player, seat.posts);
         const events: SeatEvents = {
           earned: earned - seat.earned,
+          postsBuilt: posts.built,
+          postsCrowded: posts.crowded,
           kills: seat.pendingKills,
           betrayals: seat.pendingBetrayals,
           diplomacy: diplomacy[i],
@@ -379,7 +385,7 @@ export class GameEnv {
   private maybeWriteReplay(): void {
     const replay = this.config.replay;
     const index = this.gamesCompleted++;
-    if (replay === undefined || this.gameConfig === undefined || !shouldRecordReplay(index, replay.every)) return;
+    if (replay === undefined || this.gameConfig === undefined || !shouldRecordReplay(index, replay.every, replay.slot, replay.stride)) return;
     try {
       const record = buildGameRecord({
         seed: this.lastSeed,

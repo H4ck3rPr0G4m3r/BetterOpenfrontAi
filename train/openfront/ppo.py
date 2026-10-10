@@ -399,6 +399,10 @@ class Trainer:
         count = 0
         skipped = 0
         kl_stop = False
+        # Advantages normalized once over the whole batch: a short last
+        # minibatch (even one sample) would otherwise give a NaN std.
+        stored = adv[t_idx, r_idx]
+        adv = (adv - stored.mean()) / (stored.std() + 1e-8)
         self.model.train()
         for epoch in range(int(ppo["epochs"])):
             perm = np.random.permutation(n)
@@ -412,7 +416,6 @@ class Trainer:
                 actions = torch.as_tensor(rollout.actions[ti, ri]).to(d)
                 old_logp = torch.as_tensor(rollout.logp[ti, ri]).to(d)
                 a = torch.as_tensor(adv[ti, ri]).to(d)
-                a = (a - a.mean()) / (a.std() + 1e-8)
                 target = torch.as_tensor(ret[ti, ri]).to(d)
                 with torch.autocast("cuda", dtype=torch.bfloat16, enabled=self.amp):
                     logp, ent, value = self.model.evaluate(raster, feats, rows, actions)

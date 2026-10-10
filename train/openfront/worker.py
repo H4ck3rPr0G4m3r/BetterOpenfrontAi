@@ -42,11 +42,15 @@ class WorkerConfig:
     disabled_builds: tuple = ()
     allow_donations: bool = False
     allow_betrayal: bool = False
+    allow_embargo: bool = False
     troop_reserve: float = 0.1
     close_spawn: float = 0.0
     reward: dict = field(default_factory=dict)
     socket_timeout: float = 300.0
     boot_timeout: float = 120.0
+    # Replay rotation: this worker's first game index and the run's game count.
+    replay_slot: int = 0
+    replay_stride: int = 1
 
     def argv(self, port: int) -> list[str]:
         argv = [
@@ -64,6 +68,8 @@ class WorkerConfig:
             argv += ["--allow-donations"]
         if self.allow_betrayal:
             argv += ["--allow-betrayal"]
+        if self.allow_embargo:
+            argv += ["--allow-embargo"]
         argv += ["--troop-reserve", str(float(self.troop_reserve)), "--close-spawn", str(float(self.close_spawn))]
         if self.reward:
             argv += ["--reward", json.dumps(self.reward)]
@@ -87,6 +93,8 @@ def spawn_worker(config: WorkerConfig, port: int, env_root: Path = ENV_ROOT) -> 
     fd, log_path = tempfile.mkstemp(prefix=f"openfront-worker-{port}-", suffix=".log")
     env = dict(os.environ)
     env["TSX_TSCONFIG_PATH"] = "tsconfig.probes.json"
+    env["OPENFRONT_REPLAY_SLOT"] = str(config.replay_slot)
+    env["OPENFRONT_REPLAY_STRIDE"] = str(config.replay_stride)
     if "--preserve-symlinks" not in env.get("NODE_OPTIONS", ""):
         env["NODE_OPTIONS"] = (env.get("NODE_OPTIONS", "") + " --preserve-symlinks").strip()
     try:

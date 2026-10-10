@@ -3,7 +3,7 @@
 run:
   name: solo
   total_steps: 10000000
-  replay: {dir: replays/solo, every: 100}
+  replay: {dir: replays/solo, every: 20}  # one game in 20, over all workers
 
 env:
   workers: 12

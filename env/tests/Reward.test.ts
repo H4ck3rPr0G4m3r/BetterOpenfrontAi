@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { normalizeRewardWeights } from "../src/BehaviorConfig";
-import { LAND_REF, NO_EVENTS, placementScore, Reward } from "../src/Reward";
+import { LAND_REF, NO_EVENTS, newDefensePosts, placementScore, POST_SPACING, Reward } from "../src/Reward";
 
 interface FakePlayer {
   id: string;
@@ -192,5 +192,30 @@ describe("Reward v3", () => {
     expect(normalizeRewardWeights({ land: 2 }).land).toBe(2);
     expect(() => normalizeRewardWeights({ lnad: 2 })).toThrow(/unknown reward weight/);
     expect(() => normalizeRewardWeights({ land: Number.NaN })).toThrow(/finite/);
+  });
+});
+
+describe("defense posts", () => {
+  // Tiles on a line: distance is the index difference.
+  const game = { euclideanDistSquared: (a: number, b: number) => (a - b) ** 2 } as never;
+  const owner = (tiles: number[]) =>
+    ({ isAlive: () => true, units: () => tiles.map((tile, i) => ({ id: () => i + 1, tile: () => tile })) }) as never;
+
+  it("counts new posts and the crowded ones once", () => {
+    const known = new Set<number>();
+    expect(newDefensePosts(game, owner([0]), known)).toEqual({ built: 1, crowded: 0 });
+    expect(newDefensePosts(game, owner([0, POST_SPACING + 5]), known)).toEqual({ built: 1, crowded: 0 });
+    expect(newDefensePosts(game, owner([0, POST_SPACING + 5, 3]), known)).toEqual({ built: 1, crowded: 1 });
+    expect(newDefensePosts(game, owner([0, POST_SPACING + 5, 3]), known)).toEqual({ built: 0, crowded: 0 });
+  });
+
+  it("prices each post, and crowded ones more", () => {
+    const g = fakeGame([{ id: "a", tiles: 100, alive: true, structures: [] }]);
+    const r = new Reward({ survive: 0, lowTroops: 0, income: 0 });
+    r.init(g, "a");
+    const spread = r.step(g, "a", null, { ...NO_EVENTS, postsBuilt: 1 });
+    const crowded = r.step(g, "a", null, { ...NO_EVENTS, postsBuilt: 1, postsCrowded: 1 });
+    expect(spread).toBeCloseTo(-0.1);
+    expect(crowded).toBeCloseTo(-0.6);
   });
 });

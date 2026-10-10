@@ -75,6 +75,21 @@ def test_lobby_job_runs_play_lobby(base_url):
     assert argv[argv.index("--name") + 1] == "Bot script"
 
 
+def test_quick_match_records_one_game(base_url):
+    url, launched = base_url
+    status, _, _ = _request("POST", f"{url}/api/jobs/match", {"model": "scripted", "mode": "selfplay", "minutes": 5})
+    assert status == 201
+    argv = launched[-1]["argv"]
+    assert argv[argv.index("--seats") + 1: argv.index("--games")] == ["scripted"] * 4
+    assert argv[argv.index("--games") + 1] == "1" and argv[argv.index("--tick-cap") + 1] == "3000"
+    assert argv[argv.index("--replay-dir") + 1].startswith("replays/matches/")
+    status, _, _ = _request("POST", f"{url}/api/jobs/match", {"model": "scripted", "mode": "bots"})
+    argv = launched[-1]["argv"]
+    assert argv[argv.index("--seats") + 1: argv.index("--games")] == ["scripted"]
+    status, _, _ = _request("POST", f"{url}/api/jobs/match", {"model": "scripted", "mode": "chaos"})
+    assert status == 400
+
+
 def test_public_lobby_job(base_url):
     url, launched = base_url
     status, _, _ = _request("POST", f"{url}/api/jobs/lobby", {"public": "ffa", "model": "scripted"})

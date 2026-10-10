@@ -256,6 +256,24 @@ class JobManager:
         title = " vs ".join(Path(s).stem for s in seats) + f", {games} games"
         return self.start("eval", title, argv, result_path=str(result))
 
+    def start_match(self, body: dict) -> Job:
+        """One recorded game in the background, to watch from the replay list:
+        four copies of the AI against each other (plus tribes and nations),
+        or the AI alone against tribes and nations."""
+        model = model_spec(body.get("model", "scripted"))
+        mode = str(body.get("mode", "selfplay"))
+        if mode not in ("selfplay", "bots"):
+            raise ValueError("mode must be selfplay or bots")
+        minutes = int_in(body, "minutes", 15, 1, 120)
+        seats = [model] * (4 if mode == "selfplay" else 1)
+        with self._lock:
+            n = self._counter + 1
+        argv = ["evaluate.py", "--seats", *seats, "--games", "1", "--workers", "1", "--bots", "20",
+                "--tick-cap", str(minutes * 600), "--seed", f"match{datetime.now():%Y%m%d%H%M%S}",
+                "--replay-dir", f"replays/matches/match-{n:03d}"]
+        what = "self-play, 4 copies" if mode == "selfplay" else "vs tribes and nations"
+        return self.start("match", f"{Path(model).stem}: {what}, {minutes} min", argv)
+
     def start_watch(self, body: dict) -> Job:
         replay = resolve_under(TRAIN_DIR / "replays", str(body.get("replay", "")))
         if replay.suffix != ".json" or not replay.is_file():
@@ -443,7 +461,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/public-lobbies":
             return self.send_json(public_lobbies())
         starters = {"/api/jobs/lobby": JOBS.start_lobby, "/api/jobs/train": JOBS.start_train,
-                    "/api/jobs/eval": JOBS.start_eval, "/api/jobs/watch": JOBS.start_watch}
+                    "/api/jobs/eval": JOBS.start_eval, "/api/jobs/watch": JOBS.start_watch,
+                    "/api/jobs/match": JOBS.start_match}
         if path not in starters:
             raise KeyError(path)
         self.send_json(JOBS.describe(starters[path](body)), status=201)

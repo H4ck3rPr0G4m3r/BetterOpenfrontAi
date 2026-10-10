@@ -43,8 +43,12 @@ export interface EnvConfig {
   replay?: ReplayOptions;
 }
 
-/** Every Nth game per env is written to `dir` as a GameRecord JSON file. */
+/** About one game in `every`, counted over all `stride` games of a run,
+ *  is written to `dir` as a GameRecord JSON file. `slot` is this game's
+ *  index among them, so the recordings rotate through every game. */
 export interface ReplayOptions {
   dir: string;
   every: number;
+  slot?: number;
+  stride?: number;
 }

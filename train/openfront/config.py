@@ -39,6 +39,7 @@ DEFAULTS: dict = {
         # gave its troops away to allied nations. Re-enable for fine-tuning.
         "allow_donations": False,
         "allow_betrayal": False,  # breaking alliances: off, like donations
+        "allow_embargo": False,  # embargoes: off, the policy spammed them
         "troop_reserve": 0.1,  # attacks must leave this share of max troops home
         "close_spawn": 0.3,  # share of multi-seat games with seats spawned close
         "maps_dir": None,
@@ -61,6 +62,8 @@ DEFAULTS: dict = {
         "diplomacy": -0.005,
         "advantage": 0.5,
         "defend": 0.3,
+        "defensePost": -0.1,
+        "crowdedPost": -0.5,
     },
     "ppo": {
         "n_steps": 256,
@@ -222,6 +225,7 @@ def worker_config(env: dict, reward: dict):
         disabled_builds=tuple(str(v) for v in env.get("disabled_builds", [])),
         allow_donations=bool(env.get("allow_donations", False)),
         allow_betrayal=bool(env.get("allow_betrayal", False)),
+        allow_embargo=bool(env.get("allow_embargo", False)),
         troop_reserve=float(env.get("troop_reserve", 0.1)),
         close_spawn=float(env.get("close_spawn", 0.0)),
         reward={k: float(v) for k, v in reward.items()},

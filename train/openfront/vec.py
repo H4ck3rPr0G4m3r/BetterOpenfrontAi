@@ -11,6 +11,7 @@ that dies is respawned; its rows come back DONE with ``worker_death``.
 
 from __future__ import annotations
 
+import dataclasses
 import warnings
 from concurrent.futures import ThreadPoolExecutor
 from typing import Callable
@@ -55,6 +56,10 @@ class VecGames:
         self._game_rows = game_rows
         self._row_game = row_game
         self.num_games = len(game_rows)
+        # Replays rotate over all of the run's games, not per worker.
+        self.configs = configs = [dataclasses.replace(c, replay_slot=self._game_base[i], replay_stride=self.num_games)
+                                  for i, c in enumerate(configs)]
+        self.config = configs[0]
         self.num_rows = len(row_game)
         self.seed = seed
         self._factory = worker_factory or (lambda i: start_worker(self.configs[i]))
