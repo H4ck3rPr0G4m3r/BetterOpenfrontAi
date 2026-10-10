@@ -37,13 +37,32 @@ goto dashboard
 
 :dashboard
 call :port 8765
-if errorlevel 1 (
-  echo Starting the control server in its own window; close that window to stop it.
-  start "OpenFront AI server" /d "%ROOT%train" cmd /k python control_server.py
-  ping -n 4 127.0.0.1 >nul
-) else (
+if errorlevel 1 goto server_start
+rem A server is up. One started before the code last changed serves the new
+rem page but not its requests, so restart it unless it has jobs running.
+set "STATE=%TEMP%\openfront_state.json"
+curl -s -m 5 "%DASH_URL%api/state" > "%STATE%" 2>nul
+findstr /c:"\"stale\": false" "%STATE%" >nul
+if not errorlevel 1 (
   echo Control server already running on port 8765.
+  goto open
 )
+findstr /c:"\"status\": \"running\"" "%STATE%" >nul
+if not errorlevel 1 (
+  echo The control server is running older code but has jobs running, so it was left alone.
+  echo Restart it later: close its window, then run start.bat dashboard again.
+  goto open
+)
+echo The control server is running older code; restarting it.
+for /f "tokens=5" %%p in ('netstat -ano ^| findstr /r /c:":8765 .*LISTENING"') do taskkill /pid %%p /f >nul 2>&1
+ping -n 2 127.0.0.1 >nul
+
+:server_start
+echo Starting the control server in its own window; close that window to stop it.
+start "OpenFront AI server" /d "%ROOT%train" cmd /k python control_server.py
+ping -n 4 127.0.0.1 >nul
+
+:open
 start "" "%DASH_URL%"
 goto :eof
 

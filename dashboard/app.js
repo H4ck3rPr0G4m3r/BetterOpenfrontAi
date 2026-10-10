@@ -12,6 +12,9 @@ async function api(method, path, body) {
   }
   const res = await fetch(path, opts);
   const data = await res.json();
+  if (res.status === 404 && /^unknown: '\/api\//.test(data.error || "")) {
+    throw new Error("The dashboard server is running older code. Close its window and run start.bat dashboard.");
+  }
   if (!res.ok) throw new Error(data.error || res.statusText);
   return data;
 }
@@ -189,8 +192,16 @@ async function refreshState() {
     const st = await api("GET", "/api/state");
     renderJobs(st.jobs);
     const running = st.jobs.filter((j) => j.status === "running").length;
-    status.textContent = running ? `${running} running` : "Idle";
-    status.className = "status ok";
+    if (st.stale !== false) { // servers from before this check do not send it
+      // The page is new but the server process is not: new buttons would fail.
+      status.textContent = "Server outdated, restart it";
+      status.title = "The server's code changed since it started. Close its window and run start.bat dashboard.";
+      status.className = "status bad";
+    } else {
+      status.textContent = running ? `${running} running` : "Idle";
+      status.title = "";
+      status.className = "status ok";
+    }
   } catch {
     status.textContent = "Server offline";
     status.className = "status bad";

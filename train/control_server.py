@@ -39,6 +39,17 @@ METRIC_KEYS = (
 )
 
 
+def code_stamp() -> tuple:
+    """Modification times of the server's own code, to spot a server that
+    keeps running after its code changed (it would still serve the new
+    dashboard files, whose requests it then does not know)."""
+    files = [Path(__file__), TRAIN_DIR / "openfront" / "lobby.py"]
+    return tuple(p.stat().st_mtime_ns if p.is_file() else 0 for p in files)
+
+
+STARTED_STAMP = code_stamp()
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -463,7 +474,7 @@ class Handler(BaseHTTPRequestHandler):
             name = "index.html" if path in ("", "/") else path.lstrip("/")
             return self.serve_file(resolve_under(DASHBOARD_DIR, name))
         if path == "/api/state":
-            return self.send_json({"jobs": JOBS.summaries()})
+            return self.send_json({"jobs": JOBS.summaries(), "stale": code_stamp() != STARTED_STAMP})
         if path == "/api/catalog":
             return self.send_json({"checkpoints": list_checkpoints(), "agents": list(AGENTS),
                                    "configs": list_configs(), "runs": list_runs()})
