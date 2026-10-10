@@ -162,13 +162,29 @@
       <input id="replay-filter" placeholder="Filter by run or outcome" aria-label="Filter replays">
       <button id="replay-refresh" type="button" class="ghost">Refresh</button>
       <span id="replay-count" class="hint"></span>
+      <button id="replay-delete" type="button" class="ghost danger with-icon" disabled>Delete selected</button>
     </div>
     <div class="table-wrap">
       <table id="replay-table">
-        <thead><tr><th>Game</th><th>Run</th><th>Outcome</th><th>Recorded</th><th></th></tr></thead>
+        <thead><tr>
+          <th class="pick"><input id="replay-all" type="checkbox" aria-label="Select all shown replays"></th>
+          <th>Game</th><th>Run</th><th>Outcome</th><th>Recorded</th><th></th>
+        </tr></thead>
         <tbody></tbody>
       </table>
     </div>
+    <div id="replay-error" class="error" hidden></div>
+
+    <dialog id="confirm-dialog" class="confirm" aria-labelledby="confirm-title">
+      <form method="dialog">
+        <h2 id="confirm-title">Delete replays?</h2>
+        <p id="confirm-text"></p>
+        <div class="confirm-actions">
+          <button value="cancel" class="ghost" autofocus>Cancel</button>
+          <button value="ok" class="danger-fill">Delete</button>
+        </div>
+      </form>
+    </dialog>
   </section>
 </main>
 

@@ -359,6 +359,27 @@ def list_replays() -> list[dict]:
     return [_stat(p, root) for p in found]
 
 
+def delete_replays(paths) -> dict:
+    """Delete replay files (paths relative to replays/), then any folders
+    that were left empty. Only .json files inside replays/ can go."""
+    root = (TRAIN_DIR / "replays").resolve()
+    if not isinstance(paths, list) or not paths:
+        raise ValueError("paths must be a non-empty list")
+    targets = []
+    for raw in paths:
+        path = resolve_under(root, str(raw))
+        if path.suffix != ".json" or not path.is_file():
+            raise ValueError(f"no such replay: {raw}")
+        targets.append(path)
+    for path in targets:
+        path.unlink()
+        parent = path.parent
+        while parent != root and parent.is_dir() and not any(parent.iterdir()):
+            parent.rmdir()
+            parent = parent.parent
+    return {"deleted": len(targets)}
+
+
 def list_runs() -> list[dict]:
     root = TRAIN_DIR / "runs"
     if not root.is_dir():
@@ -460,6 +481,8 @@ class Handler(BaseHTTPRequestHandler):
     def _post(self, path: str, body: dict) -> None:
         if path == "/api/public-lobbies":
             return self.send_json(public_lobbies())
+        if path == "/api/replays/delete":
+            return self.send_json(delete_replays(body.get("paths")))
         starters = {"/api/jobs/lobby": JOBS.start_lobby, "/api/jobs/train": JOBS.start_train,
                     "/api/jobs/eval": JOBS.start_eval, "/api/jobs/watch": JOBS.start_watch,
                     "/api/jobs/match": JOBS.start_match}

@@ -170,6 +170,14 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 button.primary:hover { background: #82d199; border-color: #82d199; }
 button.ghost { background: transparent; }
 button.small { height: 30px; font-size: 0.8rem; padding: 0 0.75rem; }
+button.with-icon { display: inline-flex; align-items: center; gap: 0.45rem; }
+button.icon-only { display: inline-grid; place-items: center; width: 30px; padding: 0; }
+button.danger { color: var(--muted); }
+button.danger:not(:disabled):hover { color: var(--bad); border-color: rgba(227, 139, 139, 0.45); background: var(--bad-soft); }
+button.danger-fill { background: #c96a6a; border-color: #c96a6a; color: #fff7f7; padding: 0 1.1rem; }
+button.danger-fill:hover { background: #d47a7a; border-color: #d47a7a; }
+.icon { display: inline-flex; width: 16px; height: 16px; flex: none; }
+.icon svg { width: 100%; height: 100%; }
 
 .hint { color: var(--muted); font-size: 0.82rem; }
 .error {
@@ -327,6 +335,26 @@ td.num { font-variant-numeric: tabular-nums; }
 .file { font-family: var(--mono); font-size: 0.78rem; color: #c4ced8; overflow-wrap: anywhere; }
 .badge { font-size: 0.74rem; font-weight: 600; padding: 0.1rem 0.5rem; border-radius: 999px; background: var(--raise); color: var(--muted); }
 .badge.good { color: var(--accent); background: var(--accent-soft); }
+#replay-delete { margin-left: auto; }
+#replay-delete:disabled { cursor: default; }
+#replay-table th.pick, #replay-table td.pick { width: 2.25rem; padding-right: 0; }
+#replay-table td.pick input, #replay-table th.pick input { display: block; cursor: pointer; }
+#replay-table tr.picked { background: var(--accent-soft); }
+.row-actions { display: flex; gap: 0.4rem; justify-content: flex-end; align-items: center; }
+
+dialog.confirm {
+  width: min(420px, calc(100vw - 2rem));
+  padding: 1.25rem 1.25rem 1rem;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: 0 24px 60px rgba(4, 7, 10, 0.6);
+}
+dialog.confirm::backdrop { background: rgba(6, 9, 12, 0.65); }
+dialog.confirm h2 { margin: 0 0 0.4rem; font-size: 1.05rem; }
+dialog.confirm p { margin: 0 0 1.1rem; color: var(--muted); font-size: 0.875rem; line-height: 1.5; }
+.confirm-actions { display: flex; justify-content: flex-end; gap: 0.5rem; }
 .empty-row td { color: var(--faint); padding: 1.5rem 0.75rem; text-align: center !important; }
 
 /* ---------- small screens ---------- */

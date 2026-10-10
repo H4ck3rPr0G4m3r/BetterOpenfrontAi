@@ -407,6 +407,53 @@ async function loadMetrics() {
 /* ---------------- replays ---------------- */
 
 let replays = [];
+const picked = new Set();
+let shownPaths = [];
+
+/** Phosphor "trash" (regular), MIT, from @phosphor-icons/core 2.1.1. */
+const TRASH_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M216,48H176V40a24,24,0,0,0-24-24H104A24,24,0,0,0,80,40v8H40a8,8,0,0,0,0,16h8V208a16,16,0,0,0,16,16H192a16,16,0,0,0,16-16V64h8a8,8,0,0,0,0-16ZM96,40a8,8,0,0,1,8-8h48a8,8,0,0,1,8,8v8H96Zm96,168H64V64H192ZM112,104v64a8,8,0,0,1-16,0V104a8,8,0,0,1,16,0Zm48,0v64a8,8,0,0,1-16,0V104a8,8,0,0,1,16,0Z"/></svg>';
+
+function trashIcon() {
+  const span = el("span", { class: "icon" });
+  span.innerHTML = TRASH_SVG;
+  return span;
+}
+
+/** Resolves true when the user confirms in the dialog. */
+function confirmDialog(title, text) {
+  const dialog = $("confirm-dialog");
+  $("confirm-title").textContent = title;
+  $("confirm-text").textContent = text;
+  dialog.returnValue = "";
+  dialog.showModal();
+  return new Promise((resolve) => dialog.addEventListener("close", () => resolve(dialog.returnValue === "ok"), { once: true }));
+}
+
+async function deleteReplays(paths) {
+  if (!paths.length) return;
+  if (paths.length > 1) {
+    const ok = await confirmDialog(`Delete ${paths.length} replays?`, "The replay files are removed from disk. This cannot be undone.");
+    if (!ok) return;
+  }
+  try {
+    await api("POST", "/api/replays/delete", { paths });
+    paths.forEach((p) => picked.delete(p));
+    showError($("replay-error"), null);
+  } catch (err) {
+    showError($("replay-error"), err);
+  }
+  await loadReplays().catch(() => {});
+}
+
+function updatePickControls() {
+  const button = $("replay-delete");
+  button.disabled = picked.size === 0;
+  button.lastChild.textContent = picked.size ? `Delete ${picked.size}` : "Delete selected";
+  const all = $("replay-all");
+  const shownPicked = shownPaths.filter((p) => picked.has(p)).length;
+  all.checked = shownPaths.length > 0 && shownPicked === shownPaths.length;
+  all.indeterminate = shownPicked > 0 && shownPicked < shownPaths.length;
+}
 
 function renderReplays() {
   const filter = $("replay-filter").value.trim().toLowerCase();
@@ -418,8 +465,12 @@ function renderReplays() {
   });
   const shown = rows.filter((r) => !filter || `${r.path} ${r.outcome}`.toLowerCase().includes(filter)).slice(0, 300);
   $("replay-count").textContent = replays.length ? `${shown.length} of ${replays.length}` : "";
+  const existing = new Set(replays.map((r) => r.path));
+  [...picked].forEach((p) => existing.has(p) || picked.delete(p));
+  shownPaths = shown.map((r) => r.path);
+  updatePickControls();
   if (!shown.length) {
-    body.replaceChildren(el("tr", { class: "empty-row" }, el("td", { colspan: "5" },
+    body.replaceChildren(el("tr", { class: "empty-row" }, el("td", { colspan: "6" },
       replays.length ? "No replay matches the filter." : "No replays yet. Training records one game in 20; evaluation and quick matches record every game.")));
     return;
   }
@@ -436,12 +487,23 @@ function renderReplays() {
       }
       setTimeout(() => { b.disabled = false; b.textContent = "Watch"; b.title = ""; }, 4000);
     } }, "Watch");
-    return el("tr", {},
+    const pick = el("input", { type: "checkbox", "aria-label": `Select ${r.file}` });
+    pick.checked = picked.has(r.path);
+    pick.addEventListener("change", () => {
+      if (pick.checked) picked.add(r.path); else picked.delete(r.path);
+      row.classList.toggle("picked", pick.checked);
+      updatePickControls();
+    });
+    const remove = el("button", { type: "button", class: "small ghost icon-only danger", title: "Delete replay",
+      "aria-label": `Delete ${r.file}`, onclick: () => deleteReplays([r.path]) }, trashIcon());
+    const row = el("tr", { class: picked.has(r.path) ? "picked" : "" },
+      el("td", { class: "pick" }, pick),
       el("td", { class: "file" }, r.file.replace(/\.json$/, "")),
       el("td", {}, r.run),
       el("td", {}, r.outcome ? el("span", { class: `badge ${r.outcome === "Survived" ? "good" : ""}` }, r.outcome) : ""),
       el("td", { class: "hint" }, ago(r.modified)),
-      el("td", {}, watch));
+      el("td", { class: "row-actions" }, watch, remove));
+    return row;
   }));
 }
 
@@ -493,6 +555,12 @@ async function boot() {
   $("metrics-run").addEventListener("change", loadMetrics);
   $("replay-refresh").addEventListener("click", () => loadReplays().catch(() => {}));
   $("replay-filter").addEventListener("input", renderReplays);
+  $("replay-delete").prepend(trashIcon());
+  $("replay-delete").addEventListener("click", () => deleteReplays([...picked]));
+  $("replay-all").addEventListener("change", (ev) => {
+    for (const p of shownPaths) if (ev.target.checked) picked.add(p); else picked.delete(p);
+    renderReplays();
+  });
   window.addEventListener("hashchange", () => showTab(location.hash.slice(1)));
   let resizeTimer;
   window.addEventListener("resize", () => {

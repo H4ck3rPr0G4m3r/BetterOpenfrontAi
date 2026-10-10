@@ -75,6 +75,26 @@ def test_lobby_job_runs_play_lobby(base_url):
     assert argv[argv.index("--name") + 1] == "Bot script"
 
 
+def test_delete_replays(base_url):
+    url, _ = base_url
+    folder = TRAIN_DIR / "replays" / "_delete_test" / "sub"
+    folder.mkdir(parents=True, exist_ok=True)
+    try:
+        for name in ("a.json", "b.json"):
+            (folder / name).write_text("{}", encoding="utf-8")
+        # Anything outside replays/ or not a replay is refused, and nothing goes.
+        for bad in (["../train.py"], ["_delete_test/sub/a.json", "../control_server.py"], ["_delete_test/sub"], []):
+            status, payload, _ = _request("POST", f"{url}/api/replays/delete", {"paths": bad})
+            assert status == 400 and payload["error"]
+        assert (folder / "a.json").is_file()
+        status, payload, _ = _request("POST", f"{url}/api/replays/delete",
+                                      {"paths": ["_delete_test/sub/a.json", "_delete_test/sub/b.json"]})
+        assert status == 200 and payload["deleted"] == 2
+        assert not (TRAIN_DIR / "replays" / "_delete_test").exists()  # emptied folders go too
+    finally:
+        shutil.rmtree(TRAIN_DIR / "replays" / "_delete_test", ignore_errors=True)
+
+
 def test_quick_match_records_one_game(base_url):
     url, launched = base_url
     status, _, _ = _request("POST", f"{url}/api/jobs/match", {"model": "scripted", "mode": "selfplay", "minutes": 5})
