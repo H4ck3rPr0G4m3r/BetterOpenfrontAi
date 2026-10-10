@@ -238,6 +238,11 @@ async function loadMetrics() {
     for (const [key, title] of CHARTS) {
       if (data.series[key]?.length) drawChart(box, title, data.series[key]);
     }
+    // Mixed-scenario runs: survival per scenario.
+    for (const [key, points] of Object.entries(data.series)) {
+      const m = key.match(/^scenario\/(.+)\/survival_rate$/);
+      if (m && points.length) drawChart(box, `Survival: ${m[1].replace(/_/g, " ")}`, points);
+    }
     drawIntents(box, data.intents || {});
     $("metrics-note").textContent = data.last_step
       ? `${data.updates} updates, ${data.last_step.toLocaleString()} steps`

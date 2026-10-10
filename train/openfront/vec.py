@@ -1,6 +1,8 @@
 """W worker processes x G games x S seats behind one batched interface.
 
-Rows are worker-major, then game, then seat: ``row = (w * G + g) * S + s``.
+Rows are worker-major, then game, then seat. Workers may run different
+configs (scenarios: seat counts, spawns, bots), so row and game offsets are
+tables, not arithmetic; ``seats`` is only defined when every worker agrees.
 Every call returns the same preallocated batch dict (raster, features,
 masks, reward, stats, terminal, flags), so callers must copy what they keep.
 Workers step in parallel threads (socket waits release the GIL). A worker
@@ -25,22 +27,37 @@ BATCH_FIELDS = ("raster", "features", "masks", "reward", "stats", "terminal", "f
 class VecGames:
     def __init__(
         self,
-        config: WorkerConfig,
+        config: WorkerConfig | list[WorkerConfig],
         num_workers: int,
         seed: str = "train",
         worker_factory: Callable[[int], WorkerClient] | None = None,
     ):
         if num_workers < 1:
             raise ValueError("num_workers must be >= 1")
-        self.config = config
+        configs = list(config) if isinstance(config, (list, tuple)) else [config] * num_workers
+        if len(configs) != num_workers:
+            raise ValueError(f"{len(configs)} worker configs for {num_workers} workers")
+        self.configs = configs
+        self.config = configs[0]
         self.num_workers = num_workers
-        self.seats = config.seats
-        self.games_per_worker = config.games
-        self.num_games = num_workers * config.games
-        self.rows_per_worker = config.games * config.seats
-        self.num_rows = num_workers * self.rows_per_worker
+        seat_counts = {c.seats for c in configs}
+        self.seats = configs[0].seats if len(seat_counts) == 1 else None
+        self.max_seats = max(seat_counts)
+        # Per-worker game and row offsets, plus row -> game and game -> rows tables.
+        self._game_base, self._row_base, game_rows, row_game = [], [], [], []
+        for c in configs:
+            self._game_base.append(len(game_rows))
+            self._row_base.append(len(row_game))
+            for _g in range(c.games):
+                start = len(row_game)
+                game_rows.append(range(start, start + c.seats))
+                row_game.extend([len(game_rows) - 1] * c.seats)
+        self._game_rows = game_rows
+        self._row_game = row_game
+        self.num_games = len(game_rows)
+        self.num_rows = len(row_game)
         self.seed = seed
-        self._factory = worker_factory or (lambda _i: start_worker(config))
+        self._factory = worker_factory or (lambda i: start_worker(self.configs[i]))
         self._respawns = [0] * num_workers
         self._pool = ThreadPoolExecutor(max_workers=num_workers, thread_name_prefix="openfront-worker")
         self.batch = self._empty_batch()
@@ -60,17 +77,24 @@ class VecGames:
         }
 
     def game_of_row(self, row: int) -> int:
-        return row // self.seats
+        return self._row_game[row]
 
     def rows_of_game(self, game: int) -> range:
-        return range(game * self.seats, (game + 1) * self.seats)
+        return self._game_rows[game]
+
+    def worker_of_game(self, game: int) -> int:
+        for w in range(self.num_workers - 1, -1, -1):
+            if game >= self._game_base[w]:
+                return w
+        raise IndexError(game)
 
     def _slice(self, w: int) -> slice:
-        return slice(w * self.rows_per_worker, (w + 1) * self.rows_per_worker)
+        c = self.configs[w]
+        return slice(self._row_base[w], self._row_base[w] + c.games * c.seats)
 
     def _seeds(self, w: int) -> list[str]:
         suffix = f"-r{self._respawns[w]}" if self._respawns[w] else ""
-        return [f"{self.seed}-{w * self.games_per_worker + g}{suffix}" for g in range(self.games_per_worker)]
+        return [f"{self.seed}-{self._game_base[w] + g}{suffix}" for g in range(self.configs[w].games)]
 
     def _store(self, w: int, rows: dict) -> None:
         sl = self._slice(w)
@@ -92,8 +116,8 @@ class VecGames:
 
         def one(w: int):
             sl = self._slice(w)
-            local_abort = [g - w * self.games_per_worker for g in abort_games
-                           if w * self.games_per_worker <= g < (w + 1) * self.games_per_worker]
+            base, count = self._game_base[w], self.configs[w].games
+            local_abort = [g - base for g in abort_games if base <= g < base + count]
             try:
                 return w, self._client(w).step(actions[sl], abort=sorted(local_abort)), None
             except (ConnectionError, OSError, ProtocolError) as exc:

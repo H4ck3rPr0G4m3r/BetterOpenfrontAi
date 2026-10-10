@@ -1,0 +1,43 @@
+# Main recipe: one policy trained on a mix of situations at the same time.
+#
+# Every worker runs one scenario for the whole run; workers are split by
+# weight (10 workers -> 3 / 3 / 2 / 1 / 1). All scenarios have engine
+# tribes and nations unless they say otherwise. In multi-seat scenarios
+# seat 0 is the learner and every other seat is the learner too (50%) or a
+# frozen snapshot of a past self (see selfplay below); only learner seats
+# are trained on, and they all train the same network.
+#
+#   vs_bots       the AI alone among tribes and nations, like a public lobby
+#   selfplay_ffa  4 AIs spread over the map, plus tribes and nations
+#   close_rivals  2 AIs spawned within 60 tiles: an opening under pressure
+#   crowded       6 AIs and extra tribes: a busy, aggressive map
+#   easy          2 AIs, fewer tribes, no nations: room to practise economy
+#
+# Per-scenario survival, return and land are logged as scenario/<name>/...
+run:
+  name: main
+  total_steps: 100000
+  checkpoint_every: 20
+  replay: {dir: replays/main, every: 50}
+
+env:
+  workers: 10
+  games_per_worker: 1
+  seats: 4
+  bots: 20
+  nations: default
+  tick_cap: 12000  # 20 game minutes
+  close_spawn: 0.0
+
+selfplay:
+  learner_seat_prob: 0.5
+  snapshot_every: 10
+  pool_size: 24
+  active_opponents: 4
+
+scenarios:
+  - {name: vs_bots, weight: 3, seats: 1}
+  - {name: selfplay_ffa, weight: 3, seats: 4}
+  - {name: close_rivals, weight: 2, seats: 2, close_spawn: 1.0}
+  - {name: crowded, weight: 1, seats: 6, bots: 30}
+  - {name: easy, weight: 1, seats: 2, bots: 10, nations: disabled}

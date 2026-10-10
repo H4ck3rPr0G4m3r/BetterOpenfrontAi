@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import random
 
 import numpy as np
@@ -263,3 +264,52 @@ def test_evaluate_reports_every_predictor():
     preds = result["predictors"]
     assert preds["scripted"]["episodes"] + preds["noop"]["episodes"] == 6
     assert set(result["head_to_head"]) <= {"scripted > noop", "noop > scripted"}
+
+
+# ----- mixed scenarios -----------------------------------------------------------
+
+def test_scenarios_split_workers_by_weight():
+    from openfront.config import scenario_workers
+
+    cfg = load_config(overrides={
+        "env": {"workers": 10},
+        "scenarios": [{"name": "solo", "weight": 3, "seats": 1}, {"name": "ffa", "weight": 4, "seats": 4},
+                      {"name": "duel", "weight": 2, "seats": 2, "close_spawn": 1.0}, {"name": "crowd", "weight": 1, "seats": 6}],
+    })
+    plan = scenario_workers(cfg)
+    counts = {name: sum(1 for n, _ in plan if n == name) for name in ("solo", "ffa", "duel", "crowd")}
+    assert sum(counts.values()) == 10 and min(counts.values()) >= 1
+    assert counts["ffa"] >= counts["solo"] >= counts["duel"] >= counts["crowd"]
+    duel = next(env for n, env in plan if n == "duel")
+    assert duel["seats"] == 2 and duel["close_spawn"] == 1.0
+    with pytest.raises(ValueError):
+        load_config(overrides={"scenarios": [{"name": "x", "flavor": 1}]})
+    with pytest.raises(ValueError):
+        load_config(overrides={"scenarios": [{"name": "x"}], "curriculum": [{"bots": 3}]})
+
+
+def test_vec_games_with_mixed_seat_counts():
+    servers = []
+    configs = [WorkerConfig(games=1, seats=1), WorkerConfig(games=2, seats=3), WorkerConfig(games=1, seats=2)]
+    vec = VecGames(configs, 3, worker_factory=lambda i: fake_factory(servers, game_length=4)(i, configs[i]))
+    try:
+        assert vec.num_rows == 1 + 6 + 2 and vec.num_games == 4 and vec.seats is None and vec.max_seats == 3
+        assert [list(vec.rows_of_game(g)) for g in range(4)] == [[0], [1, 2, 3], [4, 5, 6], [7, 8]]
+        assert [vec.worker_of_game(g) for g in range(4)] == [0, 1, 1, 2]
+        batch = vec.reset()
+        for _ in range(6):
+            batch = vec.step(np.zeros((vec.num_rows, 5), np.int64), abort_games={2})
+        assert batch["flags"].shape == (9,)
+    finally:
+        vec.close()
+
+
+def test_trainer_runs_mixed_scenarios(tmp_path):
+    cfg = tiny_config(tmp_path)
+    cfg["env"]["workers"] = 3
+    cfg["scenarios"] = [{"name": "solo", "seats": 1}, {"name": "duel", "seats": 2, "close_spawn": 1.0},
+                        {"name": "ffa", "seats": 3}]
+    trainer = Trainer(cfg, worker_factory=fake_factory([], game_length=5), log=lambda m: None)
+    trainer.train()
+    last = json.loads((tmp_path / "runs" / "t" / "metrics.jsonl").read_text().splitlines()[-1])
+    assert {"scenario/solo/survival_rate", "scenario/duel/survival_rate", "scenario/ffa/survival_rate"} <= set(last)

@@ -88,10 +88,15 @@ DEFAULTS: dict = {
         "pool_dir": None,  # default: <checkpoint_dir>/<name>/pool
     },
     "curriculum": [],
+    # Mixed training: each scenario gets a share of the workers (by weight)
+    # and its own env overrides; see configs/main.yaml. Exclusive with
+    # curriculum.
+    "scenarios": [],
     "model": {"trunk": 256, "slot_dim": 64, "site_dim": 32, "context": 128},
 }
 
 CURRICULUM_ENV_KEYS = {"bots", "nations", "seats", "tick_cap", "map"}
+SCENARIO_ENV_KEYS = {"bots", "nations", "seats", "tick_cap", "map", "close_spawn"}
 
 
 def _merge(base: dict, override: dict, path: str = "") -> dict:
@@ -134,6 +139,18 @@ def validate(cfg: dict) -> None:
         raise ValueError("selfplay.learner_seat_prob must be 0..1")
     if int(ppo["minibatch"]) < 1 or int(ppo["n_steps"]) < 1 or int(ppo["epochs"]) < 1:
         raise ValueError("ppo.minibatch, n_steps, epochs must be >= 1")
+    if cfg["scenarios"] and cfg["curriculum"]:
+        raise ValueError("use scenarios or curriculum, not both")
+    for i, sc in enumerate(cfg["scenarios"]):
+        extra = set(sc) - SCENARIO_ENV_KEYS - {"name", "weight"}
+        if extra or "name" not in sc:
+            raise ValueError(f"scenarios[{i}] needs a name and only {sorted(SCENARIO_ENV_KEYS | {'weight'})}")
+        if float(sc.get("weight", 1)) <= 0:
+            raise ValueError(f"scenarios[{i}].weight must be > 0")
+        if not 1 <= int(sc.get("seats", env["seats"])) <= 8:
+            raise ValueError(f"scenarios[{i}].seats must be 1..8")
+    if cfg["scenarios"] and int(env["workers"]) < len(cfg["scenarios"]):
+        raise ValueError("need at least one worker per scenario")
     for i, stage in enumerate(cfg["curriculum"]):
         extra = set(stage) - CURRICULUM_ENV_KEYS - {"promote", "name"}
         if extra:
@@ -147,6 +164,27 @@ def stage_env(cfg: dict, stage: int) -> dict:
         stage_cfg = cfg["curriculum"][min(stage, len(cfg["curriculum"]) - 1)]
         env.update({k: v for k, v in stage_cfg.items() if k in CURRICULUM_ENV_KEYS})
     return env
+
+
+def scenario_workers(cfg: dict) -> list[tuple[str, dict]]:
+    """(scenario name, env) per worker: workers split by weight, each
+    scenario getting at least one (largest remainder)."""
+    env = cfg["env"]
+    scenarios = cfg["scenarios"]
+    workers = int(env["workers"])
+    if not scenarios:
+        return [("default", copy.deepcopy(env))] * workers
+    weights = [float(s.get("weight", 1)) for s in scenarios]
+    total = sum(weights)
+    share = [1 + (workers - len(scenarios)) * w / total for w in weights]
+    counts = [int(x) for x in share]
+    for i in sorted(range(len(share)), key=lambda i: share[i] - counts[i], reverse=True)[: workers - sum(counts)]:
+        counts[i] += 1
+    out = []
+    for sc, n in zip(scenarios, counts):
+        merged = {**copy.deepcopy(env), **{k: v for k, v in sc.items() if k in SCENARIO_ENV_KEYS}}
+        out += [(str(sc["name"]), merged)] * n
+    return out
 
 
 def worker_config(env: dict, reward: dict):

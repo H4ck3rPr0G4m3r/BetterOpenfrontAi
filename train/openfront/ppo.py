@@ -27,7 +27,7 @@ import torch
 from torch.utils.tensorboard import SummaryWriter
 
 from . import layout as L
-from .config import stage_env, worker_config
+from .config import scenario_workers, stage_env, worker_config
 from .model import ModelConfig, OpenFrontPolicy, load_checkpoint, parameter_count, save_checkpoint
 from .selfplay import LEARNER, OpponentPool, assign_seats
 from .vec import VecGames
@@ -109,6 +109,7 @@ class Trainer:
         self.pool = OpponentPool(Path(sp["pool_dir"] or self.ckpt_dir / "pool"), int(sp["pool_size"]))
         self.opponents: list[tuple[str, OpenFrontPolicy]] = []
         self.episodes: deque = deque(maxlen=400)
+        self.row_scenario: list[str] = []
         self.stage_episodes: deque = deque(maxlen=1000)
         self.head_to_head: deque = deque(maxlen=400)
         self.amp = bool(cfg["ppo"]["amp"]) and self.device == "cuda"
@@ -126,11 +127,20 @@ class Trainer:
 
     def build_vec(self) -> VecGames:
         self._apply_replay_env()
-        env = stage_env(self.cfg, self.stage)
-        wc = worker_config(env, self.cfg["reward"])
         seed = f"{self.name}-s{self.stage}-u{self.update}-{self.cfg['run']['seed']}"
-        factory = None if self.worker_factory is None else (lambda i: self.worker_factory(i, wc))
-        return VecGames(wc, int(env["workers"]), seed=seed, worker_factory=factory)
+        if self.cfg["scenarios"]:
+            plan = scenario_workers(self.cfg)
+            wcs = [worker_config(env, self.cfg["reward"]) for _, env in plan]
+            names = [name for name, _ in plan]
+        else:
+            env = stage_env(self.cfg, self.stage)
+            wcs = [worker_config(env, self.cfg["reward"])] * int(env["workers"])
+            names = ["default"] * len(wcs)
+        factory = None if self.worker_factory is None else (lambda i: self.worker_factory(i, wcs[i]))
+        vec = VecGames(wcs, len(wcs), seed=seed, worker_factory=factory)
+        # Scenario name per row, for per-scenario episode stats.
+        self.row_scenario = [names[vec.worker_of_game(vec.game_of_row(r))] for r in range(vec.num_rows)]
+        return vec
 
     def refresh_opponents(self) -> None:
         sp = self.cfg["selfplay"]
@@ -153,7 +163,7 @@ class Trainer:
                  f"stage {self.stage}, resuming at step {self.global_step:,}")
         self.refresh_opponents()
         vec = self.build_vec()
-        seats = vec.seats
+        seats = vec.max_seats
         batch = vec.reset()
         ctrl = np.full(vec.num_rows, LEARNER, np.int64)
         opp_path = [""] * vec.num_rows
@@ -250,7 +260,7 @@ class Trainer:
                 if self._maybe_promote():
                     vec.close()
                     vec = self.build_vec()
-                    seats = vec.seats
+                    seats = vec.max_seats
                     batch = vec.reset()
                     ctrl = np.full(vec.num_rows, LEARNER, np.int64)
                     opp_path = [""] * vec.num_rows
@@ -286,7 +296,8 @@ class Trainer:
     def _assign(self, vec, games, ctrl, opp_path) -> None:
         prob = float(self.cfg["selfplay"]["learner_seat_prob"])
         for g in games:
-            for row, who in zip(vec.rows_of_game(g), assign_seats(vec.seats, len(self.opponents), prob, self.rng)):
+            rows = vec.rows_of_game(g)
+            for row, who in zip(rows, assign_seats(len(rows), len(self.opponents), prob, self.rng)):
                 ctrl[row] = who
                 opp_path[row] = self.opponents[who][0] if who != LEARNER else ""
 
@@ -299,6 +310,7 @@ class Trainer:
             "tiles": float(stats[0]),
             "kills": float(stats[2]),
             "placement": float(stats[3]),
+            "scenario": self.row_scenario[row] if row < len(self.row_scenario) else "default",
         }
         self.episodes.append(record)
         self.stage_episodes.append(record)
@@ -332,6 +344,13 @@ class Trainer:
             "rollout/kills": float(np.mean([e["kills"] for e in eps])),
             "rollout/placement": float(np.mean([e["placement"] for e in eps])),
         }
+        scenarios = sorted({e.get("scenario", "default") for e in eps})
+        if len(scenarios) > 1:
+            for sc in scenarios:
+                mine = [e for e in eps if e.get("scenario") == sc]
+                out[f"scenario/{sc}/survival_rate"] = sum(e["terminal"] in ("tick_cap", "win") for e in mine) / len(mine)
+                out[f"scenario/{sc}/ep_rew_mean"] = float(np.mean([e["return"] for e in mine]))
+                out[f"scenario/{sc}/final_tiles"] = float(np.mean([e["tiles"] for e in mine]))
         for name in L.TERMINAL_NAMES:
             out[f"terminals/{name}"] = terms[name] / n
         if self.head_to_head:
