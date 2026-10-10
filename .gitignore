@@ -18,3 +18,4 @@ replays/
 
 # Built in-page agent bundle (npm run build:page in env/).
 env/dist/
+train/.lobby_profiles/

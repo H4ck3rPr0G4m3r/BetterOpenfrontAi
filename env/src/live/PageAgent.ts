@@ -165,7 +165,11 @@ class PageAgent {
     return { sent: intents.map((i) => i.type), intents: JSON.parse(JSON.stringify(intents, (_k, v) => (typeof v === "bigint" ? Number(v) : v))) };
   }
 
-  /** Choose a spawn tile like training does (free land, room to grow, away from others). */
+  /**
+   * Choose a spawn tile: free land with the most free land around it (room
+   * to grow; remote spots are usually tiny islands), not crowded by players
+   * who already spawned.
+   */
   spawn(seed = Date.now()) {
     const v = gameView();
     if (v === null) throw new Error("not in a game");
@@ -176,15 +180,31 @@ class PageAgent {
     const owned: number[] = [];
     const buf: Uint16Array = v.tileStateBuffer();
     for (let t = 0; t < buf.length; t += 97) if ((buf[t] & 0xfff) !== 0) owned.push(t);
+    const free = (t: number) => v.isLand(t) && !v.hasOwner(t) && !v.isImpassable?.(t);
+    const RADIUS = 30;
+    const STEP = 5;
+    const room = (t: number): number => {
+      const x0 = t % w;
+      const y0 = Math.floor(t / w);
+      let n = 0;
+      for (let dy = -RADIUS; dy <= RADIUS; dy += STEP) {
+        for (let dx = -RADIUS; dx <= RADIUS; dx += STEP) {
+          const x = x0 + dx;
+          const y = y0 + dy;
+          if (x >= 0 && y >= 0 && x < w && y < h && free(y * w + x)) n++;
+        }
+      }
+      return n;
+    };
     let best = -1;
-    let bestScore = -1;
-    for (let i = 0; i < 6000; i++) {
+    let bestScore = -Infinity;
+    for (let i = 0, tried = 0; i < 20000 && tried < 400; i++) {
       const t = Math.floor(rand() * w * h);
-      if (!v.isLand(t) || v.hasOwner(t) || v.isImpassable?.(t)) continue;
-      if (!v.neighbors(t).every((n: number) => v.isLand(n) && !v.hasOwner(n))) continue;
+      if (!free(t) || !v.neighbors(t).every(free)) continue;
+      tried++;
       let nearest = Infinity;
       for (const o of owned) nearest = Math.min(nearest, Math.hypot((o % w) - (t % w), Math.floor(o / w) - Math.floor(t / w)));
-      const score = Math.min(nearest, 200);
+      const score = room(t) - (nearest < 40 ? 40 - nearest : 0);
       if (score > bestScore) {
         bestScore = score;
         best = t;
