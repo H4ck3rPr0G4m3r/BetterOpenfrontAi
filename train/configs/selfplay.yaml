@@ -1,0 +1,28 @@
+# Main recipe: real in-game self-play on World with engine bots and nations.
+# Every game seats 4 agents: seat 0 is the learner, each other seat is the
+# live learner (50%) or a frozen snapshot from the opponent pool. Only
+# learner seats are trained on. Curriculum: start without nations and with
+# fewer bots, promote once 60% of learner episodes survive to the tick cap.
+run:
+  name: selfplay
+  total_steps: 20000000
+  checkpoint_every: 20
+  replay: {dir: replays/selfplay, every: 100}
+
+env:
+  workers: 10
+  games_per_worker: 1
+  seats: 4
+  bots: 20
+  nations: default
+  tick_cap: 6000
+
+selfplay:
+  learner_seat_prob: 0.5
+  snapshot_every: 10
+  pool_size: 24
+  active_opponents: 4
+
+curriculum:
+  - {name: warmup, bots: 10, nations: disabled, promote: {survival: 0.6, min_episodes: 300}}
+  - {name: full, bots: 20, nations: default}

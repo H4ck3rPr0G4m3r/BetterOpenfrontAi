@@ -1,0 +1,12 @@
+# One agent per game against engine bots and nations only (no self-play).
+# Useful as a baseline and for presets that change the reward.
+run:
+  name: solo
+  total_steps: 10000000
+  replay: {dir: replays/solo, every: 100}
+
+env:
+  workers: 12
+  seats: 1
+  bots: 20
+  nations: default

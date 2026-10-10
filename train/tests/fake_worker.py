@@ -1,229 +1,119 @@
-"""In-process stand-in for a Node bridge worker, for gym-level tests.
+"""In-process fake bridge worker speaking protocol v2, for tests without Node.
 
-Speaks the real wire protocol with tiny observations and scripted
-terminals, mirroring the WorkerServer contract: HELLO on connect, RESET
-and STEP replies, same-step auto-reset where a done row carries the fresh
-episode, CLOSE drops the client. Kills are abrupt to exercise the
-worker-death paths.
+Each game lasts ``game_length`` steps; seat ``s`` dies at step
+``death_at[s]`` (None = survives to the cap). Masks keep noop and
+attack-on-slot-0 open so policies have real choices.
 """
 
 from __future__ import annotations
 
+import json
 import socket
 import struct
 import threading
-import zlib
 
-from openfront_gym import protocol
-from openfront_gym.protocol import FrameReader, MessageType
+import numpy as np
 
-
-def seed_fill(seed: str) -> float:
-    return (zlib.crc32(seed.encode("utf-8")) % 997) / 997.0
+from openfront import layout as L
+from openfront import protocol as P
+from openfront.worker import WorkerClient, WorkerConfig
 
 
-class FakeWorker:
-    def __init__(self, num_envs: int = 1, obs_size: int = 8, terminals=None):
-        self.num_envs = num_envs
-        self.obs_size = obs_size
-        self.terminals: dict[int, list[int]] = {
-            index: list(codes) for index, codes in (terminals or {}).items()
-        }
-        self.received: list = []
-        self._listener: socket.socket | None = None
-        self._threads: list[threading.Thread] = []
-        self._conns: list[socket.socket] = []
-        self._lock = threading.Lock()
-        self._seeds = [f"fake-{i}" for i in range(num_envs)]
-        self._episodes = [0] * num_envs
-        self._ticks = [302] * num_envs
-        self._port = 0
+class FakeServer:
+    def __init__(self, games: int, seats: int, game_length: int = 8, death_at: dict | None = None, reward: float = 0.1):
+        self.games, self.seats = games, seats
+        self.rows = games * seats
+        self.game_length = game_length
+        self.death_at = death_at or {}
+        self.reward = reward
+        self.steps = [0] * games
+        self.alive = np.ones((games, seats), bool)
+        self.resets: list[str] = []
+        self.aborts: list[int] = []
+        self.listener = socket.socket()
+        self.listener.bind(("127.0.0.1", 0))
+        self.listener.listen(1)
+        self.port = self.listener.getsockname()[1]
+        threading.Thread(target=self._serve, daemon=True).start()
 
-    @property
-    def port(self) -> int:
-        return self._port
+    def _masks(self, active: bool) -> np.ndarray:
+        m = np.zeros(L.MASK_SIZE, np.uint8)
+        m[L.MASK_INTENT + L.NOOP] = 1
+        if active:
+            m[L.MASK_INTENT + L.ATTACK] = 1
+            m[L.MASK_TARGET + L.ATTACK * L.NUM_SLOTS + 0] = 1
+            m[L.MASK_RATIO : L.MASK_SPATIAL] = 1
+        return m
 
-    def start(self) -> int:
-        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        listener.bind(("127.0.0.1", 0))
-        listener.listen(4)
-        listener.settimeout(0.5)
-        self._listener = listener
-        self._port = int(listener.getsockname()[1])
-        thread = threading.Thread(target=self._accept_loop, daemon=True)
-        thread.start()
-        self._threads.append(thread)
-        return self._port
+    def _rows(self, rewards, terminals, flags) -> bytes:
+        n = self.rows
+        raster = np.full((n, L.RASTER_SIZE), 7, np.uint8)
+        feats = np.full((n, L.FEATURE_SIZE), 0.5, "<f4")
+        masks = np.stack([self._masks(bool(f & L.FLAG_NEXT)) for f in flags])
+        stats = np.tile(np.array([100, 1000, 0, 0.5, 0], "<f4"), (n, 1))
+        return (struct.pack("<I", n) + raster.tobytes() + feats.tobytes() + masks.tobytes()
+                + np.asarray(rewards, "<f4").tobytes() + stats.tobytes()
+                + np.asarray(terminals, np.uint8).tobytes() + np.asarray(flags, np.uint8).tobytes())
 
-    def stop(self) -> None:
-        listener, self._listener = self._listener, None
-        if listener is not None:
-            try:
-                listener.close()
-            except OSError:
-                pass
-        with self._lock:
-            conns, self._conns = self._conns, []
-        for conn in conns:
-            try:
-                conn.shutdown(socket.SHUT_RDWR)
-            except OSError:
-                pass
-            try:
-                conn.close()
-            except OSError:
-                pass
-
-    def kill(self) -> None:
-        """Abrupt death: connections drop, the port goes away."""
-        self.stop()
-
-    def _accept_loop(self) -> None:
-        while self._listener is not None:
-            try:
-                conn, _ = self._listener.accept()  # type: ignore[union-attr]
-            except (OSError, socket.timeout):
-                continue
-            with self._lock:
-                self._conns.append(conn)
-            thread = threading.Thread(target=self._serve, args=(conn,), daemon=True)
-            thread.start()
-            self._threads.append(thread)
-
-    def _serve(self, conn: socket.socket) -> None:
+    def _serve(self):
+        conn, _ = self.listener.accept()
+        hello = {"layout": L.layout_dict(), "games": self.games, "seats": self.seats, "rows": self.rows}
+        P.send_frame(conn, 0, P.MSG_HELLO, P.encode_json(hello))
         try:
-            conn.settimeout(30.0)
-            protocol.send_frame(
-                conn,
-                0,
-                MessageType.HELLO,
-                protocol.encode_hello_body(
-                    protocol.HelloInfo(
-                        version=protocol.SCHEMA_VERSION,
-                        num_envs=self.num_envs,
-                        obs_size=self.obs_size,
-                        intent_types=protocol.MASK_INTENT_TYPES,
-                        target_slots=protocol.MASK_TARGET_SLOTS,
-                        ratio_buckets=protocol.MASK_RATIO_BUCKETS,
-                        spatial_cells=protocol.MASK_SPATIAL_CELLS,
-                        build_sites=protocol.MASK_BUILD_SITES,
-                    )
-                ),
-            )
-            reader = FrameReader()
-            expected = 1
             while True:
-                chunk = conn.recv(65536)
-                if not chunk:
+                seq, kind, body = P.recv_frame(conn)
+                if kind == P.MSG_CLOSE:
                     return
-                for payload in reader.push(chunk):
-                    seq, msg_type, body = protocol.decode_frame_payload(payload)
-                    if seq != expected:
-                        protocol.send_frame(
-                            conn,
-                            seq,
-                            MessageType.ERROR,
-                            protocol.encode_error_body(1, "bad seq"),
-                        )
-                        return
-                    expected += 1
-                    if msg_type == MessageType.RESET:
-                        self._on_reset(conn, seq, body)
-                    elif msg_type == MessageType.STEP:
-                        self._on_step(conn, seq, body)
-                    elif msg_type == MessageType.CLOSE:
-                        return
-                    else:
-                        protocol.send_frame(
-                            conn,
-                            seq,
-                            MessageType.ERROR,
-                            protocol.encode_error_body(3, "unknown type"),
-                        )
-                        return
-        except (OSError, protocol.ProtocolError):
+                if kind == P.MSG_RESET:
+                    self.resets += json.loads(bytes(body))["seeds"]
+                    self.steps = [0] * self.games
+                    self.alive[:] = True
+                    reply = self._rows([0] * self.rows, [0] * self.rows, [L.FLAG_NEXT | L.FLAG_FRESH] * self.rows)
+                else:
+                    (n,) = struct.unpack_from("<I", body, 0)
+                    jlen = struct.unpack_from("<I", body, 4 + n * 10)[0]
+                    extra = json.loads(bytes(body[8 + n * 10 : 8 + n * 10 + jlen]))
+                    reply = self._step(set(extra.get("abort", [])))
+                P.send_frame(conn, seq, P.MSG_ROWS, reply)
+        except (ConnectionError, OSError):
             return
-        finally:
-            try:
-                conn.close()
-            except OSError:
-                pass
 
-    def _masks(self) -> bytes:
-        return bytes([1]) * protocol.MASK_TOTAL
-
-    def _mask_dict(self) -> dict:
-        return {
-            "intent_type": bytes([1]) * protocol.MASK_INTENT_TYPES,
-            "target": bytes([1]) * protocol.MASK_TARGET_SLOTS,
-            "ratio_bucket": bytes([1]) * protocol.MASK_RATIO_BUCKETS,
-            "spatial_cell": bytes([1]) * protocol.MASK_SPATIAL_CELLS,
-            "build_site": bytes([1]) * protocol.MASK_BUILD_SITES,
-        }
-
-    def _on_reset(self, conn: socket.socket, seq: int, body: bytes) -> None:
-        version, seeds = protocol.decode_reset_body(body)
-        if version != protocol.SCHEMA_VERSION or len(seeds) != self.num_envs:
-            protocol.send_frame(
-                conn, seq, MessageType.ERROR, protocol.encode_error_body(3, "bad reset")
-            )
-            return
-        self.received.append(("reset", seeds))
-        self._seeds = list(seeds)
-        self._episodes = [0] * self.num_envs
-        self._ticks = [302] * self.num_envs
-        obs = [[seed_fill(seed)] * self.obs_size for seed in seeds]
-        protocol.send_frame(
-            conn,
-            seq,
-            MessageType.RESET_REPLY,
-            protocol.encode_reset_reply_body(
-                obs, list(self._ticks), [self._mask_dict() for _ in range(self.num_envs)], self.obs_size
-            ),
-        )
-
-    def _on_step(self, conn: socket.socket, seq: int, body: bytes) -> None:
-        version, actions, next_seeds = protocol.decode_step_body(body, self.num_envs)
-        if version != protocol.SCHEMA_VERSION:
-            protocol.send_frame(
-                conn, seq, MessageType.ERROR, protocol.encode_error_body(4, "bad version")
-            )
-            return
-        self.received.append(("step", actions))
-        obs, rewards, done, terminals, ticks, masks = [], [], [], [], [], []
-        for index in range(self.num_envs):
-            queue = self.terminals.get(index, [])
-            code = queue.pop(0) if queue else protocol.TerminalCode.CONTINUING
-            is_done = code != protocol.TerminalCode.CONTINUING
-            if is_done:
-                self._episodes[index] += 1
-                fresh = next_seeds[index] or f"{self._seeds[index]}#auto{self._episodes[index]}"
-                self._seeds[index] = fresh
-                self._ticks[index] = 302
-                obs.append([seed_fill(fresh)] * self.obs_size)
-                rewards.append(1.0)
-                done.append(True)
-                terminals.append(code)
-                ticks.append(self._ticks[index])
-            else:
-                self._ticks[index] += 10
-                obs.append([seed_fill(self._seeds[index]) + 0.01] * self.obs_size)
-                rewards.append(0.1)
-                done.append(False)
-                terminals.append(protocol.TerminalCode.CONTINUING)
-                ticks.append(self._ticks[index])
-            masks.append(self._mask_dict())
-        protocol.send_frame(
-            conn,
-            seq,
-            MessageType.STEP_REPLY,
-            protocol.encode_step_reply_body(
-                obs, rewards, done, terminals, ticks, masks, self.obs_size
-            ),
-        )
+    def _step(self, abort: set) -> bytes:
+        rewards, terminals, flags = [0.0] * self.rows, [0] * self.rows, [0] * self.rows
+        for g in range(self.games):
+            self.steps[g] += 1
+            over = g in abort or self.steps[g] >= self.game_length
+            for s in range(self.seats):
+                r = g * self.seats + s
+                if not self.alive[g, s]:
+                    continue
+                f = L.FLAG_VALID
+                rewards[r] = self.reward
+                if g in abort:
+                    terminals[r], f, rewards[r] = 5, f | L.FLAG_DONE, 0.0
+                elif self.death_at.get(s) == self.steps[g]:
+                    terminals[r], f = 2, f | L.FLAG_DONE
+                    self.alive[g, s] = False
+                elif over:
+                    terminals[r], f = 3, f | L.FLAG_DONE
+                else:
+                    f |= L.FLAG_NEXT
+                flags[r] = f
+            if over or not self.alive[g].any():
+                if g in abort:
+                    self.aborts.append(g)
+                self.steps[g] = 0
+                self.alive[g] = True
+                for s in range(self.seats):
+                    flags[g * self.seats + s] |= L.FLAG_NEXT | L.FLAG_FRESH
+        return self._rows(rewards, terminals, flags)
 
 
-def check_struct_available() -> None:
-    """Smoke import so test collection fails early without the stdlib."""
-    struct.pack("<I", 1)
+def fake_factory(servers: list, **kwargs):
+    """worker_factory for VecGames/Trainer: one FakeServer per worker."""
+    def make(index: int, config: WorkerConfig | None = None):
+        cfg = config or WorkerConfig()
+        server = FakeServer(cfg.games, cfg.seats, **kwargs)
+        servers.append(server)
+        return WorkerClient.connect(server.port, cfg)
+    return make

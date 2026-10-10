@@ -1,47 +1,22 @@
-# Cheap smoke config: finishes in about a minute against the fake
-# worker, used by tests and local checks. Never point it at a live map
-# and expect learning.
-env:
-  map: World
-  bots: 20
-  ticks_per_step: 10
-  tick_cap: 6000
-  num_workers: 1
-  envs_per_worker: 1
-  strict_illegal_actions: true
-  socket_timeout: 30.0
-  # False on purpose: smoke is 1x1 so the pool is off either way, and this
-  # pins the sequential path while default.yaml exercises parallel.
-  parallel_workers: false
-  seed: 0
+# Seconds-long end-to-end check: 2 workers, 2 seats, tiny rollouts.
+run:
+  name: smoke
+  total_steps: 512
+  checkpoint_every: 1
+  device: auto
 
-behavior:
-  aggression: 50
-  disabled_intents: []
-  disabled_builds: []
-  reward_weights: null
+env:
+  workers: 2
+  seats: 2
+  bots: 5
+  nations: disabled
+  tick_cap: 300
 
 ppo:
-  n_steps: 8
-  batch_size: 4
-  n_epochs: 1
-  gamma: 0.99
-  gae_lambda: 0.95
-  clip_range: 0.2
-  ent_coef: 0.01
-  vf_coef: 0.5
-  max_grad_norm: 0.5
-  learning_rate: 0.0003
+  n_steps: 64
+  epochs: 1
+  minibatch: 64
 
-policy:
-  features_dim: 128
-  net_arch_pi: [64]
-  net_arch_vf: [64]
-
-run:
-  total_timesteps: 32
-  checkpoint_freq: 32
-  checkpoint_dir: checkpoints/smoke
-  tensorboard_log: null
-  run_name: smoke
-  device: cpu
+selfplay:
+  snapshot_every: 1
+  active_opponents: 1
