@@ -30,7 +30,7 @@ import { RewardWeights } from "./BehaviorConfig";
 import { createMasks, Masks } from "./Layout";
 import { createSeatObservation, ObservationEncoder, SeatObservation, MAX_SEATS } from "./ObservationEncoder";
 import { buildGameRecord, replayGameID, seatClientID, shouldRecordReplay, writeReplayFile } from "./Replay";
-import { placementScore, Reward, SeatEvents } from "./Reward";
+import { earnedGold, placementScore, Reward, SeatEvents } from "./Reward";
 import { loadFreshTerrainMap } from "./Terrain";
 import { TurnFeeder } from "./TurnFeeder";
 import type { Action, EnvConfig, TerminalReason } from "./types";
@@ -63,6 +63,8 @@ interface Seat {
   pendingKills: number;
   pendingBetrayals: number;
   combat: CombatTracker;
+  /** earnedGold() at the previous step. */
+  earned: number;
 }
 
 /** Minimum tile distance between seat spawns, halved until it fits. */
@@ -193,6 +195,7 @@ export class GameEnv {
         pendingKills: 0,
         pendingBetrayals: 0,
         combat: new CombatTracker(smallID),
+        earned: 0,
       };
     });
 
@@ -209,7 +212,10 @@ export class GameEnv {
     }
     if (this.fatalError !== undefined) throw new Error(`sim error during reset(): ${this.fatalError}`);
     this.ticksAtSpawnEnd = game.ticks();
-    for (const seat of this.seats) seat.reward.init(game, seat.id);
+    for (const seat of this.seats) {
+      seat.reward.init(game, seat.id);
+      seat.earned = earnedGold(game, game.player(seat.id));
+    }
     this.over = false;
     return this.observe(this.seats.map(() => null), this.seats.map(() => 0));
   }
@@ -237,13 +243,17 @@ export class GameEnv {
       const game = this.runner.game;
       const rewards = this.seats.map((seat, i) => {
         if (!seat.active) return 0;
-        seat.combat.update(game.player(seat.id));
+        const player = game.player(seat.id);
+        seat.combat.update(player);
+        const earned = earnedGold(game, player);
         const events: SeatEvents = {
+          earned: earned - seat.earned,
           kills: seat.pendingKills,
           betrayals: seat.pendingBetrayals,
           diplomacy: diplomacy[i],
           ...seat.combat.take(),
         };
+        seat.earned = earned;
         seat.kills += events.kills;
         seat.pendingKills = 0;
         seat.pendingBetrayals = 0;

@@ -44,7 +44,7 @@ def evaluate(
     games: int = 10,
     bots: int = 20,
     nations: str = "default",
-    tick_cap: int = 6000,
+    tick_cap: int = 36000,
     map_name: str = "World",
     workers: int | None = None,
     seed: str = "eval",
@@ -153,7 +153,7 @@ def main(argv: list[str] | None = None) -> dict:
     parser.add_argument("--games", type=int, default=10)
     parser.add_argument("--bots", type=int, default=20)
     parser.add_argument("--nations", default="default", choices=("default", "disabled"))
-    parser.add_argument("--tick-cap", type=int, default=6000)
+    parser.add_argument("--tick-cap", type=int, default=36000, help="post-spawn ticks, 10 per second (36000 = 60 min)")
     parser.add_argument("--map", default="World")
     parser.add_argument("--workers", type=int, default=None)
     parser.add_argument("--seed", default="eval")

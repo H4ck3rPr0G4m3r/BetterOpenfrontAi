@@ -34,7 +34,7 @@ describe("Reward v3", () => {
   it("pays the change in land potential, not raw land", () => {
     const me: FakePlayer = { id: "me", tiles: 50, alive: true, structures: [] };
     const game = fakeGame([me]);
-    const r = new Reward({ structures: 0 });
+    const r = new Reward({ structures: 0, cities: 0, popCap: 0 });
     r.init(game, "me");
     me.tiles = 500;
     expect(r.step(game, "me", null, NO_EVENTS)).toBeCloseTo(land(500) - land(50));
@@ -45,7 +45,7 @@ describe("Reward v3", () => {
   it("makes dying give back everything built, plus the death penalty", () => {
     const me: FakePlayer = { id: "me", tiles: 52, alive: true, structures: [{ level: 2 }] };
     const game = fakeGame([me]);
-    const r = new Reward();
+    const r = new Reward({ cities: 0, popCap: 0 });
     r.init(game, "me");
     let total = 0;
     me.tiles = 20_000;
@@ -70,7 +70,7 @@ describe("Reward v3", () => {
   it("ignores structures under construction and counts levels", () => {
     const me: FakePlayer = { id: "me", tiles: 100, alive: true, structures: [{ level: 1, building: true }] };
     const game = fakeGame([me]);
-    const r = new Reward({ land: 0, structures: 1 });
+    const r = new Reward({ land: 0, structures: 1, cities: 0, popCap: 0 });
     r.init(game, "me");
     expect(r.step(game, "me", null, NO_EVENTS)).toBeCloseTo(0);
     me.structures = [{ level: 3 }];
@@ -122,16 +122,53 @@ describe("Reward v3", () => {
     expect(r.step(game, "me", null, { ...NO_EVENTS, betrayals: 1, diplomacy: 2 })).toBeCloseTo(-1.01);
   });
 
-  it("pays extra for land taken from stronger players and for repelled attacks", () => {
+  it("pays extra for land taken from weaker players and for repelled attacks", () => {
     const me: FakePlayer = { id: "me", tiles: 100, alive: true, structures: [] };
     const game = fakeGame([me]);
-    const r = new Reward({ underdog: 1, defend: 0.3 });
+    const r = new Reward({ advantage: 0.5, defend: 0.3 });
     r.init(game, "me");
     me.tiles = 110;
     const plain = land(110) - land(100);
-    // 10 tiles from a stronger player: the land gain plus the same again (approximately).
-    const step = r.step(game, "me", null, { ...NO_EVENTS, strongTiles: 10, repelled: 1 });
-    expect(step).toBeCloseTo(plain + 10 / (LAND_REF + 110) + 0.3);
+    // 10 tiles from a weaker player: the land gain plus half again (approximately).
+    const step = r.step(game, "me", null, { ...NO_EVENTS, advantageTiles: 10, repelled: 1 });
+    expect(step).toBeCloseTo(plain + (0.5 * 10) / (LAND_REF + 110) + 0.3);
+  });
+
+  it("values the income rate as a potential, given back on death", () => {
+    const me: FakePlayer = { id: "me", tiles: 100, alive: true, structures: [] };
+    const game = fakeGame([me]);
+    const r = new Reward({ land: 0, structures: 0, cities: 0, popCap: 0, income: 1, death: 0 });
+    r.init(game, "me");
+    let total = 0;
+    // 120 steps at 5k gold a step: 300k a minute once the average settles.
+    for (let i = 0; i < 120; i++) total += r.step(game, "me", null, { ...NO_EVENTS, earned: 5_000 });
+    const settled = Math.log1p(300_000 / 100_000);
+    expect(total).toBeGreaterThan(0.8 * settled);
+    expect(total).toBeLessThan(settled);
+    me.alive = false;
+    total += r.step(game, "me", "death", NO_EVENTS);
+    expect(total).toBeCloseTo(0);
+  });
+
+  it("values cities on top of other structures", () => {
+    const me: FakePlayer = { id: "me", tiles: 100, alive: true, structures: [] };
+    const game = fakeGame([me]);
+    const r = new Reward({ land: 0, structures: 0.2, cities: 0.5, popCap: 0 });
+    r.init(game, "me");
+    me.structures = [{ level: 2 }];
+    expect(r.step(game, "me", null, NO_EVENTS)).toBeCloseTo(0.7 * Math.log1p(2));
+  });
+
+  it("pays for a higher population cap and gives it back on death", () => {
+    const me: FakePlayer = { id: "me", tiles: 100, alive: true, structures: [] };
+    let max = 120_000;
+    const game = { ...(fakeGame([me]) as object), config: () => ({ maxTroops: () => max }) } as never;
+    const r = new Reward({ land: 0, structures: 0, cities: 0, popCap: 0.3, lowTroops: 0 });
+    r.init(game, "me");
+    max = 370_000; // one city level
+    expect(r.step(game, "me", null, NO_EVENTS)).toBeCloseTo(0.3 * (Math.log1p(3.7) - Math.log1p(1.2)));
+    me.alive = false;
+    expect(r.step(game, "me", "death", NO_EVENTS)).toBeCloseTo(-0.3 * Math.log1p(3.7) - 2);
   });
 
   it("validates weight overrides by name", () => {

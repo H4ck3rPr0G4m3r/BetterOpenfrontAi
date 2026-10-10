@@ -44,6 +44,9 @@ DEFAULTS: dict = {
     "reward": {
         "land": 1.0,
         "structures": 0.2,
+        "cities": 0.5,
+        "popCap": 0.3,
+        "income": 1.0,
         "kill": 0.5,
         "win": 5.0,
         "death": -2.0,
@@ -53,7 +56,7 @@ DEFAULTS: dict = {
         "lowTroopsBelow": 0.3,
         "betrayal": -1.0,
         "diplomacy": -0.005,
-        "underdog": 1.0,
+        "advantage": 0.5,
         "defend": 0.3,
     },
     "ppo": {

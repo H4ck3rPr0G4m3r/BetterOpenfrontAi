@@ -11,13 +11,14 @@
  *
  * Usage (from env/):
  *   TSX_TSCONFIG_PATH=tsconfig.probes.json npx tsx probes/DeathProbe.ts [policy] [games] [bots] [seats]
- *   (optional 5th argument: close-spawn probability)
- * policy: noop | random | spam50 | paced   (every seat plays the same policy)
+ *   (optional 5th/6th arguments: close-spawn probability, tick cap)
+ * policy: noop | random | spam50 | paced | builder   (every seat plays the same policy)
  */
 import path from "path";
 import { fileURLToPath } from "url";
 import { GameMapType } from "../../OpenFrontIO/src/core/game/Game";
 import { GameEnv, SeatStep } from "../src/GameEnv";
+import { buildCandidates } from "../src/BuildSites";
 import { HEAD_USAGE, IntentType, Masks, siteRow, spatialRow, targetRow } from "../src/Layout";
 import { NOOP_ACTION, type Action } from "../src/types";
 
@@ -61,14 +62,26 @@ const POLICIES: Record<string, Policy> = {
     const p = env.game.player(env.seatIDs[seat]);
     return p.troops() / env.game.config().maxTroops(p) > 0.45 ? expand(m, 2) : NOOP_ACTION;
   },
+  // paced, plus a city (else an upgrade, else a port or factory) whenever one is affordable.
+  builder: (m, env, seat) => {
+    const p = env.game.player(env.seatIDs[seat]);
+    const sites = buildCandidates(env.game, p);
+    for (const want of ["City", "Port", "Factory"]) {
+      const i = sites.findIndex((c, k) => c.type === want && siteRow(m, 0)[k]);
+      if (i >= 0) return { ...NOOP_ACTION, intentType: IntentType.BuildUnit, buildSite: i };
+    }
+    const up = sites.findIndex((c, k) => c.type === "City" && siteRow(m, 1)[k]);
+    if (up >= 0) return { ...NOOP_ACTION, intentType: IntentType.UpgradeStructure, buildSite: up };
+    return p.troops() / env.game.config().maxTroops(p) > 0.45 ? expand(m, 2) : NOOP_ACTION;
+  },
 };
 
 async function main(): Promise<void> {
-  const [policyName = "random", gamesRaw = "3", botsRaw = "20", seatsRaw = "1", closeRaw = "0"] = process.argv.slice(2);
+  const [policyName = "random", gamesRaw = "3", botsRaw = "20", seatsRaw = "1", closeRaw = "0", capRaw = "6000"] = process.argv.slice(2);
   const policy = POLICIES[policyName];
   if (!policy) throw new Error(`unknown policy ${policyName}`);
   const seats = Number(seatsRaw);
-  const env = new GameEnv({ map: GameMapType.World, mapsDir: MAPS, bots: Number(botsRaw), ticksPerStep: 10, tickCap: 6000, seats, closeSpawn: Number(closeRaw) });
+  const env = new GameEnv({ map: GameMapType.World, mapsDir: MAPS, bots: Number(botsRaw), ticksPerStep: 10, tickCap: Number(capRaw), seats, closeSpawn: Number(closeRaw) });
   const results: string[] = [];
   let stepMs = 0;
   let steps = 0;

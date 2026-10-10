@@ -8,24 +8,24 @@ const MIN_ATTACK_SHARE = 0.2;
 
 interface TrackedAttack {
   attacker: number;
-  stronger: boolean;
+  real: boolean;
   lostAtStart: number;
   tilesAtStart: number;
 }
 
 /**
- * Per-seat combat bookkeeping for the underdog / defence reward terms.
+ * Per-seat combat bookkeeping for the advantage / defence reward terms.
  *
  * Tile captures come from a wrapper around the game's conquer() (the one
  * path every land transfer takes), so attribution is exact: who took the
- * tile, from whom, and whether the loser had more troops at that moment.
+ * tile, from whom, and whether the loser had fewer troops at that moment.
  * Repelled attacks are found by watching each incoming attack until it
  * disappears and checking how much land its attacker took meanwhile.
  */
 export class CombatTracker {
-  /** Tiles this seat took this step from players with more troops. */
-  strongTiles = 0;
-  /** Stronger attacks this seat repelled this step. */
+  /** Tiles this seat took this step from players with fewer troops than it. */
+  advantageTiles = 0;
+  /** Real attacks (not probes) this seat repelled this step. */
   repelled = 0;
   private readonly lostTo = new Map<number, number>();
   private readonly attacks = new Map<string, TrackedAttack>();
@@ -36,7 +36,7 @@ export class CombatTracker {
   onConquer(winner: Player, loser: Player | null): void {
     if (loser === null) return;
     if (winner.smallID() === this.smallID) {
-      if (loser.troops() > winner.troops()) this.strongTiles++;
+      if (loser.troops() < winner.troops()) this.advantageTiles++;
     } else if (loser.smallID() === this.smallID) {
       const id = winner.smallID();
       this.lostTo.set(id, (this.lostTo.get(id) ?? 0) + 1);
@@ -56,7 +56,7 @@ export class CombatTracker {
         const force = attack.troops();
         this.attacks.set(id, {
           attacker: attacker.smallID(),
-          stronger: attacker.troops() + force > troops && force >= MIN_ATTACK_SHARE * troops,
+          real: force >= MIN_ATTACK_SHARE * troops,
           lostAtStart: this.lostTo.get(attacker.smallID()) ?? 0,
           tilesAtStart: me.numTilesOwned(),
         });
@@ -65,16 +65,16 @@ export class CombatTracker {
     for (const [id, a] of this.attacks) {
       if (live.has(id)) continue;
       this.attacks.delete(id);
-      if (!a.stronger || !me.isAlive()) continue;
+      if (!a.real || !me.isAlive()) continue;
       const lost = (this.lostTo.get(a.attacker) ?? 0) - a.lostAtStart;
       if (lost < REPEL_MAX_LOSS * a.tilesAtStart) this.repelled++;
     }
   }
 
   /** Read and clear this step's counters. */
-  take(): { strongTiles: number; repelled: number } {
-    const out = { strongTiles: this.strongTiles, repelled: this.repelled };
-    this.strongTiles = 0;
+  take(): { advantageTiles: number; repelled: number } {
+    const out = { advantageTiles: this.advantageTiles, repelled: this.repelled };
+    this.advantageTiles = 0;
     this.repelled = 0;
     return out;
   }

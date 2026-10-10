@@ -17,7 +17,9 @@ env:
   seats: 4
   bots: 20
   nations: default
-  tick_cap: 6000
+  # 20 game minutes: long enough for an economy to pay off. Replays end
+  # here too; evaluate.py plays full-length games (60 min by default).
+  tick_cap: 12000
   close_spawn: 0.3
 
 selfplay:

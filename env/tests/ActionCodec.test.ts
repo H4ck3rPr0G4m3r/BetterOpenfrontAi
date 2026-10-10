@@ -127,7 +127,7 @@ describe("ActionCodec masks and decode", () => {
     expect(() => allowed.masks(env.game, env.seatIDs[0], createMasks())).not.toThrow();
   });
 
-  it("offers each structure only where it belongs (no defense posts facing the sea)", () => {
+  it("offers each structure only where it belongs (defense posts behind a land front)", () => {
     const map = env.game.map();
     for (const id of env.seatIDs) {
       const player = env.game.player(id);
@@ -135,7 +135,22 @@ describe("ActionCodec masks and decode", () => {
       for (const c of buildCandidates(env.game, player)) {
         const ns = map.neighbors(c.tile);
         if (c.type === UnitType.DefensePost) {
-          expect(ns.some((n) => map.isLand(n) && map.ownerID(n) !== player.smallID() && map.ownerID(n) !== 0)).toBe(true);
+          // Behind the front: our own land, no enemy within 4 tiles, but one within reach of the post.
+          const enemyWithin = (r: number) => {
+            for (let dy = -r; dy <= r; dy++) {
+              for (let dx = -r; dx <= r; dx++) {
+                const x = map.x(c.tile) + dx;
+                const y = map.y(c.tile) + dy;
+                if (!map.isValidCoord(x, y)) continue;
+                const o = map.ownerID(map.ref(x, y));
+                if (map.isLand(map.ref(x, y)) && o !== 0 && o !== player.smallID()) return true;
+              }
+            }
+            return false;
+          };
+          expect(map.ownerID(c.tile)).toBe(player.smallID());
+          expect(enemyWithin(4)).toBe(false);
+          expect(enemyWithin(20)).toBe(true);
         }
         if (c.type === UnitType.Port || c.type === UnitType.Warship) expect(ns.some((n) => !map.isLand(n))).toBe(true);
         if (c.type === UnitType.City) expect(c.border && ns.some((n) => !map.isLand(n))).toBe(false);

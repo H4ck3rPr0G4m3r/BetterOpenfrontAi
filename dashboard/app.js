@@ -315,6 +315,7 @@ async function boot() {
     seats: [...document.querySelectorAll(".eval-seat")].map((s) => s.value).filter(Boolean),
     games: Number($("eval-games").value),
     bots: Number($("eval-bots").value),
+    minutes: Number($("eval-minutes").value),
     record: $("eval-record").checked,
   }]);
   $("metrics-load").addEventListener("click", loadMetrics);

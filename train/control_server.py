@@ -232,10 +232,12 @@ class JobManager:
             raise ValueError("pick 1..8 seats")
         games = int_in(body, "games", 8, 1, 500)
         bots = int_in(body, "bots", 20, 0, 200)
+        minutes = int_in(body, "minutes", 60, 1, 240)
         with self._lock:
             n = self._counter + 1
         result = self.jobs_dir / f"eval-{n:03d}" / "result.json"
-        argv = ["evaluate.py", "--seats", *seats, "--games", str(games), "--bots", str(bots), "--json", str(result)]
+        argv = ["evaluate.py", "--seats", *seats, "--games", str(games), "--bots", str(bots),
+                "--tick-cap", str(minutes * 600), "--json", str(result)]
         if body.get("record"):
             argv += ["--replay-dir", f"replays/eval-{n:03d}"]
         title = " vs ".join(Path(s).stem for s in seats) + f", {games} games"

@@ -1,6 +1,6 @@
 import type { Game, Player, PlayerBuildableUnitType } from "../../OpenFrontIO/src/core/game/Game";
 import { UnitType } from "../../OpenFrontIO/src/core/game/Game";
-import type { TileRef } from "../../OpenFrontIO/src/core/game/GameMap";
+import type { GameMap, TileRef } from "../../OpenFrontIO/src/core/game/GameMap";
 import { BUILD_TYPES, MAX_BUILD_SITES } from "./Layout";
 
 /** Engine unit types in Layout.BUILD_TYPES order. */
@@ -34,6 +34,61 @@ const SHORE_TYPES: PlayerBuildableUnitType[] = [UnitType.Port];
 const WARSHIP_SITES = 2;
 const INTERIOR_TYPES: PlayerBuildableUnitType[] = [UnitType.City, UnitType.Factory, UnitType.SAMLauncher, UnitType.MissileSilo];
 
+/** Defense posts sit this many tiles behind the front (their range is 30). */
+const POST_DEPTH = 10;
+const POST_MIN_DEPTH = 5;
+const ENEMY_WINDOW = 3;
+/** No enemy land may lie this close to a post site. */
+const POST_CLEARANCE = 4;
+
+/** Sum of offsets to other players' land within `r` of (x0, y0), and whether any exists. */
+function enemyAround(map: GameMap, me: number, x0: number, y0: number, r: number): { dx: number; dy: number; any: boolean } {
+  let dx = 0;
+  let dy = 0;
+  let any = false;
+  for (let oy = -r; oy <= r; oy++) {
+    for (let ox = -r; ox <= r; ox++) {
+      const x = x0 + ox;
+      const y = y0 + oy;
+      if (!map.isValidCoord(x, y)) continue;
+      const t = map.ref(x, y);
+      if (!map.isLand(t)) continue;
+      const owner = map.ownerID(t);
+      if (owner !== me && owner !== 0) {
+        dx += ox;
+        dy += oy;
+        any = true;
+      }
+    }
+  }
+  return { dx, dy, any };
+}
+
+/**
+ * The tile POST_DEPTH steps behind front tile `tile`, walking away from the
+ * enemy land around it and staying on our own land. A post on the front
+ * line itself sits in the first tiles any attack takes; a few tiles back it
+ * still covers the front and survives the first push. The deepest step with
+ * no enemy land within POST_CLEARANCE wins; null when our land is too thin.
+ */
+function behindFront(map: GameMap, me: number, tile: TileRef): TileRef | null {
+  const x0 = map.x(tile);
+  const y0 = map.y(tile);
+  const { dx, dy } = enemyAround(map, me, x0, y0, ENEMY_WINDOW);
+  const len = Math.hypot(dx, dy);
+  if (len === 0) return null;
+  let last: TileRef | null = null;
+  for (let step = 1; step <= POST_DEPTH; step++) {
+    const x = Math.round(x0 - (dx / len) * step);
+    const y = Math.round(y0 - (dy / len) * step);
+    if (!map.isValidCoord(x, y)) break;
+    const t = map.ref(x, y);
+    if (!map.isLand(t) || map.ownerID(t) !== me) break;
+    if (step >= POST_MIN_DEPTH && !enemyAround(map, me, x, y, POST_CLEARANCE).any) last = t;
+  }
+  return last;
+}
+
 /** Up to `n` entries spread evenly over `list`. */
 function spread<T>(list: T[], n: number): T[] {
   if (list.length <= n) return list.slice();
@@ -47,7 +102,7 @@ function spread<T>(list: T[], n: number): T[] {
  * Bounded build-site candidates, each tile offered only the structures that
  * belong there:
  *
- *   front    border land touching another player's land  -> Defense Post
+ *   front    ~10 tiles behind border facing a player     -> Defense Post
  *   shore    border land touching water                  -> Port (+ Warship)
  *   interior owned land off the border                   -> City, Factory, SAM, Silo
  *
@@ -109,7 +164,13 @@ export function buildCandidates(game: Game, agent: Player): BuildCandidate[] {
   const add = (tile: TileRef, type: PlayerBuildableUnitType, border: boolean) => {
     if (out.length < MAX_BUILD_SITES) out.push({ tile, typeIndex: BUILD_UNIT_TYPES.indexOf(type), type, border });
   };
-  for (const tile of spread(front, MAX_FRONT_SITES)) for (const type of FRONT_TYPES) add(tile, type, true);
+  const posts = new Set<TileRef>();
+  for (const tile of spread(front, MAX_FRONT_SITES)) {
+    const behind = behindFront(map, me, tile);
+    if (behind === null || posts.has(behind)) continue;
+    posts.add(behind);
+    for (const type of FRONT_TYPES) add(behind, type, true);
+  }
   spread(shore, MAX_SHORE_SITES).forEach((tile, i) => {
     for (const type of SHORE_TYPES) add(tile, type, true);
     if (i < WARSHIP_SITES) add(tile, UnitType.Warship, true);
