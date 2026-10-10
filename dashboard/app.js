@@ -1,16 +1,7 @@
 "use strict";
 
-const INTENT_NAMES = [
-  "noop", "attack", "boat", "build_unit", "upgrade_structure",
-  "move_warship", "target_player", "alliance_request", "alliance_reject",
-  "break_alliance", "embargo", "donate_gold", "donate_troops", "cancel_attack",
-];
-const BUILD_TYPES = [
-  "City", "Defense Post", "Port", "SAM Launcher",
-  "Missile Silo", "Factory", "Warship",
-];
-
 const $ = (id) => document.getElementById(id);
+const NONE = "";
 
 async function api(method, path, body) {
   const opts = { method, headers: {} };
@@ -24,533 +15,317 @@ async function api(method, path, body) {
   return data;
 }
 
-/* ---------------- behavior form ---------------- */
-
-function aggressionLabel(v) {
-  return v <= 33 ? "turtle" : v <= 66 ? "balanced" : "berserker";
-}
-
-function ratioFloorFor(v) {
-  return v <= 33 ? 0 : v <= 66 ? 2 : 4;
-}
-
-function readBehavior() {
-  const disabledIntents = [];
-  document.querySelectorAll("#intent-toggles input").forEach((box) => {
-    if (!box.checked) disabledIntents.push(Number(box.value));
-  });
-  const disabledBuilds = [];
-  document.querySelectorAll("#build-toggles input").forEach((box) => {
-    if (!box.checked) disabledBuilds.push(box.value);
-  });
-  const rawWeights = $("reward-weights").value.trim();
-  return {
-    name: $("preset-name").value.trim() || "custom",
-    aggression: Number($("aggression").value),
-    min_attack_ratio: Number($("min-ratio").value),
-    disabled_intents: disabledIntents,
-    disabled_builds: disabledBuilds,
-    reward_weights: rawWeights ? rawWeights.split(",").map(Number) : null,
-    env_overrides: {},
-    ppo_overrides: {},
-  };
-}
-
-function writeBehavior(b) {
-  $("aggression").value = b.aggression ?? 50;
-  $("min-ratio").value = b.min_attack_ratio ?? ratioFloorFor(b.aggression ?? 50);
-  $("reward-weights").value = b.reward_weights ? b.reward_weights.join(",") : "";
-  const offIntents = new Set(b.disabled_intents || []);
-  document.querySelectorAll("#intent-toggles input").forEach((box) => {
-    box.checked = !offIntents.has(Number(box.value));
-    box.closest("label").classList.toggle("off", !box.checked);
-  });
-  const offBuilds = new Set(b.disabled_builds || b.disabled_build_names || []);
-  document.querySelectorAll("#build-toggles input").forEach((box) => {
-    box.checked = !offBuilds.has(box.value);
-    box.closest("label").classList.toggle("off", !box.checked);
-  });
-  refreshAggression();
-}
-
-function refreshAggression() {
-  const v = Number($("aggression").value);
-  $("aggro-label").textContent = aggressionLabel(v);
-  const floor = ratioFloorFor(v);
-  $("aggro-map").textContent =
-    `attack ratio floor ${[5, 10, 20, 30, 50, 70, 90, 100][floor]}% (bucket ${floor})`;
-}
-
-function buildToggles() {
-  const intentBox = $("intent-toggles");
-  INTENT_NAMES.forEach((name, i) => {
-    if (i === 0) return;
-    const label = document.createElement("label");
-    const box = document.createElement("input");
-    box.type = "checkbox";
-    box.checked = true;
-    box.value = String(i);
-    box.addEventListener("change", () => label.classList.toggle("off", !box.checked));
-    label.append(box, document.createTextNode(name));
-    intentBox.append(label);
-  });
-  const buildBox = $("build-toggles");
-  BUILD_TYPES.forEach((name) => {
-    const label = document.createElement("label");
-    const box = document.createElement("input");
-    box.type = "checkbox";
-    box.checked = true;
-    box.value = name;
-    box.addEventListener("change", () => label.classList.toggle("off", !box.checked));
-    label.append(box, document.createTextNode(name));
-    buildBox.append(label);
-  });
-}
-
-/* ---------------- presets ---------------- */
-
-let presets = [];
-let presetsInitialized = false;
-
-function renderPresets() {
-  const sel = $("preset-select");
-  const previous = sel.value;
-  sel.innerHTML = "";
-  presets.forEach((p) => {
-    const opt = document.createElement("option");
-    opt.value = p.name || p.file;
-    opt.textContent = p.error ? `${p.file} (invalid)` : p.name;
-    sel.append(opt);
-  });
-  // Polls refresh the list but must never touch the form: keep the
-  // user's selection when it still exists, otherwise fall back to first.
-  if (previous && [...sel.options].some((o) => o.value === previous)) {
-    sel.value = previous;
+function el(tag, attrs = {}, ...children) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") node.className = v;
+    else if (k.startsWith("on")) node.addEventListener(k.slice(2), v);
+    else node.setAttribute(k, v);
   }
-  showPresetDesc();
-  if (!presetsInitialized) {
-    presetsInitialized = true;
-    const current = presets.find((p) => !p.error);
-    if (current) {
-      sel.value = current.name || current.file;
-      writeBehavior(current);
-      showPresetDesc();
-    }
-  }
+  for (const child of children) node.append(child);
+  return node;
 }
 
-function showPresetDesc() {
-  const p = presets.find((x) => (x.name || x.file) === $("preset-select").value);
-  $("preset-desc").textContent = p && !p.error ? p.description || "" : "";
+function ago(iso) {
+  if (!iso) return "";
+  const s = Math.max(0, (Date.now() - Date.parse(iso)) / 1000);
+  if (s < 60) return `${Math.round(s)}s ago`;
+  if (s < 3600) return `${Math.round(s / 60)} min ago`;
+  if (s < 86400) return `${Math.round(s / 3600)} h ago`;
+  return new Date(iso).toLocaleDateString();
+}
+
+function showError(box, err) {
+  box.textContent = err ? String(err.message || err) : "";
+  box.hidden = !err;
+}
+
+/* ---------------- catalog: models, recipes, runs ---------------- */
+
+let catalog = { checkpoints: [], agents: [], configs: [], runs: [] };
+
+function fillModelSelect(select) {
+  const keep = select.value;
+  select.innerHTML = "";
+  if (select.dataset.optional) select.append(el("option", { value: NONE }, "(empty)"));
+  const group = el("optgroup", { label: "Trained checkpoints" });
+  for (const c of catalog.checkpoints) {
+    group.append(el("option", { value: c.path }, c.path.replace(/^checkpoints\//, "")));
+  }
+  if (catalog.checkpoints.length) select.append(group);
+  const scripted = el("optgroup", { label: "Built-in" });
+  for (const a of catalog.agents) scripted.append(el("option", { value: a }, a));
+  select.append(scripted);
+  if ([...select.options].some((o) => o.value === keep)) select.value = keep;
+}
+
+async function loadCatalog() {
+  catalog = await api("GET", "/api/catalog");
+  document.querySelectorAll(".model-select").forEach(fillModelSelect);
+  const cfg = $("train-config");
+  const keep = cfg.value || "selfplay.yaml";
+  cfg.innerHTML = "";
+  catalog.configs.forEach((c) => cfg.append(el("option", { value: c }, c)));
+  cfg.value = catalog.configs.includes(keep) ? keep : catalog.configs[0] || "";
+  const run = $("metrics-run");
+  const keepRun = run.value;
+  run.innerHTML = "";
+  catalog.runs.forEach((r) => run.append(el("option", { value: r.name }, `${r.name} (${ago(r.modified)})`)));
+  if (catalog.runs.some((r) => r.name === keepRun)) run.value = keepRun;
 }
 
 /* ---------------- jobs ---------------- */
 
-let jobs = [];
-let logSource = null;
+const STATUS_TEXT = { running: "running", done: "finished", error: "failed", stopped: "stopped" };
+const openLogs = new Set();
 
-function renderJobs() {
-  const body = $("jobs").querySelector("tbody");
-  body.innerHTML = "";
-  jobs.forEach((job) => {
-    const tr = document.createElement("tr");
-    const cells = [job.id, job.kind, job.status, job.started || ""];
-    cells.forEach((text) => {
-      const td = document.createElement("td");
-      td.textContent = text;
-      tr.append(td);
-    });
-    const watchTd = document.createElement("td");
-    const watch = document.createElement("button");
-    watch.textContent = "Watch";
-    watch.addEventListener("click", () => watchJob(job.id));
-    watchTd.append(watch);
-    tr.append(watchTd);
-    const stopTd = document.createElement("td");
-    if (job.status === "running") {
-      const stop = document.createElement("button");
-      stop.textContent = "Stop";
-      stop.addEventListener("click", async () => {
-        await api("DELETE", `/api/jobs/${job.id}`);
-        await refreshState();
-      });
-      stopTd.append(stop);
-    }
-    tr.append(stopTd);
-    body.append(tr);
-  });
+function jobCard(job) {
+  const status = el("span", { class: `pill ${job.status}` }, STATUS_TEXT[job.status] || job.status);
+  const action = job.status === "running"
+    ? el("button", { type: "button", onclick: () => stopJob(job.id) }, job.kind === "lobby" ? "Leave" : "Stop")
+    : el("button", { type: "button", class: "quiet", onclick: () => stopJob(job.id) }, "Dismiss");
+  const head = el("div", { class: "job-head" },
+    el("strong", {}, job.title), status, el("span", { class: "hint" }, ago(job.started)), action);
+  const card = el("div", { class: "job-card" }, head);
+  if (job.result) card.append(evalTable(job.result));
+  const lines = job.log_tail || [];
+  if (lines.length) {
+    const log = el("pre", { class: "log" }, lines.join("\n"));
+    const more = el("details", {}, el("summary", {}, `Output (${job.id})`), log);
+    if (openLogs.has(job.id)) more.open = true;
+    more.addEventListener("toggle", () => (more.open ? openLogs.add(job.id) : openLogs.delete(job.id)));
+    card.append(more);
+  } else if (job.status === "running") {
+    card.append(el("div", { class: "hint" }, "starting"));
+  }
+  return card;
 }
 
-function watchJob(id) {
-  if (logSource) logSource.close();
-  $("log-job").textContent = id;
-  const view = $("log-view");
-  view.textContent = "";
-  const push = (line) => {
-    view.textContent += line + "\n";
-    const lines = view.textContent.split("\n");
-    if (lines.length > 600) view.textContent = lines.slice(-600).join("\n");
-    view.scrollTop = view.scrollHeight;
-  };
-  logSource = new EventSource(`/api/jobs/${id}/logs?follow=1`);
-  logSource.onmessage = (ev) => {
-    const msg = JSON.parse(ev.data);
-    if (msg.line !== undefined) push(msg.line);
-    if (msg.done) {
-      push(`--- job ${msg.status} ---`);
-      logSource.close();
-      refreshState();
+function evalTable(result) {
+  const table = el("table", { class: "compact" });
+  table.append(el("thead", {}, el("tr", {}, ...["AI", "games", "survive", "win", "tiles", "placement", "kills"]
+    .map((h) => el("th", {}, h)))));
+  const body = el("tbody");
+  for (const [spec, s] of Object.entries(result.predictors || {})) {
+    body.append(el("tr", {},
+      el("td", {}, spec.split(/[\\/]/).pop().replace(/\.pt$/, "")),
+      el("td", {}, String(s.episodes)),
+      el("td", {}, `${Math.round(s.survival_rate * 100)}%`),
+      el("td", {}, `${Math.round(s.win_rate * 100)}%`),
+      el("td", {}, Math.round(s.mean_tiles).toLocaleString()),
+      el("td", {}, s.mean_placement.toFixed(2)),
+      el("td", {}, s.mean_kills.toFixed(2))));
+  }
+  table.append(body);
+  const wrap = el("div", {}, table);
+  const pairs = Object.entries(result.head_to_head || {});
+  if (pairs.length) {
+    wrap.append(el("div", { class: "hint" }, pairs.map(([p, r]) => `${p}: ${Math.round(r * 100)}%`).join("   ")));
+  }
+  return wrap;
+}
+
+function renderJobs(jobs) {
+  const boxes = { lobby: $("lobby-jobs"), train: $("train-jobs"), eval: $("eval-jobs") };
+  for (const [kind, box] of Object.entries(boxes)) {
+    const mine = jobs.filter((j) => j.kind === kind);
+    box.replaceChildren(...mine.map(jobCard));
+  }
+}
+
+async function stopJob(id) {
+  try {
+    await api("DELETE", `/api/jobs/${id}`);
+  } finally {
+    refreshState();
+  }
+}
+
+async function refreshState() {
+  const status = $("server-status");
+  try {
+    const st = await api("GET", "/api/state");
+    renderJobs(st.jobs);
+    const running = st.jobs.filter((j) => j.status === "running").length;
+    status.textContent = running ? `${running} running` : "idle";
+    status.className = "status ok";
+  } catch {
+    status.textContent = "server offline";
+    status.className = "status bad";
+  }
+}
+
+function submitter(formId, errorBox, build) {
+  $(formId).addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const button = ev.target.querySelector("button[type=submit]");
+    button.disabled = true;
+    try {
+      const [path, body] = build();
+      await api("POST", path, body);
+      showError(errorBox, null);
+      await refreshState();
+    } catch (err) {
+      showError(errorBox, err);
+    } finally {
+      button.disabled = false;
     }
-  };
-  logSource.onerror = () => logSource.close();
+  });
 }
 
 /* ---------------- metrics ---------------- */
 
-function drawLineChart(container, title, points) {
-  const head = document.createElement("div");
-  head.className = "chart-title";
+const CHARTS = [
+  ["rollout/survival_rate", "Survival rate"],
+  ["rollout/ep_rew_mean", "Episode return"],
+  ["rollout/final_tiles", "Final tiles"],
+  ["selfplay/learner_beats_pool", "Beats past selves"],
+  ["train/explained_variance", "Value fit (explained variance)"],
+  ["time/steps_per_second", "Steps per second"],
+];
+
+function drawChart(container, title, points) {
   const values = points.map((p) => p.value);
   const min = Math.min(...values);
   const max = Math.max(...values);
-  head.textContent = `${title} (min ${min.toFixed(3)}, max ${max.toFixed(3)}, n ${points.length})`;
-  const canvas = document.createElement("canvas");
-  canvas.className = "chart";
-  canvas.width = 900;
-  canvas.height = 160;
-  container.append(head, canvas);
+  const last = values[values.length - 1];
+  const head = el("div", { class: "chart-title" }, el("span", {}, title),
+    el("span", { class: "chart-last" }, Math.abs(last) >= 100 ? Math.round(last).toLocaleString() : last.toFixed(3)));
+  const canvas = el("canvas", { class: "chart", width: "520", height: "140" });
+  container.append(el("div", { class: "chart-box" }, head, canvas));
   const ctx = canvas.getContext("2d");
   const span = max - min || 1;
-  ctx.strokeStyle = "#7fd08a";
+  const x = (i) => (i / Math.max(1, points.length - 1)) * (canvas.width - 8) + 4;
+  const y = (v) => canvas.height - 8 - ((v - min) / span) * (canvas.height - 16);
+  ctx.fillStyle = "rgba(111, 194, 135, 0.10)";
+  ctx.beginPath();
+  ctx.moveTo(x(0), canvas.height);
+  points.forEach((p, i) => ctx.lineTo(x(i), y(p.value)));
+  ctx.lineTo(x(points.length - 1), canvas.height);
+  ctx.fill();
+  ctx.strokeStyle = "#6fc287";
   ctx.lineWidth = 1.5;
   ctx.beginPath();
-  points.forEach((p, i) => {
-    const x = (i / Math.max(1, points.length - 1)) * (canvas.width - 8) + 4;
-    const y = canvas.height - 8 - ((p.value - min) / span) * (canvas.height - 16);
-    if (i === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
-  });
+  points.forEach((p, i) => (i ? ctx.lineTo(x(i), y(p.value)) : ctx.moveTo(x(i), y(p.value))));
   ctx.stroke();
 }
 
-function drawBars(container, title, entries) {
-  const head = document.createElement("div");
-  head.className = "chart-title";
-  head.textContent = title;
-  container.append(head);
-  const total = entries.reduce((s, [, v]) => s + v, 0) || 1;
-  entries.forEach(([name, value]) => {
-    const row = document.createElement("div");
-    row.className = "bar";
-    const label = document.createElement("span");
-    label.className = "name";
-    label.textContent = name;
-    const fill = document.createElement("span");
-    fill.className = "fill";
-    fill.style.width = `${Math.max(2, (value / total) * 300)}px`;
-    const n = document.createElement("span");
-    n.className = "n";
-    n.textContent = value.toFixed(3);
-    row.append(label, fill, n);
-    container.append(row);
-  });
+function drawIntents(container, intents) {
+  const entries = Object.entries(intents).filter(([, v]) => v > 0.001).sort((a, b) => b[1] - a[1]);
+  if (!entries.length) return;
+  const box = el("div", { class: "chart-box wide" }, el("div", { class: "chart-title" }, el("span", {}, "What the AI does (latest update)")));
+  for (const [name, value] of entries) {
+    box.append(el("div", { class: "bar" },
+      el("span", { class: "name" }, name.replace(/_/g, " ")),
+      el("span", { class: "fill", style: `width:${Math.max(2, value * 360)}px` }),
+      el("span", { class: "n" }, `${(value * 100).toFixed(1)}%`)));
+  }
+  container.append(box);
 }
 
 async function loadMetrics() {
+  const run = $("metrics-run").value;
   const box = $("charts");
-  box.innerHTML = "";
-  const data = await api(
-    "GET",
-    `/api/metrics?tb_dir=${encodeURIComponent($("metrics-dir").value)}` +
-      `&run=${encodeURIComponent($("metrics-run").value)}`
-  );
-  if (data.note) {
-    box.textContent = data.note;
+  if (!run) {
+    $("metrics-note").textContent = "No runs yet. Start a training run above.";
+    box.replaceChildren();
     return;
   }
-  const scalars = data.scalars || {};
-  const watched = [
-    "rollout/ep_rew_mean",
-    "rollout/ep_len_mean",
-    "train/value_loss",
-    "train/policy_gradient_loss",
-    "train/entropy_loss",
-    "time/steps_per_second",
-  ];
-  watched.forEach((tag) => {
-    if (scalars[tag]) drawLineChart(box, tag, scalars[tag]);
-  });
-  Object.keys(scalars)
-    .filter((t) => !watched.includes(t) && !t.startsWith("terminals/"))
-    .slice(0, 6)
-    .forEach((tag) => drawLineChart(box, tag, scalars[tag]));
-  const terms = Object.keys(scalars)
-    .filter((t) => t.startsWith("terminals/"))
-    .map((t) => [t.replace("terminals/", ""), scalars[t][scalars[t].length - 1].value]);
-  if (terms.length) drawBars(box, "terminal mix (latest)", terms);
-}
-
-/* ---------------- eval ---------------- */
-
-async function refreshCheckpoints() {
-  const data = await api(
-    "GET",
-    `/api/checkpoints?dir=${encodeURIComponent($("ckpt-dir").value)}`
-  );
-  const sel = $("eval-model");
-  sel.innerHTML = "";
-  data.checkpoints.forEach((c) => {
-    const opt = document.createElement("option");
-    opt.value = c.path;
-    opt.textContent = `${c.path} (${(c.size / 1e6).toFixed(1)}MB)`;
-    sel.append(opt);
-  });
-  const liveModel = $("live-model");
-  if (!liveModel.value && data.checkpoints.length) {
-    liveModel.placeholder = data.checkpoints[data.checkpoints.length - 1].path;
-  }
-}
-
-function parseEvalResult(lines) {
-  const rows = [];
-  lines.forEach((line) => {
-    const m = line.match(/^(policy|baseline): return ([^,]+), length ([^,]+), win rate ([^,]+), terminals (.*)$/);
-    if (m) rows.push({ name: m[1], ret: m[2], len: m[3], win: m[4], terms: m[5] });
-  });
-  return rows;
-}
-
-/* ---------------- live ---------------- */
-
-let liveSource = null;
-
-function renderLiveStep(step) {
-  $("live-action").textContent = step.action_text;
-  $("live-meta").textContent =
-    `step ${step.n} · ep ${step.episode} · reward ${step.reward.toFixed(3)} · ` +
-    `total ${step.total_reward.toFixed(3)} · ticks ${step.ticks}` +
-    (step.terminal ? ` · ended: ${step.terminal}` : "");
-  const known = window._liveCounts || (window._liveCounts = {});
-  known[step.action_name] = (known[step.action_name] || 0) + 1;
-  renderLiveCounts(known);
-  const masks = step.masks || {};
-  $("live-masks").innerHTML = Object.entries(masks)
-    .map(([k, v]) => `${k}: ${v.open}/${v.total}`)
-    .join("<br>");
-  const tbody = $("live-steps").querySelector("tbody");
-  const tr = document.createElement("tr");
-  [step.n, step.action_text, step.reward.toFixed(3), step.total_reward.toFixed(2),
-   step.ticks, step.terminal || ""].forEach((text) => {
-    const td = document.createElement("td");
-    td.textContent = text;
-    tr.append(td);
-  });
-  tbody.prepend(tr);
-  while (tbody.rows.length > 30) tbody.deleteRow(-1);
-}
-
-function renderLiveCounts(counts) {
-  const box = $("live-intents");
-  box.innerHTML = "";
-  drawBars(box, "", Object.entries(counts).sort((a, b) => b[1] - a[1]));
-}
-
-function renderLiveHello(msg) {
-  window._liveCounts = {};
-  (msg.recent || []).forEach((s) => {
-    window._liveCounts[s.action_name] = (window._liveCounts[s.action_name] || 0) + 1;
-  });
-  renderLiveCounts(window._liveCounts);
-  const tbody = $("live-steps").querySelector("tbody");
-  tbody.innerHTML = "";
-  (msg.recent || []).slice().reverse().forEach((s) => {
-    const tr = document.createElement("tr");
-    [s.n, s.action_text, s.reward.toFixed(3), s.total_reward.toFixed(2),
-     s.ticks, s.terminal || ""].forEach((text) => {
-      const td = document.createElement("td");
-      td.textContent = text;
-      tr.append(td);
-    });
-    tbody.append(tr);
-  });
-  if (msg.latest) {
-    $("live-action").textContent = msg.latest.action_text;
-    $("live-meta").textContent =
-      `step ${msg.latest.n} · ep ${msg.latest.episode} · ticks ${msg.latest.ticks}`;
-  }
-  if (msg.error) {
-    const err = $("live-error");
-    err.hidden = false;
-    err.textContent = msg.error;
-  }
-}
-
-function connectLiveStream() {
-  if (liveSource) liveSource.close();
-  if (!window._phasePoll) window._phasePoll = setInterval(refreshLivePhase, 3000);
-  liveSource = new EventSource("/api/live/stream");
-  liveSource.onmessage = (ev) => {
-    const msg = JSON.parse(ev.data);
-    if (msg.hello) {
-      renderLiveHello(msg);
-    }
-    if (msg.step) {
-      $("live-error").hidden = true;
-      renderLiveStep(msg.step);
-    }
-  };
-  liveSource.onerror = () => {
-    liveSource.close();
-    setTimeout(connectLiveStream, 3000);
-  };
-}
-
-async function refreshLivePhase() {
+  $("metrics-note").textContent = "loading";
   try {
-    const st = await api("GET", "/api/live/state");
-    const phase = $("live-phase");
-    if (st.running || st.phase === "booting" || st.phase === "failed") {
-      phase.textContent =
-        `phase: ${st.phase}${st.phase_detail ? " — " + st.phase_detail : ""}` +
-        ` · steps: ${st.step_count} · episodes: ${st.episodes}`;
-    } else if (!st.latest) {
-      phase.textContent = "idle";
+    const data = await api("GET", `/api/runstats?run=${encodeURIComponent(run)}`);
+    box.replaceChildren();
+    for (const [key, title] of CHARTS) {
+      if (data.series[key]?.length) drawChart(box, title, data.series[key]);
     }
-    if (st.error) {
-      const box = $("live-error");
-      box.hidden = false;
-      box.textContent = st.error + (st.error_detail ? "\n" + st.error_detail : "");
-    }
+    drawIntents(box, data.intents || {});
+    $("metrics-note").textContent = data.last_step
+      ? `${data.updates} updates, ${data.last_step.toLocaleString()} steps`
+      : data.note || "";
   } catch (err) {
-    /* server polling is best effort; the stream carries the steps */
+    $("metrics-note").textContent = String(err.message || err);
   }
+}
+
+/* ---------------- replays ---------------- */
+
+let replays = [];
+
+function renderReplays() {
+  const filter = $("replay-filter").value.trim().toLowerCase();
+  const body = $("replay-table").querySelector("tbody");
+  const shown = replays.filter((r) => !filter || r.path.toLowerCase().includes(filter)).slice(0, 200);
+  if (!shown.length) {
+    body.replaceChildren(el("tr", {}, el("td", { colspan: "4", class: "hint" },
+      replays.length ? "No replay matches the filter." : "No replays yet. Training records every 100th game; Evaluate records all of them.")));
+    return;
+  }
+  body.replaceChildren(...shown.map((r) => {
+    const outcome = /-alive\.json$/.test(r.path) ? "survived" : /-dead\.json$/.test(r.path) ? "eliminated" : "";
+    const watch = el("button", { type: "button", onclick: async (ev) => {
+      ev.target.disabled = true;
+      try {
+        await api("POST", "/api/jobs/watch", { replay: r.path });
+        ev.target.textContent = "Opening";
+      } catch (err) {
+        ev.target.textContent = "Failed";
+        ev.target.title = String(err.message || err);
+      }
+      setTimeout(() => { ev.target.disabled = false; ev.target.textContent = "Watch"; }, 4000);
+    } }, "Watch");
+    return el("tr", {},
+      el("td", { class: "mono" }, r.path),
+      el("td", { class: outcome === "survived" ? "good" : "" }, outcome),
+      el("td", {}, ago(r.modified)),
+      el("td", { class: "right" }, watch));
+  }));
+}
+
+async function loadReplays() {
+  replays = (await api("GET", "/api/replays")).replays;
+  renderReplays();
 }
 
 /* ---------------- boot ---------------- */
 
-async function refreshState() {
-  const data = await api("GET", "/api/state");
-  jobs = data.jobs || [];
-  presets = data.presets || [];
-  renderJobs();
-  renderPresets();
-  const status = $("server-status");
-  status.textContent = `server ok · ${jobs.length} jobs · ${presets.length} presets`;
-  status.className = "status ok";
-}
-
 async function boot() {
-  buildToggles();
-  refreshAggression();
-  $("aggression").addEventListener("input", () => {
-    refreshAggression();
-    $("min-ratio").value = String(ratioFloorFor(Number($("aggression").value)));
+  submitter("lobby-form", $("lobby-error"), () => ["/api/jobs/lobby", {
+    lobby: $("lobby-id").value,
+    host: $("lobby-host").value,
+    model: $("lobby-model").value,
+    name: $("lobby-name").value,
+  }]);
+  // A pasted openfront.io link implies the real server.
+  $("lobby-id").addEventListener("input", (ev) => {
+    if (/openfront\.io/.test(ev.target.value)) $("lobby-host").value = "openfront";
+    else if (/localhost|127\.0\.0\.1/.test(ev.target.value)) $("lobby-host").value = "local";
   });
-  $("preset-select").addEventListener("change", showPresetDesc);
-  $("preset-apply").addEventListener("click", () => {
-    const p = presets.find((x) => (x.name || x.file) === $("preset-select").value);
-    if (p && !p.error) {
-      writeBehavior(p);
-      $("preset-name").value = p.name;
-    }
-  });
-  $("preset-save").addEventListener("click", async () => {
-    const saved = await api("POST", "/api/presets", readBehavior());
-    await refreshState();
-    $("preset-select").value = saved.name;
-  });
-  $("preset-delete").addEventListener("click", async () => {
-    await api("DELETE", `/api/presets/${encodeURIComponent($("preset-select").value)}`);
-    await refreshState();
-  });
-  $("train-start").addEventListener("click", async () => {
-    const job = await api("POST", "/api/jobs/train", {
-      base: $("train-base").value,
-      run_name: $("train-name").value,
-      total_timesteps: Number($("train-steps").value),
-      behavior: readBehavior(),
-      config_override: {
-        env: {
-          bots: Number($("train-bots").value),
-          num_workers: Number($("train-workers").value),
-          envs_per_worker: Number($("train-envs").value),
-        },
-        ppo: {
-          learning_rate: Number($("ppo-lr").value),
-          ent_coef: Number($("ppo-ent").value),
-        },
-        run: { device: $("train-device").value },
-      },
-    });
-    await refreshState();
-    watchJob(job.id);
-  });
+  const trainError = el("div", { class: "error", hidden: "" });
+  $("train-form").after(trainError);
+  submitter("train-form", trainError, () => ["/api/jobs/train", {
+    config: $("train-config").value,
+    run_name: $("train-name").value,
+    total_steps: Number($("train-steps").value),
+    workers: Number($("train-workers").value),
+    resume: $("train-resume").checked,
+  }]);
+  const evalError = el("div", { class: "error", hidden: "" });
+  $("eval-form").after(evalError);
+  submitter("eval-form", evalError, () => ["/api/jobs/eval", {
+    seats: [...document.querySelectorAll(".eval-seat")].map((s) => s.value).filter(Boolean),
+    games: Number($("eval-games").value),
+    bots: Number($("eval-bots").value),
+    record: $("eval-record").checked,
+  }]);
   $("metrics-load").addEventListener("click", loadMetrics);
-  $("ckpt-refresh").addEventListener("click", refreshCheckpoints);
-  $("eval-start").addEventListener("click", async () => {
-    const job = await api("POST", "/api/jobs/eval", {
-      model: $("eval-model").value,
-      base: "default.yaml",
-      episodes: Number($("eval-episodes").value),
-      seed: $("eval-seed").value,
-      baseline: $("eval-baseline").checked,
-      behavior: readBehavior(),
-    });
-    $("eval-result").textContent = `eval started as ${job.id}, watching log…`;
-    await refreshState();
-    watchJob(job.id);
-    const poll = setInterval(async () => {
-      const detail = await api("GET", `/api/jobs/${job.id}`);
-      const rows = parseEvalResult(detail.log_tail || []);
-      const box = $("eval-result");
-      box.innerHTML = "";
-      rows.forEach((r) => {
-        const div = document.createElement("div");
-        div.textContent =
-          `${r.name}: return ${r.ret}, length ${r.len}, win ${r.win}, ${r.terms}`;
-        box.append(div);
-      });
-      if (!rows.length) box.textContent = "no result lines yet";
-      if (detail.status !== "running") clearInterval(poll);
-    }, 3000);
-  });
-  $("live-start").addEventListener("click", async () => {
-    window._liveCounts = {};
-    $("live-steps").querySelector("tbody").innerHTML = "";
-    try {
-      const modelInput = $("live-model").value.trim();
-      await api("POST", "/api/live/start", {
-        predictor: $("live-predictor").value,
-        model: modelInput || $("live-model").placeholder || null,
-        map: $("live-map").value,
-        bots: Number($("live-bots").value),
-        seed: $("live-seed").value,
-        behavior: readBehavior(),
-      });
-      $("live-error").hidden = true;
-    } catch (err) {
-      const box = $("live-error");
-      box.hidden = false;
-      box.textContent = String(err.message || err);
-    }
-  });
-  $("live-stop").addEventListener("click", async () => {
-    await api("POST", "/api/live/stop", {});
-  });
-  try {
-    await refreshState();
-  } catch (err) {
-    const status = $("server-status");
-    status.textContent = `server unreachable: ${err.message}`;
-    status.className = "status bad";
-  }
-  try {
-    await refreshCheckpoints();
-  } catch (err) {
-    /* checkpoints dir may not exist yet */
-  }
-  connectLiveStream();
-  setInterval(refreshState, 10000);
+  $("metrics-run").addEventListener("change", loadMetrics);
+  $("replay-refresh").addEventListener("click", loadReplays);
+  $("replay-filter").addEventListener("input", renderReplays);
+
+  await Promise.all([loadCatalog().catch(() => {}), refreshState(), loadReplays().catch(() => {})]);
+  loadMetrics();
+  setInterval(refreshState, 2000);
+  setInterval(() => loadCatalog().catch(() => {}), 30000);
 }
 
-document.addEventListener("DOMContentLoaded", boot);
+boot();

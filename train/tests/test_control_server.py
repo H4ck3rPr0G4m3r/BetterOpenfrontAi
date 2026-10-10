@@ -1,12 +1,6 @@
-"""Tests for the side-quest control server. Fast and bounded by design.
-
-No node worker boots here: the live path runs against the in-process
-fake worker (predictor "simulated"), job spawns are stubbed out, and
-every wait carries a deadline so a regression fails in seconds instead
-of hanging the suite. That rule is load-bearing: this server once
-wedged a terminal with an unbounded poll loop, and these tests must
-never do the same.
-"""
+"""Control server: routes, input validation, and job plumbing. Fast and
+bounded: no game, browser or trainer starts here (job launches are
+captured), and every wait has a deadline."""
 
 import json
 import shutil
@@ -14,287 +8,131 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from http.server import ThreadingHTTPServer
 
 import pytest
-import yaml
 
 import control_server
-from control_server import Handler
-
-
-def _serve():
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    return server
+from control_server import TRAIN_DIR, JobManager
 
 
 @pytest.fixture()
-def base_url():
-    server = _serve()
-    yield f"http://127.0.0.1:{server.server_address[1]}"
-    try:
-        control_server.LIVE.stop()
-    except Exception:
-        pass
+def base_url(monkeypatch):
+    launched = []
+
+    def fake_start(kind, title, argv, result_path=""):
+        launched.append({"kind": kind, "title": title, "argv": argv})
+        return control_server.Job(f"{kind}-x", kind, title, argv, "missing.log")
+
+    monkeypatch.setattr(control_server.JOBS, "start", fake_start)
+    server = control_server.make_server(port=0)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{server.server_address[1]}", launched
     server.shutdown()
     server.server_close()
 
 
-def _request(method, url, body=None, timeout=10):
+def _request(method, url, body=None):
     data = json.dumps(body).encode("utf-8") if body is not None else None
     req = urllib.request.Request(url, data=data, method=method)
     if data is not None:
         req.add_header("Content-Type", "application/json")
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as res:
-            return res.status, json.loads(res.read().decode("utf-8"))
+        with urllib.request.urlopen(req, timeout=10) as res:
+            return res.status, json.loads(res.read().decode("utf-8")), dict(res.headers)
     except urllib.error.HTTPError as exc:
-        return exc.code, json.loads(exc.read().decode("utf-8"))
+        return exc.code, json.loads(exc.read().decode("utf-8")), dict(exc.headers)
 
 
-def _wait_until(predicate, deadline_s=60):
-    deadline = time.monotonic() + deadline_s
-    last = None
-    while time.monotonic() < deadline:
-        last = predicate()
-        if last:
-            return last
-        time.sleep(0.5)
-    raise AssertionError("deadline exceeded waiting for condition")
-
-
-def test_state_lists_valid_presets(base_url):
-    status, data = _request("GET", f"{base_url}/api/state")
+def test_serves_dashboard_and_catalog(base_url):
+    url, _ = base_url
+    with urllib.request.urlopen(f"{url}/", timeout=10) as res:
+        assert b"Play in a lobby" in res.read()
+    status, catalog, _ = _request("GET", f"{url}/api/catalog")
     assert status == 200
-    assert isinstance(data["jobs"], list)
-    names = {p.get("name") for p in data["presets"]}
-    assert "no-factories" in names
-    assert "berserker" in names
-    assert "turtle" in names
-    assert all("error" not in p for p in data["presets"])
+    assert "scripted" in catalog["agents"]
+    assert "selfplay.yaml" in catalog["configs"]
+    assert all(c["path"].endswith(".pt") and "/pool/" not in c["path"] for c in catalog["checkpoints"])
+    status, replays, headers = _request("GET", f"{url}/api/replays")
+    assert status == 200 and isinstance(replays["replays"], list)
+    assert headers.get("Access-Control-Allow-Origin") == "*"
 
 
-def test_preset_validation_and_round_trip(base_url):
-    status, _ = _request("POST", f"{base_url}/api/presets", {"disabled_intents": [0]})
+def test_dashboard_files_cannot_escape(base_url):
+    url, _ = base_url
+    status, body, _ = _request("GET", f"{url}/..%2Ftrain%2Fcontrol_server.py")
     assert status == 400
-    body = {"name": "srv-test-roundtrip", "aggression": 70}
-    status, saved = _request("POST", f"{base_url}/api/presets", body)
+
+
+def test_lobby_job_runs_play_lobby(base_url):
+    url, launched = base_url
+    status, _, _ = _request("POST", f"{url}/api/jobs/lobby",
+                            {"lobby": "https://openfront.io/w2/game/AbCd1234", "host": "local", "model": "scripted",
+                             "name": "Bot <script>"})
     assert status == 201
-    assert saved["name"] == "srv-test-roundtrip"
+    argv = launched[-1]["argv"]
+    assert argv[:2] == ["play_lobby.py", "AbCd1234"]
+    assert argv[argv.index("--host") + 1] == "https://openfront.io"  # the link's origin wins
+    assert argv[argv.index("--name") + 1] == "Bot script"
+
+
+@pytest.mark.parametrize("body", [
+    {"lobby": "nope", "model": "scripted"},
+    {"lobby": "AbCd1234", "model": "../../secrets.pt"},
+    {"lobby": "AbCd1234", "model": "configs/selfplay.yaml"},
+    {"lobby": "AbCd1234", "model": "scripted", "host": "evil.example"},
+])
+def test_lobby_job_rejects_bad_input(base_url, body):
+    url, launched = base_url
+    status, payload, _ = _request("POST", f"{url}/api/jobs/lobby", body)
+    assert status == 400 and payload["error"]
+    assert not launched
+
+
+def test_train_job_defaults_to_100k_steps(base_url):
+    url, launched = base_url
+    status, _, _ = _request("POST", f"{url}/api/jobs/train", {"config": "smoke.yaml", "run_name": "ui test!"})
+    assert status == 201
+    argv = launched[-1]["argv"]
+    assert argv[:3] == ["train.py", "--config", "configs\\smoke.yaml"] or argv[:3] == ["train.py", "--config", "configs/smoke.yaml"]
+    assert "run.total_steps=100000" in argv and "run.name=ui_test" in argv
+    status, _, _ = _request("POST", f"{url}/api/jobs/train", {"config": "../train.py"})
+    assert status == 400
+
+
+def test_eval_job_passes_seats(base_url):
+    url, launched = base_url
+    status, _, _ = _request("POST", f"{url}/api/jobs/eval", {"seats": ["scripted", "", "random"], "games": 3, "record": True})
+    assert status == 201
+    argv = launched[-1]["argv"]
+    assert argv[argv.index("--seats") + 1 : argv.index("--seats") + 3] == ["scripted", "random"]
+    assert "--replay-dir" in argv and "--json" in argv
+    status, _, _ = _request("POST", f"{url}/api/jobs/eval", {"seats": []})
+    assert status == 400
+
+
+def test_metrics_read_from_metrics_jsonl(base_url):
+    url, _ = base_url
+    run = TRAIN_DIR / "runs" / "zz_control_test"
+    run.mkdir(parents=True, exist_ok=True)
     try:
-        status, data = _request("GET", f"{base_url}/api/presets")
-        assert any(p.get("name") == "srv-test-roundtrip" for p in data["presets"])
-    finally:
-        status, _ = _request("DELETE", f"{base_url}/api/presets/srv-test-roundtrip")
+        rows = [{"step": i * 100, "update": i, "rollout/survival_rate": i / 10, "intents/attack": 0.3} for i in range(5)]
+        (run / "metrics.jsonl").write_text("\n".join(json.dumps(r) for r in rows), encoding="utf-8")
+        status, data, _ = _request("GET", f"{url}/api/runstats?run=zz_control_test")
         assert status == 200
-
-
-def test_unknown_job_is_404(base_url):
-    status, _ = _request("GET", f"{base_url}/api/jobs/nope-000")
-    assert status == 404
-    status, _ = _request("DELETE", f"{base_url}/api/jobs/nope-000")
-    assert status == 404
-
-
-def test_checkpoints_and_metrics_empty_paths(base_url):
-    status, data = _request("GET", f"{base_url}/api/checkpoints?dir=control")
-    assert status == 200
-    assert data["checkpoints"] == []
-    status, data = _request("GET", f"{base_url}/api/metrics?tb_dir=control&run=x")
-    assert status == 200
-    assert data["note"] == "no event files found"
-
-
-def test_dashboard_index_served(base_url):
-    req = urllib.request.Request(f"{base_url}/", method="GET")
-    with urllib.request.urlopen(req, timeout=10) as res:
-        assert res.status == 200
-        assert "AI control" in res.read().decode("utf-8")
-
-
-def test_live_rejects_bad_predictor(base_url):
-    status, _ = _request("POST", f"{base_url}/api/live/start", {"predictor": "nope"})
-    assert status == 400
-
-
-def test_live_simulated_streams_steps(base_url):
-    status, state = _request(
-        "POST",
-        f"{base_url}/api/live/start",
-        {"predictor": "simulated", "behavior": {"name": "t", "aggression": 90}},
-    )
-    assert status == 200
-    assert state["running"] is True
-    try:
-        status, _ = _request(
-            "POST",
-            f"{base_url}/api/live/start",
-            {"predictor": "simulated"},
-        )
-        assert status == 400
-
-        def stepped():
-            _, st = _request("GET", f"{base_url}/api/live/state")
-            return st if st["step_count"] >= 5 else None
-
-        grown = _wait_until(stepped)
-        latest = grown["latest"]
-        assert latest["action_text"]
-        assert latest["masks"]["intent_type"]["total"] == 14
-        assert grown["intent_counts"]
+        assert [p["value"] for p in data["series"]["rollout/survival_rate"]] == [0, 0.1, 0.2, 0.3, 0.4]
+        assert data["intents"] == {"attack": 0.3} and data["last_step"] == 400
     finally:
-        status, stopped = _request("POST", f"{base_url}/api/live/stop", {})
-        assert status == 200
-        assert stopped["running"] is False
+        shutil.rmtree(run)
 
 
-def test_live_unsubscribe_removes_subscriber():
-    inbox = control_server.LIVE.subscribe()
-    try:
-        assert inbox in control_server.LIVE._subscribers
-    finally:
-        control_server.LIVE.unsubscribe(inbox)
-    assert inbox not in control_server.LIVE._subscribers
-
-
-def test_job_spawn_writes_reproducible_configs(base_url, monkeypatch):
-    launched = []
-
-    def fake_launch(self, job, argv):
-        launched.append((job.id, argv))
-
-    monkeypatch.setattr(control_server.JobManager, "_launch", fake_launch)
-    created = []
-    try:
-        status, train = _request(
-            "POST",
-            f"{base_url}/api/jobs/train",
-            {
-                "base": "smoke.yaml",
-                "run_name": "spawn-test",
-                "total_timesteps": 64,
-                "behavior": {
-                    "name": "spawn-test",
-                    "aggression": 80,
-                    "disabled_builds": ["Factory"],
-                },
-            },
-        )
-        assert status == 201
-        created.append(train["id"])
-        run_dir = control_server.RUNS_DIR / train["id"]
-        cfg = yaml.safe_load((run_dir / "config.yaml").read_text(encoding="utf-8"))
-        assert cfg["behavior"]["disabled_builds"] == ["Factory"]
-        assert cfg["behavior"]["min_attack_ratio"] == 4
-        assert cfg["run"]["total_timesteps"] == 64
-        assert cfg["run"]["run_name"] == "spawn-test"
-
-        status, ev = _request(
-            "POST",
-            f"{base_url}/api/jobs/eval",
-            {
-                "model": "checkpoints/openfront_ppo/fake.zip",
-                "base": "smoke.yaml",
-                "episodes": 2,
-                "seed": "s",
-                "baseline": True,
-                "behavior": {"name": "spawn-test"},
-            },
-        )
-        assert status == 201
-        created.append(ev["id"])
-        espec = json.loads(
-            (control_server.RUNS_DIR / ev["id"] / "eval.json").read_text(encoding="utf-8")
-        )
-        assert espec["model"].replace("\\", "/").endswith(
-            "checkpoints/openfront_ppo/fake.zip"
-        )
-        assert espec["episodes"] == 2
-        assert espec["seed"] == "s"
-        assert espec["baseline"] is True
-        assert [job_id for job_id, _ in launched] == created
-    finally:
-        for job_id in created:
-            control_server.JOBS._jobs.pop(job_id, None)
-            shutil.rmtree(control_server.RUNS_DIR / job_id, ignore_errors=True)
-
-
-def test_path_traversal_rejected(base_url):
-    # All of these resolve outside train/ and must fail closed with 400.
-    # (A single "../" from configs/ lands back inside train/, so the
-    # inputs below climb two levels.)
-    status, _ = _request("GET", f"{base_url}/api/checkpoints?dir=../../env")
-    assert status == 400
-    status, _ = _request("GET", f"{base_url}/api/metrics?tb_dir=../../env&run=x")
-    assert status == 400
-    status, _ = _request("GET", f"{base_url}/api/replays?dir=../../env")
-    assert status == 400
-    status, _ = _request("GET", f"{base_url}/replays/../../env/package.json")
-    assert status in (400, 404)
-    status, _ = _request(
-        "POST", f"{base_url}/api/jobs/train", {"base": "../../env/package.json"}
-    )
-    assert status == 400
-    status, _ = _request(
-        "POST",
-        f"{base_url}/api/jobs/eval",
-        {"model": "../../env/package.json", "base": "smoke.yaml"},
-    )
-    assert status == 400
-
-
-def test_replays_index_and_file(base_url):
-    import urllib.request
-
-    root = control_server.REPLAYS_DIR / "srv-replay-test"
-    root.mkdir(parents=True, exist_ok=True)
-    target = root / "ep0-seed-death.json"
-    try:
-        target.write_text('{"info": {}, "turns": []}', encoding="utf-8")
-        with urllib.request.urlopen(
-            f"{base_url}/api/replays?dir=replays/srv-replay-test", timeout=10
-        ) as res:
-            assert res.status == 200
-            assert res.headers.get("Access-Control-Allow-Origin") == "*"
-            data = json.loads(res.read().decode("utf-8"))
-        assert len(data["replays"]) == 1
-        entry = data["replays"][0]
-        assert entry["name"] == "ep0-seed-death.json"
-        assert entry["size"] > 0
-        with urllib.request.urlopen(
-            f"{base_url}/replays/srv-replay-test/ep0-seed-death.json", timeout=10
-        ) as res:
-            assert res.status == 200
-            assert res.headers.get("Access-Control-Allow-Origin") == "*"
-            assert json.loads(res.read().decode("utf-8")) == {"info": {}, "turns": []}
-        status, _ = _request("GET", f"{base_url}/replays/srv-replay-test/nope.json")
-        assert status == 404
-    finally:
-        shutil.rmtree(root, ignore_errors=True)
-
-
-def test_override_whitelist_rejected(base_url, monkeypatch):
-    monkeypatch.setattr(control_server.JobManager, "_launch", lambda self, job, argv: None)
-    created = []
-    try:
-        status, _ = _request(
-            "POST",
-            f"{base_url}/api/jobs/train",
-            {"base": "smoke.yaml", "config_override": {"env": {"maps_dir": "/tmp/x"}}},
-        )
-        assert status == 400
-        status, _ = _request(
-            "POST",
-            f"{base_url}/api/jobs/train",
-            {"base": "smoke.yaml", "config_override": {"run": {"checkpoint_dir": "/tmp/x"}}},
-        )
-        assert status == 400
-    finally:
-        for job_id in list(control_server.JOBS._jobs):
-            if job_id.startswith("train-"):
-                created.append(job_id)
-        for job_id in created:
-            control_server.JOBS._jobs.pop(job_id, None)
-            shutil.rmtree(control_server.RUNS_DIR / job_id, ignore_errors=True)
+def test_job_manager_runs_and_reaps_a_process(tmp_path):
+    jobs = JobManager(tmp_path)
+    job = jobs.start("train", "echo", ["-c", "print('hello from the job')"])
+    deadline = time.monotonic() + 30
+    while jobs.get(job.id).status == "running" and time.monotonic() < deadline:
+        time.sleep(0.1)
+    described = jobs.describe(jobs.get(job.id))
+    assert described["status"] == "done" and described["returncode"] == 0
+    assert "hello from the job" in described["log_tail"]
+    jobs.remove(job.id)
+    assert jobs.get(job.id) is None

@@ -1,13 +1,10 @@
 # Install CUDA torch FIRST, then the rest, or pip swaps in a CPU torch:
 #   pip install --index-url https://download.pytorch.org/whl/cu128 "torch>=2.8,<2.9"
 #   pip install -r requirements.txt
-gymnasium>=1.0,<2
 numpy>=1.21
 pytest>=7
 pyyaml>=6
 tensorboard>=2.14
-# CUDA build from https://download.pytorch.org/whl/cu128, e.g.
-# pip install --index-url https://download.pytorch.org/whl/cu128 "torch>=2.8,<2.9"
 torch>=2.8,<2.9
-stable-baselines3==2.9.0
-sb3-contrib==2.9.0
+# Lobby play and replay watching (uses the installed Edge/Chrome).
+playwright>=1.40
