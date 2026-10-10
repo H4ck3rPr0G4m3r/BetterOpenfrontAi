@@ -69,7 +69,7 @@ cd train && python watch_replay.py replays/selfplay/<file>.json   # needs npm ru
 
 ```bash
 cd train
-python train.py --config configs/selfplay.yaml --set run.total_steps=100000
+python train.py --config configs/selfplay.yaml --set run.name=selfplay_v4 --set run.total_steps=100000
 python train.py --config configs/smoke.yaml     # seconds-long end-to-end check
 ```
 
@@ -79,24 +79,35 @@ close together. Checkpoints go to `train/checkpoints/<run>/`, metrics to
 `train/runs/<run>/metrics.jsonl` (and TensorBoard). Create
 `checkpoints/<run>/STOP` to stop a run cleanly.
 
-### Reward (v3, `env/src/Reward.ts`)
+### Reward (v4, `env/src/Reward.ts`)
+
+Potentials (paid as they change, all given back on death):
 
 | Term | Default | Why |
 | --- | --- | --- |
-| land potential | `1.0 * log(1 + tiles/100)` change | growth, given back on death |
-| structures | `0.2 * log(1 + levels)` change | building |
+| land | `1.0 * log(1 + tiles/100)` | territory |
+| structures | `0.2 * log(1 + levels)` | building |
+| cities | `0.5 * log(1 + city levels)` | the economy core |
+| population cap | `0.3 * log(1 + max troops/100k)` | land and cities raise it |
+| income | `1.0 * log(1 + gold per minute/100k)` | trade, trains, conquest (smoothed over a minute) |
+
+Events and terminals:
+
+| Term | Default | Why |
+| --- | --- | --- |
 | kill | +0.5 | eliminations this seat caused |
 | win / death / placement | +5 / -2 / +1 x land rank | terminals |
 | lowTroops | up to -0.05 per step below 30% of max troops | do not expand yourself empty |
 | betrayal | -1 per broken alliance | no request/break farming |
 | diplomacy | -0.005 per request, break, embargo, target | no spam |
-| underdog | land from a stronger player counts double | fight up, not only down |
-| defend | +0.3 per repelled stronger attack | hold the line |
+| advantage | land from a weaker player counts 1.5x | attack from strength |
+| defend | +0.3 per repelled real attack | hold the line |
 
 Action rules: donations are off (`env.allow_donations`), attacks must leave
 10% of max troops at home (`env.troop_reserve`), and build sites are typed
-by terrain (defense posts face other players' land, ports the sea, cities
-and factories sit inside the territory).
+by terrain (defense posts ~10 tiles behind a front with another player,
+ports on the coast, cities and factories inside the territory). Training
+games last 20 game minutes; evaluation games 60.
 
 ## Tests
 
