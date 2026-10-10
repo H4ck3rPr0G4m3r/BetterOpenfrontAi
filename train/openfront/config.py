@@ -37,6 +37,7 @@ DEFAULTS: dict = {
         # Donations are off: real games rarely need them, and the v2 policy
         # gave its troops away to allied nations. Re-enable for fine-tuning.
         "allow_donations": False,
+        "allow_betrayal": False,  # breaking alliances: off, like donations
         "troop_reserve": 0.1,  # attacks must leave this share of max troops home
         "close_spawn": 0.3,  # share of multi-seat games with seats spawned close
         "maps_dir": None,
@@ -45,6 +46,7 @@ DEFAULTS: dict = {
         "land": 1.0,
         "structures": 0.2,
         "cities": 0.5,
+        "rail": 0.5,
         "popCap": 0.3,
         "income": 1.0,
         "kill": 0.5,
@@ -162,6 +164,7 @@ def worker_config(env: dict, reward: dict):
         disabled_intents=tuple(int(v) for v in env.get("disabled_intents", [])),
         disabled_builds=tuple(str(v) for v in env.get("disabled_builds", [])),
         allow_donations=bool(env.get("allow_donations", False)),
+        allow_betrayal=bool(env.get("allow_betrayal", False)),
         troop_reserve=float(env.get("troop_reserve", 0.1)),
         close_spawn=float(env.get("close_spawn", 0.0)),
         reward={k: float(v) for k, v in reward.items()},

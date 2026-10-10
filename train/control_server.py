@@ -267,11 +267,32 @@ def _stat(path: Path, root: Path) -> dict:
     }
 
 
+_LAYOUT_CACHE: dict[tuple[str, float], bool] = {}
+
+
+def _compatible(path: Path) -> bool:
+    """Whether a checkpoint matches the current observation layout (cached by mtime)."""
+    key = (str(path), path.stat().st_mtime)
+    if key not in _LAYOUT_CACHE:
+        try:
+            import torch
+
+            from openfront import layout as L
+
+            payload = torch.load(str(path), map_location="cpu", weights_only=False)
+            L.check_layout(payload["layout"])
+            _LAYOUT_CACHE[key] = True
+        except Exception:  # noqa: BLE001, any unreadable or older checkpoint is hidden
+            _LAYOUT_CACHE[key] = False
+    return _LAYOUT_CACHE[key]
+
+
 def list_checkpoints() -> list[dict]:
+    """Checkpoints the current code can load: older observation layouts are hidden."""
     root = TRAIN_DIR / "checkpoints"
     if not root.is_dir():
         return []
-    found = [p for p in root.glob("**/*.pt") if "pool" not in p.parts]
+    found = [p for p in root.glob("**/*.pt") if "pool" not in p.parts and _compatible(p)]
     return [_stat(p, TRAIN_DIR) for p in sorted(found, key=lambda p: p.stat().st_mtime, reverse=True)]
 
 

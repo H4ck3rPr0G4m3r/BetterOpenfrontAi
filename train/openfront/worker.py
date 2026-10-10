@@ -40,6 +40,7 @@ class WorkerConfig:
     disabled_intents: tuple = ()
     disabled_builds: tuple = ()
     allow_donations: bool = False
+    allow_betrayal: bool = False
     troop_reserve: float = 0.1
     close_spawn: float = 0.0
     reward: dict = field(default_factory=dict)
@@ -60,6 +61,8 @@ class WorkerConfig:
             argv += ["--disable-build", str(build)]
         if self.allow_donations:
             argv += ["--allow-donations"]
+        if self.allow_betrayal:
+            argv += ["--allow-betrayal"]
         argv += ["--troop-reserve", str(float(self.troop_reserve)), "--close-spawn", str(float(self.close_spawn))]
         if self.reward:
             argv += ["--reward", json.dumps(self.reward)]

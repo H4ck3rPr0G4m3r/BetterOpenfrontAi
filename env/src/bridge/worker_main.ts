@@ -23,6 +23,7 @@ export interface WorkerOptions {
   disabledIntents: number[];
   disabledBuilds: string[];
   allowDonations: boolean;
+  allowBetrayal: boolean;
   troopReserve: number;
   closeSpawn: number;
   reward: RewardWeights;
@@ -43,6 +44,7 @@ Usage: tsx src/bridge/worker_main.ts --port N [options]
   --disable-intent K   shut one intent type, repeatable (1..13)
   --disable-build T    exclude one build type, repeatable (e.g. Factory)
   --allow-donations    open gold/troop donations (off by default)
+  --allow-betrayal     open breaking alliances (off by default)
   --troop-reserve F    share of max troops attacks must leave home (0.1)
   --close-spawn P      chance a multi-seat game spawns its seats close (0)
   --reward JSON        reward weight overrides, e.g. {"land":1,"kill":0.5}`;
@@ -64,6 +66,7 @@ export function parseWorkerArgs(argv: string[]): WorkerOptions {
     disabledIntents: [],
     disabledBuilds: [],
     allowDonations: false,
+    allowBetrayal: false,
     troopReserve: DEFAULT_TROOP_RESERVE,
     closeSpawn: 0,
     reward: normalizeRewardWeights(),
@@ -117,6 +120,7 @@ export function parseWorkerArgs(argv: string[]): WorkerOptions {
         break;
       }
       case "--allow-donations": o.allowDonations = true; break;
+      case "--allow-betrayal": o.allowBetrayal = true; break;
       case "--troop-reserve": o.troopReserve = fraction(); break;
       case "--close-spawn": o.closeSpawn = fraction(); break;
       case "--reward": {
@@ -151,6 +155,7 @@ async function main(): Promise<void> {
     disabledIntents: o.disabledIntents,
     disabledBuilds: o.disabledBuilds,
     allowDonations: o.allowDonations,
+    allowBetrayal: o.allowBetrayal,
     troopReserve: o.troopReserve,
   };
   const codec = new ActionCodecImpl(behavior);

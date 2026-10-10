@@ -301,6 +301,7 @@ export class ObservationEncoder {
         out[base + SiteField.X] = (c.tile % geometry.w) / geometry.w;
         out[base + SiteField.Y] = Math.floor(c.tile / geometry.w) / geometry.h;
         out[base + SiteField.Border] = c.border ? 1 : 0;
+        out[base + SiteField.RailLink] = c.rail ? 1 : 0;
       }
     }
 
@@ -331,6 +332,7 @@ export class ObservationEncoder {
     out[g + GlobalField.Gold] = logScale(Number(seat.gold()), 1000, 10);
     out[g + GlobalField.Cities] = clamp01(seat.unitCount(UnitType.City) / 10);
     out[g + GlobalField.Ports] = clamp01(seat.unitCount(UnitType.Port) / 5);
+    out[g + GlobalField.Factories] = clamp01(seat.unitCount(UnitType.Factory) / 5);
     out[g + GlobalField.DefensePosts] = clamp01(seat.unitCount(UnitType.DefensePost) / 10);
     out[g + GlobalField.SAMs] = clamp01(seat.unitCount(UnitType.SAMLauncher) / 5);
     out[g + GlobalField.Silos] = clamp01(seat.unitCount(UnitType.MissileSilo) / 5);

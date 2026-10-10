@@ -19,7 +19,7 @@
  * (not sampled, not part of the log-probability). See HEAD_USAGE.
  */
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 export const RASTER_WIDTH = 128;
 export const RASTER_HEIGHT = 64;
@@ -73,8 +73,11 @@ export enum SiteField {
   X = 8,
   Y = 9,
   Border = 10,
+  /** A City/Port here would join the rail network (a factory in range); a
+   *  Factory here would connect existing cities, ports or factories. */
+  RailLink = 11,
 }
-export const SITE_FIELDS = 11;
+export const SITE_FIELDS = 12;
 
 export enum GlobalField {
   TimeFraction = 0,
@@ -104,8 +107,9 @@ export enum GlobalField {
   Embargoed = 24,
   InSpawnPhase = 25,
   AllianceRequests = 26,
+  Factories = 27,
 }
-export const NUM_GLOBALS = 27;
+export const NUM_GLOBALS = 28;
 
 export const SLOT_TABLE_SIZE = NUM_SLOTS * SLOT_FIELDS;
 export const SITE_TABLE_SIZE = MAX_BUILD_SITES * SITE_FIELDS;

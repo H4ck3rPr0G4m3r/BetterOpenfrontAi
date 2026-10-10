@@ -13,6 +13,9 @@ export interface RewardWeights {
   /** Coefficient on Δ log(1 + own city levels), on top of `structures`.
    *  Cities are the economy: +250k max troops per level and train stations. */
   cities: number;
+  /** Coefficient on Δ log(1 + own cities and ports connected to rail).
+   *  Trains between connected stations are the main gold source. */
+  rail: number;
   /** Coefficient on Δ log(1 + max troops / POP_REF): the population cap,
    *  which land and city levels raise. */
   popCap: number;
@@ -56,6 +59,7 @@ export const DEFAULT_REWARD_WEIGHTS: RewardWeights = {
   land: 1.0,
   structures: 0.2,
   cities: 0.5,
+  rail: 0.5,
   popCap: 0.3,
   income: 1.0,
   kill: 0.5,
@@ -84,6 +88,10 @@ export interface BehaviorConfig {
    *  need them, and the v2 run gave away more troops to allied nations than
    *  it spent on every attack combined. */
   allowDonations?: boolean;
+  /** Breaking alliances is off unless this is set. A penalty only taught
+   *  it away slowly: a fresh policy starts uniform over legal actions, so it
+   *  broke alliances on 14% of steps and still on ~1% after 100k. */
+  allowBetrayal?: boolean;
   /** Attack and boat ratios that would leave less than this share of max
    *  troops at home are masked (the smallest ratio always stays open). */
   troopReserve?: number;
@@ -110,6 +118,7 @@ export function normalizeBehavior(config?: BehaviorConfig): NormalizedBehavior {
     disabledIntents.add(IntentType.DonateGold);
     disabledIntents.add(IntentType.DonateTroops);
   }
+  if (config?.allowBetrayal !== true) disabledIntents.add(IntentType.BreakAlliance);
   const troopReserve = config?.troopReserve ?? DEFAULT_TROOP_RESERVE;
   if (!(troopReserve >= 0 && troopReserve < 1)) throw new Error(`troopReserve must be in [0, 1), got ${troopReserve}`);
   const disabledBuilds = new Set<string>();

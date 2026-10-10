@@ -23,6 +23,8 @@ export interface BuildCandidate {
   typeIndex: number;
   type: PlayerBuildableUnitType;
   border: boolean;
+  /** Building here joins or extends the rail network (see railLink). */
+  rail: boolean;
 }
 
 const MAX_FRONT_SITES = 8;
@@ -33,6 +35,48 @@ const SHORE_TYPES: PlayerBuildableUnitType[] = [UnitType.Port];
 /** The first WARSHIP_SITES shore tiles also offer a warship. */
 const WARSHIP_SITES = 2;
 const INTERIOR_TYPES: PlayerBuildableUnitType[] = [UnitType.City, UnitType.Factory, UnitType.SAMLauncher, UnitType.MissileSilo];
+/** Extra City sites this far from our own factories, so the policy always
+ *  has a rail-connected place for a city once it owns a factory. */
+const RAIL_SITES = 3;
+const RAIL_DISTANCE = 30;
+
+/**
+ * Mirrors the engine: a City or Port becomes a train station when any
+ * factory is within trainStationMaxRange (CityExecution, PortExecution); a
+ * Factory links every City, Port or Factory between min and max range.
+ */
+export function railLink(game: Game, type: PlayerBuildableUnitType, tile: TileRef): boolean {
+  const config = game.config();
+  const max = config.trainStationMaxRange();
+  if (type === UnitType.City || type === UnitType.Port) return game.hasUnitNearby(tile, max, UnitType.Factory);
+  if (type !== UnitType.Factory) return false;
+  const min2 = config.trainStationMinRange() ** 2;
+  return game.nearbyUnits(tile, max, [UnitType.City, UnitType.Port, UnitType.Factory]).some((n) => n.distSquared > min2);
+}
+
+/** Owned land about RAIL_DISTANCE from each of our first factories, off the border. */
+function railSites(game: Game, agent: Player, borderSet: Set<TileRef>): TileRef[] {
+  const map = game.map();
+  const out: TileRef[] = [];
+  const directions = [[1, 0], [0, 1], [-1, 0], [0, -1], [1, 1], [-1, 1], [1, -1], [-1, -1]];
+  for (const factory of agent.units(UnitType.Factory)) {
+    const fx = map.x(factory.tile());
+    const fy = map.y(factory.tile());
+    for (const [dx, dy] of directions) {
+      const len = Math.hypot(dx, dy);
+      const x = Math.round(fx + (dx * RAIL_DISTANCE) / len);
+      const y = Math.round(fy + (dy * RAIL_DISTANCE) / len);
+      if (!map.isValidCoord(x, y)) continue;
+      const t = map.ref(x, y);
+      if (map.isLand(t) && map.ownerID(t) === agent.smallID() && !borderSet.has(t)) {
+        out.push(t);
+        break; // one site per factory
+      }
+    }
+    if (out.length >= RAIL_SITES) break;
+  }
+  return out;
+}
 
 /** Defense posts sit this many tiles behind the front (their range is 30). */
 const POST_DEPTH = 10;
@@ -104,6 +148,7 @@ function spread<T>(list: T[], n: number): T[] {
  *
  *   front    ~10 tiles behind border facing a player     -> Defense Post
  *   shore    border land touching water                  -> Port (+ Warship)
+ *   rail     ~30 tiles from each of our factories        -> City (joins the rail)
  *   interior owned land off the border                   -> City, Factory, SAM, Silo
  *
  * v2 rotated every type across every border tile, and since most of a
@@ -145,8 +190,8 @@ export function buildCandidates(game: Game, agent: Player): BuildCandidate[] {
   }
 
   let interior: TileRef[] = [];
+  const borderSet = new Set<TileRef>(border);
   if (agent.numTilesOwned() > border.length) {
-    const borderSet = new Set<TileRef>(border);
     const step = Math.max(1, Math.floor(agent.numTilesOwned() / MAX_INTERIOR_SITES));
     let i = 0;
     for (const tile of agent.tiles()) {
@@ -162,7 +207,9 @@ export function buildCandidates(game: Game, agent: Player): BuildCandidate[] {
 
   const out: BuildCandidate[] = [];
   const add = (tile: TileRef, type: PlayerBuildableUnitType, border: boolean) => {
-    if (out.length < MAX_BUILD_SITES) out.push({ tile, typeIndex: BUILD_UNIT_TYPES.indexOf(type), type, border });
+    if (out.length < MAX_BUILD_SITES) {
+      out.push({ tile, typeIndex: BUILD_UNIT_TYPES.indexOf(type), type, border, rail: railLink(game, type, tile) });
+    }
   };
   const posts = new Set<TileRef>();
   for (const tile of spread(front, MAX_FRONT_SITES)) {
@@ -175,6 +222,7 @@ export function buildCandidates(game: Game, agent: Player): BuildCandidate[] {
     for (const type of SHORE_TYPES) add(tile, type, true);
     if (i < WARSHIP_SITES) add(tile, UnitType.Warship, true);
   });
+  for (const tile of railSites(game, agent, borderSet)) add(tile, UnitType.City, false);
   for (const tile of interior) for (const type of INTERIOR_TYPES) add(tile, type, false);
   entry.byPlayer.set(agent.smallID(), out);
   return out;

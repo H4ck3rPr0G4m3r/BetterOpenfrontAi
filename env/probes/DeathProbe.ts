@@ -16,10 +16,11 @@
  */
 import path from "path";
 import { fileURLToPath } from "url";
-import { GameMapType } from "../../OpenFrontIO/src/core/game/Game";
+import { GameMapType, UnitType } from "../../OpenFrontIO/src/core/game/Game";
 import { GameEnv, SeatStep } from "../src/GameEnv";
 import { buildCandidates } from "../src/BuildSites";
 import { HEAD_USAGE, IntentType, Masks, siteRow, spatialRow, targetRow } from "../src/Layout";
+import { railStations } from "../src/Reward";
 import { NOOP_ACTION, type Action } from "../src/types";
 
 const MAPS = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../OpenFrontIO/resources/maps");
@@ -62,16 +63,20 @@ const POLICIES: Record<string, Policy> = {
     const p = env.game.player(env.seatIDs[seat]);
     return p.troops() / env.game.config().maxTroops(p) > 0.45 ? expand(m, 2) : NOOP_ACTION;
   },
-  // paced, plus a city (else an upgrade, else a port or factory) whenever one is affordable.
+  // paced, plus an economy: a factory first, then rail-connected cities and ports.
   builder: (m, env, seat) => {
     const p = env.game.player(env.seatIDs[seat]);
     const sites = buildCandidates(env.game, p);
-    for (const want of ["City", "Port", "Factory"]) {
-      const i = sites.findIndex((c, k) => c.type === want && siteRow(m, 0)[k]);
-      if (i >= 0) return { ...NOOP_ACTION, intentType: IntentType.BuildUnit, buildSite: i };
-    }
-    const up = sites.findIndex((c, k) => c.type === "City" && siteRow(m, 1)[k]);
-    if (up >= 0) return { ...NOOP_ACTION, intentType: IntentType.UpgradeStructure, buildSite: up };
+    const open = (k: number) => siteRow(m, 0)[k] === 1;
+    const pick = (ok: (c: (typeof sites)[number]) => boolean) => sites.findIndex((c, k) => open(k) && ok(c));
+    const order = [
+      p.unitCount(UnitType.Factory) === 0 ? pick((c) => c.type === "Factory") : -1,
+      pick((c) => c.type === "City" && c.rail),
+      pick((c) => c.type === "Port" && c.rail),
+      pick((c) => c.type === "City"),
+    ];
+    const i = order.find((k) => k >= 0);
+    if (i !== undefined) return { ...NOOP_ACTION, intentType: IntentType.BuildUnit, buildSite: i };
     return p.troops() / env.game.config().maxTroops(p) > 0.45 ? expand(m, 2) : NOOP_ACTION;
   },
 };
@@ -108,7 +113,8 @@ async function main(): Promise<void> {
           console.log(
             `game${g} seat${s} step ${String(step).padStart(4)} tiles ${String(p.numTilesOwned()).padStart(6)} ` +
               `troops ${Math.round(p.troops()).toString().padStart(8)} (${((p.troops() / max) * 100).toFixed(0)}% max) ` +
-              `out ${Math.round(out)} in ${Math.round(inc)} return ${returns[s].toFixed(2)}`,
+              `out ${Math.round(out)} in ${Math.round(inc)} return ${returns[s].toFixed(2)} ` +
+            `cities ${p.unitCount(UnitType.City)} factories ${p.unitCount(UnitType.Factory)} rail ${railStations(env.game, p)}`,
           );
         }
       }

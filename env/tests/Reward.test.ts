@@ -25,6 +25,7 @@ function fakeGame(players: FakePlayer[]) {
     player: (id: string) => wrap(players.find((p) => p.id === id)!),
     players: () => players.filter((p) => p.alive).map(wrap),
     config: () => ({ maxTroops: () => MAX_TROOPS }),
+    railNetwork: () => ({ stationManager: () => ({ findStation: () => null }) }),
   } as never;
 }
 
@@ -169,6 +170,22 @@ describe("Reward v3", () => {
     expect(r.step(game, "me", null, NO_EVENTS)).toBeCloseTo(0.3 * (Math.log1p(3.7) - Math.log1p(1.2)));
     me.alive = false;
     expect(r.step(game, "me", "death", NO_EVENTS)).toBeCloseTo(-0.3 * Math.log1p(3.7) - 2);
+  });
+
+  it("values cities and ports on the rail network", () => {
+    const me: FakePlayer = { id: "me", tiles: 100, alive: true, structures: [] };
+    const units = [1, 2, 3].map((id) => ({ id, level: () => 1, isUnderConstruction: () => false }));
+    const connected = new Set<number>();
+    const base = fakeGame([me]) as unknown as { player: (id: string) => object };
+    const game = {
+      ...base,
+      player: (id: string) => ({ ...base.player(id), units: () => units }),
+      railNetwork: () => ({ stationManager: () => ({ findStation: (u: { id: number }) => (connected.has(u.id) ? {} : null) }) }),
+    } as never;
+    const r = new Reward({ land: 0, structures: 0, cities: 0, popCap: 0, income: 0, rail: 0.5 });
+    r.init(game, "me");
+    connected.add(1).add(2);
+    expect(r.step(game, "me", null, NO_EVENTS)).toBeCloseTo(0.5 * Math.log1p(2));
   });
 
   it("validates weight overrides by name", () => {

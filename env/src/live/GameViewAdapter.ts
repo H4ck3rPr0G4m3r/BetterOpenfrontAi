@@ -141,6 +141,12 @@ export class ViewGame {
       },
     };
   }
+  hasUnitNearby(tile: number, range: number, type: string): boolean {
+    return this.view.hasUnitNearby?.(tile, range, type) ?? false;
+  }
+  nearbyUnits(tile: number, range: number, types: string[]): { distSquared: number }[] {
+    return this.view.nearbyUnits?.(tile, range, types) ?? [];
+  }
   isShore(tile: number): boolean {
     return this.view.isShore(tile);
   }

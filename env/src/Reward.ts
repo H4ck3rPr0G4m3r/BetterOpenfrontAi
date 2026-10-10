@@ -62,6 +62,7 @@ export const NO_EVENTS: SeatEvents = {
  *   Φ(s) = land · log(1 + tiles / LAND_REF) + structures · log(1 + structure levels)
  *          + cities · log(1 + city levels) + popCap · log(1 + max troops / POP_REF)
  *          + income · log(1 + income per minute / INCOME_REF)
+ *          + rail · log(1 + own cities and ports on the rail network)
  *
  * v3 (from watching v2 replays): seats expanded themselves to zero troops,
  * farmed alliance request/break cycles, spammed embargo toggles, and never
@@ -151,8 +152,19 @@ export class Reward {
     const w = this.weights;
     const cap = game === undefined || w.popCap === 0 ? 0 : w.popCap * Math.log1p(game.config().maxTroops(player) / POP_REF);
     const income = w.income * Math.log1p((this.incomeRate * STEPS_PER_MINUTE) / INCOME_REF);
-    return w.land * land + w.structures * Math.log1p(structureLevels(player)) + w.cities * Math.log1p(cityLevels(player)) + cap + income;
+    const rail = game === undefined || w.rail === 0 ? 0 : w.rail * Math.log1p(railStations(game, player));
+    return w.land * land + w.structures * Math.log1p(structureLevels(player)) + w.cities * Math.log1p(cityLevels(player)) + cap + income + rail;
   }
+}
+
+/** Own cities and ports that are train stations, i.e. connected by rail. */
+export function railStations(game: Game, player: Player): number {
+  const stations = game.railNetwork().stationManager();
+  let n = 0;
+  for (const unit of player.units([UnitType.City, UnitType.Port])) {
+    if (stations.findStation(unit) !== null) n++;
+  }
+  return n;
 }
 
 export function cityLevels(player: Player): number {

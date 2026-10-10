@@ -116,6 +116,32 @@ describe("ActionCodec masks and decode", () => {
     }
   });
 
+  it("keeps breaking alliances off unless allowed", () => {
+    for (const id of env.seatIDs) {
+      const masks = createMasks();
+      codec.masks(env.game, id, masks);
+      expect(masks.intent[IntentType.BreakAlliance]).toBe(0);
+      expect(targetRow(masks, IntentType.BreakAlliance).every((v) => v === 0)).toBe(true);
+      const fired = codec.decode({ ...NOOP_ACTION, intentType: IntentType.BreakAlliance, target: 1 }, env.game, id);
+      expect(fired).toEqual([]);
+    }
+  });
+
+  it("flags build sites that join the rail network exactly like the engine", () => {
+    const max = env.game.config().trainStationMaxRange();
+    for (const id of env.seatIDs) {
+      const player = env.game.player(id);
+      if (!player.isAlive()) continue;
+      for (const c of buildCandidates(env.game, player)) {
+        if (c.type === UnitType.City || c.type === UnitType.Port) {
+          expect(c.rail).toBe(env.game.hasUnitNearby(c.tile, max, UnitType.Factory));
+        } else if (c.type !== UnitType.Factory) {
+          expect(c.rail).toBe(false);
+        }
+      }
+    }
+  });
+
   it("keeps donations off unless allowed", () => {
     for (const id of env.seatIDs) {
       const masks = createMasks();
