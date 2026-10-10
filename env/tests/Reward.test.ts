@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { normalizeRewardWeights } from "../src/BehaviorConfig";
-import { LAND_REF, NO_EVENTS, newDefensePosts, placementScore, POST_SPACING, Reward } from "../src/Reward";
+import { boatEvents, LAND_REF, NO_EVENTS, newDefensePosts, placementScore, POST_SPACING, Reward } from "../src/Reward";
 
 interface FakePlayer {
   id: string;
@@ -217,5 +217,66 @@ describe("defense posts", () => {
     const crowded = r.step(g, "a", null, { ...NO_EVENTS, postsBuilt: 1, postsCrowded: 1 });
     expect(spread).toBeCloseTo(-0.1);
     expect(crowded).toBeCloseTo(-0.6);
+  });
+});
+
+describe("boats", () => {
+  // Tiles are numbers; `owners` maps a tile to its owner's id.
+  const owners = new Map<number, string>();
+  const game = {
+    owner: (t: number) => ({ id: () => owners.get(t) ?? "nobody" }),
+    config: () => ({ maxTroops: () => 1000, boatMaxNumber: () => 3 }),
+  } as never;
+  type Boat = { id: number; troops: number; target: number; retreating?: boolean };
+  const me = (boats: Boat[]) =>
+    ({
+      id: () => "me",
+      isAlive: () => true,
+      units: () =>
+        boats.map((b) => ({
+          id: () => b.id,
+          troops: () => b.troops,
+          targetTile: () => b.target,
+          transportShipState: () => ({ isRetreating: !!b.retreating }),
+        })),
+    }) as never;
+
+  it("pays launches with a real force while a slot stays free", () => {
+    const known = new Map();
+    expect(boatEvents(game, me([{ id: 1, troops: 200, target: 10 }]), known).launched).toBe(1);
+    expect(boatEvents(game, me([{ id: 1, troops: 200, target: 10 }, { id: 2, troops: 50, target: 11 }]), known).launched).toBe(0);
+    // The third boat fills the last slot: not paid.
+    const full = [{ id: 1, troops: 200, target: 10 }, { id: 2, troops: 50, target: 11 }, { id: 3, troops: 300, target: 12 }];
+    expect(boatEvents(game, me(full), known).launched).toBe(0);
+  });
+
+  it("counts landings that took their tile, not sunk, retreating, tiny or pointless ones", () => {
+    owners.clear();
+    owners.set(23, "me"); // boat 4's target was already ours
+    const known = new Map();
+    boatEvents(game, me([
+      { id: 1, troops: 200, target: 20 },
+      { id: 2, troops: 200, target: 21 },
+      { id: 3, troops: 200, target: 22, retreating: true },
+    ]), known);
+    boatEvents(game, me([
+      { id: 1, troops: 200, target: 20 },
+      { id: 2, troops: 200, target: 21 },
+      { id: 3, troops: 200, target: 22, retreating: true },
+      { id: 4, troops: 200, target: 23 },
+      { id: 5, troops: 30, target: 24 }, // tiny boat
+    ]), known);
+    owners.set(20, "me"); // boat 1 landed and conquered its tile
+    owners.set(22, "me");
+    owners.set(24, "me"); // the tiny boat landed too, but pays nothing
+    // All are gone; boat 2's tile is still someone else's (sunk).
+    expect(boatEvents(game, me([]), known)).toEqual({ launched: 0, landed: 1 });
+  });
+
+  it("pays the boat terms", () => {
+    const g = fakeGame([{ id: "a", tiles: 100, alive: true, structures: [] }]);
+    const r = new Reward({ survive: 0, lowTroops: 0, income: 0 });
+    r.init(g, "a");
+    expect(r.step(g, "a", null, { ...NO_EVENTS, boatsLaunched: 1, boatsLanded: 1 })).toBeCloseTo(0.25);
   });
 });

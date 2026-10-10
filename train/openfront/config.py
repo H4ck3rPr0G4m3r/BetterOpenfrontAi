@@ -64,6 +64,8 @@ DEFAULTS: dict = {
         "defend": 0.3,
         "defensePost": -0.1,
         "crowdedPost": -0.5,
+        "boatLaunch": 0.05,
+        "boatLanding": 0.2,
     },
     "ppo": {
         "n_steps": 256,

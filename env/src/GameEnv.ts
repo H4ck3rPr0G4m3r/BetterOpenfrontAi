@@ -30,7 +30,7 @@ import { RewardWeights } from "./BehaviorConfig";
 import { createMasks, Masks } from "./Layout";
 import { createSeatObservation, ObservationEncoder, SeatObservation, MAX_SEATS } from "./ObservationEncoder";
 import { buildGameRecord, replayGameID, seatClientID, shouldRecordReplay, writeReplayFile } from "./Replay";
-import { earnedGold, newDefensePosts, placementScore, Reward, SeatEvents } from "./Reward";
+import { boatEvents, BoatTrack, earnedGold, newDefensePosts, placementScore, Reward, SeatEvents } from "./Reward";
 import { loadFreshTerrainMap } from "./Terrain";
 import { TurnFeeder } from "./TurnFeeder";
 import type { Action, EnvConfig, TerminalReason } from "./types";
@@ -67,6 +67,8 @@ interface Seat {
   earned: number;
   /** Own defense post IDs at the previous step. */
   posts: Set<number>;
+  /** Own boats at the previous step. */
+  boats: Map<number, BoatTrack>;
 }
 
 /** Minimum tile distance between seat spawns, halved until it fits. */
@@ -199,6 +201,7 @@ export class GameEnv {
         combat: new CombatTracker(smallID),
         earned: 0,
         posts: new Set<number>(),
+        boats: new Map<number, BoatTrack>(),
       };
     });
 
@@ -250,10 +253,13 @@ export class GameEnv {
         seat.combat.update(player);
         const earned = earnedGold(game, player);
         const posts = newDefensePosts(game, player, seat.posts);
+        const boats = boatEvents(game, player, seat.boats);
         const events: SeatEvents = {
           earned: earned - seat.earned,
           postsBuilt: posts.built,
           postsCrowded: posts.crowded,
+          boatsLaunched: boats.launched,
+          boatsLanded: boats.landed,
           kills: seat.pendingKills,
           betrayals: seat.pendingBetrayals,
           diplomacy: diplomacy[i],

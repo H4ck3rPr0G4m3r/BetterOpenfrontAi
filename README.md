@@ -119,6 +119,8 @@ Events and terminals:
 | defend | +0.3 per repelled real attack | hold the line |
 | defensePost | -0.1 per post started | posts must earn their keep |
 | crowdedPost | extra -0.5 per post within 20 tiles of another own post | spread posts along the front |
+| boatLaunch | +0.05 per boat with at least 10% of max troops, unless it fills the last of the 3 slots | keep boating, but never park all three boats out |
+| boatLanding | +0.2 per such boat that lands and takes its tile | boats that achieve something |
 
 Action rules: donations, alliance breaking and embargoes are off
 (`env.allow_donations`, `env.allow_betrayal`, `env.allow_embargo`), attacks must leave

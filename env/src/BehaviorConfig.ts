@@ -60,6 +60,12 @@ export interface RewardWeights {
   /** Extra, per new defense post within POST_SPACING tiles of another of
    *  this seat's posts (negative): spread them along the front. */
   crowdedPost: number;
+  /** Per boat launched with at least BOAT_MIN_SHARE of max troops while a
+   *  boat slot stays free; the launch that fills the last slot pays nothing,
+   *  so keeping every boat out is never the goal. */
+  boatLaunch: number;
+  /** Per boat that lands and takes its landing tile. */
+  boatLanding: number;
 }
 
 export const DEFAULT_REWARD_WEIGHTS: RewardWeights = {
@@ -82,6 +88,8 @@ export const DEFAULT_REWARD_WEIGHTS: RewardWeights = {
   defend: 0.3,
   defensePost: -0.1,
   crowdedPost: -0.5,
+  boatLaunch: 0.05,
+  boatLanding: 0.2,
 };
 
 /**

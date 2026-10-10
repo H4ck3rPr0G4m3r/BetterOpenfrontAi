@@ -1,5 +1,6 @@
 import type { Game, Player, PlayerID } from "../../OpenFrontIO/src/core/game/Game";
 import { UnitType } from "../../OpenFrontIO/src/core/game/Game";
+import type { TileRef } from "../../OpenFrontIO/src/core/game/GameMap";
 import { GOLD_INDEX_WORK } from "../../OpenFrontIO/src/core/StatsSchemas";
 import { DEFAULT_REWARD_WEIGHTS, RewardWeights } from "./BehaviorConfig";
 import type { TerminalReason } from "./types";
@@ -19,6 +20,8 @@ export const INCOME_REF = 100_000;
 const STEPS_PER_MINUTE = 60;
 /** A new defense post this close (tiles) to another own post is crowded. */
 export const POST_SPACING = 20;
+/** A boat launch pays only with at least this share of max troops aboard. */
+export const BOAT_MIN_SHARE = 0.1;
 
 /** Paid by the structures potential. Defense posts are left out: they are
  *  priced per build (defensePost, crowdedPost) instead. */
@@ -48,6 +51,10 @@ export interface SeatEvents {
   postsBuilt: number;
   /** Of those, posts within POST_SPACING tiles of another own post. */
   postsCrowded: number;
+  /** Paid boat launches this step (real force, a slot left free). */
+  boatsLaunched: number;
+  /** Own boats that landed and took their landing tile this step. */
+  boatsLanded: number;
 }
 
 export const NO_EVENTS: SeatEvents = {
@@ -59,6 +66,8 @@ export const NO_EVENTS: SeatEvents = {
   earned: 0,
   postsBuilt: 0,
   postsCrowded: 0,
+  boatsLaunched: 0,
+  boatsLanded: 0,
 };
 
 /**
@@ -69,6 +78,7 @@ export const NO_EVENTS: SeatEvents = {
  *         + betrayal · betrayals + diplomacy · diplomatic intents
  *         + advantage · land · advantageTiles / (LAND_REF + tiles) + defend · repelled
  *         + defensePost · posts built + crowdedPost · posts built near another post
+ *         + boatLaunch · paid boat launches + boatLanding · boats landed
  *   Φ(s) = land · log(1 + tiles / LAND_REF) + structures · log(1 + structure levels)
  *          + cities · log(1 + city levels) + popCap · log(1 + max troops / POP_REF)
  *          + income · log(1 + income per minute / INCOME_REF)
@@ -89,6 +99,11 @@ export const NO_EVENTS: SeatEvents = {
  * v7: defense posts were cheap structure-potential points, so policies
  * stacked them side by side. They now pay nothing by existing, cost a
  * little each, and cost more when built next to another own post.
+ *
+ * v8: boats. Trained policies stopped boating (10% of actions early, 1%
+ * by 300k steps): a boat costs troops at once and its land arrives later.
+ * Launches with a real force pay a little while a slot stays free, and a
+ * landing that takes its tile pays more.
  *
  * Why this shape (2026-10 diagnosis): the v1 reward paid `kill` for every
  * elimination anywhere on the map (~70 per World game, nearly all bots dying
@@ -140,6 +155,8 @@ export class Reward {
     r += this.add("diplomacy", w.diplomacy * events.diplomacy);
     r += this.add("defensePost", w.defensePost * events.postsBuilt);
     r += this.add("crowdedPost", w.crowdedPost * events.postsCrowded);
+    r += this.add("boatLaunch", w.boatLaunch * events.boatsLaunched);
+    r += this.add("boatLanding", w.boatLanding * events.boatsLanded);
     if (player.isAlive()) {
       r += this.add("survive", w.survive);
       r += this.add("lowTroops", w.lowTroops * lowTroopDeficit(game, player, w.lowTroopsBelow));
@@ -227,6 +244,52 @@ export function newDefensePosts(game: Game, player: Player, known: Set<number>):
   known.clear();
   for (const post of posts) known.add(post.id());
   return { built, crowded };
+}
+
+/** What a boat looked like at the previous step. */
+export interface BoatTrack {
+  target: TileRef | undefined;
+  retreating: boolean;
+  /** The landing tile was already ours (a landing there takes nothing). */
+  targetOwned: boolean;
+  /** Launched with at least BOAT_MIN_SHARE of max troops. */
+  real: boolean;
+}
+
+/**
+ * Boat launches worth paying and landings since the last call. Only boats
+ * launched with at least BOAT_MIN_SHARE of max troops count, so tiny
+ * throwaway boats earn nothing; the launch that fills the last boat slot
+ * is not paid either. A boat that is gone counts as landed when it was not
+ * retreating and its landing tile, not ours before, now is: the engine
+ * conquers that tile as the boat unloads. Sunk boats leave it with someone
+ * else. `known` is updated in place.
+ */
+export function boatEvents(game: Game, player: Player, known: Map<number, BoatTrack>): { launched: number; landed: number } {
+  const alive = player.isAlive();
+  const boats = alive ? player.units(UnitType.TransportShip) : [];
+  const ours = (tile: TileRef | undefined): boolean => tile !== undefined && game.owner(tile).id() === player.id();
+  const minTroops = BOAT_MIN_SHARE * game.config().maxTroops(player);
+  let real = 0;
+  for (const boat of boats) {
+    if (!known.has(boat.id()) && boat.troops() >= minTroops) real++;
+  }
+  const launched = boats.length >= game.config().boatMaxNumber() ? Math.max(0, real - 1) : real;
+  let landed = 0;
+  if (alive) {
+    const now = new Set(boats.map((b) => b.id()));
+    for (const [id, track] of known) {
+      if (!now.has(id) && track.real && !track.retreating && !track.targetOwned && ours(track.target)) landed++;
+    }
+  }
+  const before = new Map(known);
+  known.clear();
+  for (const boat of boats) {
+    const target = boat.targetTile();
+    const real = before.get(boat.id())?.real ?? boat.troops() >= minTroops;
+    known.set(boat.id(), { target, retreating: boat.transportShipState().isRetreating, targetOwned: ours(target), real });
+  }
+  return { launched, landed };
 }
 
 export function structureLevels(player: Player): number {
