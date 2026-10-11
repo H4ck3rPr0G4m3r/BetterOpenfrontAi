@@ -27,7 +27,7 @@ import torch
 from torch.utils.tensorboard import SummaryWriter
 
 from . import layout as L
-from .config import scenario_workers, stage_env, worker_config
+from .config import scenario_workers, worker_config
 from .model import ModelConfig, OpenFrontPolicy, load_checkpoint, parameter_count, save_checkpoint
 from .selfplay import LEARNER, OpponentPool, assign_seats
 from .vec import VecGames
@@ -111,6 +111,7 @@ class Trainer:
         self.opponents: list[tuple[str, OpenFrontPolicy]] = []
         self.episodes: deque = deque(maxlen=400)
         self.row_scenario: list[str] = []
+        self.row_difficulty: list[str] = []
         self.stage_episodes: deque = deque(maxlen=1000)
         self.head_to_head: deque = deque(maxlen=400)
         self.amp = bool(cfg["ppo"]["amp"]) and self.device == "cuda"
@@ -136,18 +137,16 @@ class Trainer:
     def build_vec(self) -> VecGames:
         self._apply_replay_env()
         seed = f"{self.name}-s{self.stage}-u{self.update}-{self.cfg['run']['seed']}"
-        if self.cfg["scenarios"]:
-            plan = scenario_workers(self.cfg, self.stage)
-            wcs = [worker_config(env, self.cfg["reward"]) for _, env in plan]
-            names = [name for name, _ in plan]
-        else:
-            env = stage_env(self.cfg, self.stage)
-            wcs = [worker_config(env, self.cfg["reward"])] * int(env["workers"])
-            names = ["default"] * len(wcs)
+        plan = scenario_workers(self.cfg, self.stage)
+        wcs = [worker_config(env, self.cfg["reward"]) for _, env in plan]
+        names = [name for name, _ in plan]
+        # Nation difficulty per worker ("" without nations), for per-difficulty stats.
+        levels = [env["difficulty"] if env["nations"] != "disabled" else "" for _, env in plan]
         factory = None if self.worker_factory is None else (lambda i: self.worker_factory(i, wcs[i]))
         vec = VecGames(wcs, len(wcs), seed=seed, worker_factory=factory)
         # Scenario name per row, for per-scenario episode stats.
         self.row_scenario = [names[vec.worker_of_game(vec.game_of_row(r))] for r in range(vec.num_rows)]
+        self.row_difficulty = [levels[vec.worker_of_game(vec.game_of_row(r))] for r in range(vec.num_rows)]
         return vec
 
     def refresh_opponents(self) -> None:
@@ -323,6 +322,7 @@ class Trainer:
             "kills": float(stats[2]),
             "placement": float(stats[3]),
             "scenario": self.row_scenario[row] if row < len(self.row_scenario) else "default",
+            "difficulty": self.row_difficulty[row] if row < len(self.row_difficulty) else "",
         }
         self.episodes.append(record)
         self.stage_episodes.append(record)
@@ -363,6 +363,11 @@ class Trainer:
                 out[f"scenario/{sc}/survival_rate"] = sum(e["terminal"] in ("tick_cap", "win") for e in mine) / len(mine)
                 out[f"scenario/{sc}/ep_rew_mean"] = float(np.mean([e["return"] for e in mine]))
                 out[f"scenario/{sc}/final_tiles"] = float(np.mean([e["tiles"] for e in mine]))
+        levels = sorted({e.get("difficulty") for e in eps if e.get("difficulty")})
+        if len(levels) > 1:
+            for level in levels:
+                mine = [e for e in eps if e.get("difficulty") == level]
+                out[f"difficulty/{level}/survival_rate"] = sum(e["terminal"] in ("tick_cap", "win") for e in mine) / len(mine)
         for name in L.TERMINAL_NAMES:
             out[f"terminals/{name}"] = terms[name] / n
         if self.head_to_head:
@@ -377,10 +382,14 @@ class Trainer:
         need = int(rule.get("min_episodes", 200))
         if len(self.stage_episodes) < need:
             return False
-        # Judged only on the listed scenarios when given (e.g. the ones with
-        # nations), so easy games cannot carry a promotion.
+        # Judged only on the listed scenarios and nation difficulties when
+        # given (e.g. the Medium games of the scenarios with nations), so
+        # easy games cannot carry a promotion.
         judged = set(rule.get("scenarios") or [])
-        pool = [e for e in self.stage_episodes if not judged or e.get("scenario") in judged]
+        levels = rule.get("difficulty") or []
+        levels = {levels} if isinstance(levels, str) else set(levels)
+        pool = [e for e in self.stage_episodes if (not judged or e.get("scenario") in judged)
+                and (not levels or e.get("difficulty") in levels)]
         if len(pool) < need:
             return False
         recent = pool[-need:]
@@ -390,6 +399,7 @@ class Trainer:
         self.stage += 1
         self.stage_episodes.clear()
         where = f" in {sorted(judged)}" if judged else ""
+        where += f" at {'/'.join(sorted(levels))}" if levels else ""
         self.log(f"[{self.name}] curriculum: survival {survival:.2f}{where} over {need} episodes, promoted to stage {self.stage}")
         return True
 

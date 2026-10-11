@@ -410,6 +410,11 @@ async function loadMetrics() {
       const m = key.match(/^scenario\/(.+)\/survival_rate$/);
       if (m && points.length > 1) drawChart(minis, pretty(m[1]), points, pct, true);
     }
+    // Stages that mix nation difficulties: survival against each one.
+    for (const [key, points] of Object.entries(data.series)) {
+      const m = key.match(/^difficulty\/(.+)\/survival_rate$/);
+      if (m && points.length > 1) drawChart(minis, `${m[1]} nations`, points, pct, true);
+    }
     $("scenario-block").hidden = !minis.children.length;
     renderIntents(data.intents || {});
     $("metrics-note").textContent = data.note || "";

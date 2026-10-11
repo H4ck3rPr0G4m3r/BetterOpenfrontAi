@@ -469,7 +469,8 @@ def read_metrics(run: str) -> dict:
                 continue
     stride = max(1, len(rows) // METRIC_POINTS)
     series = {}
-    scenario_keys = sorted({k for r in rows for k in r if k.startswith("scenario/") and k.endswith("/survival_rate")})
+    scenario_keys = sorted({k for r in rows for k in r if k.startswith(("scenario/", "difficulty/"))
+                            and k.endswith("/survival_rate")})
     for key in (*METRIC_KEYS, *scenario_keys):
         points = [{"step": r["step"], "value": r[key]} for r in rows[::stride]
                   if isinstance(r.get(key), (int, float)) and r[key] == r[key]]

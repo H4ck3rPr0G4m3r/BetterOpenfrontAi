@@ -324,12 +324,49 @@ def test_curriculum_stages_reweight_scenarios_and_set_difficulty():
     from openfront.config import scenario_workers
 
     cfg = load_config("configs/main.yaml")
-    early, late = Counter(n for n, _ in scenario_workers(cfg, 0)), Counter(n for n, _ in scenario_workers(cfg, 2))
+    early, late = Counter(n for n, _ in scenario_workers(cfg, 0)), Counter(n for n, _ in scenario_workers(cfg, 3))
     assert early["easy"] > late["easy"] and early["close_rivals"] <= late["close_rivals"]
     assert all(env["difficulty"] == "Easy" for _, env in scenario_workers(cfg, 0))
-    assert all(env["difficulty"] == "Medium" for _, env in scenario_workers(cfg, 1))
+    # Later stages mix difficulties over the workers with nations, Medium growing.
+    medium = [sum(env["difficulty"] == "Medium" for _, env in scenario_workers(cfg, s) if env["nations"] != "disabled")
+              for s in (1, 2, 3)]
+    assert 0 < medium[0] < medium[1] <= medium[2]
+    assert any(env["difficulty"] == "Easy" for _, env in scenario_workers(cfg, 3) if env["nations"] != "disabled")
     assert all(env["nations"] == "disabled" for n, env in scenario_workers(cfg, 0) if n == "easy")
     assert sum(1 for _ in scenario_workers(cfg, 0)) == cfg["env"]["workers"]
+
+
+def test_difficulty_mix_splits_workers_and_interleaves():
+    from openfront.config import scenario_workers
+
+    cfg = load_config(overrides={
+        "env": {"workers": 8},
+        "scenarios": [{"name": "a", "seats": 1}, {"name": "b", "seats": 1},
+                      {"name": "own", "seats": 1, "difficulty": "Hard"}, {"name": "calm", "seats": 1, "nations": "disabled"}],
+        "curriculum": [{"difficulty": {"Easy": 1, "Medium": 1}, "weights": {"a": 2, "b": 2, "own": 1, "calm": 1}}],
+    })
+    plan = scenario_workers(cfg)
+    assert {env["difficulty"] for n, env in plan if n == "own"} == {"Hard"}  # a scenario's own difficulty wins
+    mixed = [env["difficulty"] for n, env in plan if n in ("a", "b")]
+    assert Counter(mixed) == {"Easy": len(mixed) // 2, "Medium": len(mixed) - len(mixed) // 2}
+    for name in ("a", "b"):  # each multi-worker scenario sees both
+        assert {env["difficulty"] for n, env in plan if n == name} == {"Easy", "Medium"}
+    with pytest.raises(ValueError):
+        load_config(overrides={"curriculum": [{"difficulty": {"Brutal": 1}}]})
+    with pytest.raises(ValueError):
+        load_config(overrides={"curriculum": [{"difficulty": {"Easy": 0}}]})
+
+
+def test_promotion_can_be_judged_on_the_hard_games_only(tmp_path):
+    cfg = tiny_config(tmp_path)
+    cfg["curriculum"] = [{"difficulty": {"Easy": 1, "Medium": 1},
+                          "promote": {"survival": 0.5, "min_episodes": 4, "difficulty": "Medium"}}, {}]
+    trainer = Trainer(cfg, worker_factory=fake_factory([], game_length=5), log=lambda m: None)
+    ep = lambda term, level: {"terminal": term, "scenario": "default", "difficulty": level}
+    trainer.stage_episodes.extend([ep("tick_cap", "Easy")] * 10 + [ep("death", "Medium")] * 4)
+    assert not trainer._maybe_promote()  # Easy wins cannot carry it
+    trainer.stage_episodes.extend([ep("tick_cap", "Medium")] * 4)
+    assert trainer._maybe_promote() and trainer.stage == 1
 
 
 def test_promotion_is_judged_on_the_listed_scenarios(tmp_path):

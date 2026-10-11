@@ -2,7 +2,9 @@
 # Every game seats 4 agents: seat 0 is the learner, each other seat is the
 # live learner (50%) or a frozen snapshot from the opponent pool. Only
 # learner seats are trained on. Curriculum: start without nations and with
-# fewer bots, promote once 60% of learner episodes survive to the tick cap.
+# fewer bots, promote once 60% of learner episodes survive to the tick cap;
+# then nations come in as a mix, mostly Easy at first, mostly Medium at the
+# end, so there is no single jump to all-Medium nations.
 # Reward v3 and the v3 action rules (no donations, troop reserve, typed build
 # sites, close spawns) come from the defaults in openfront/config.py.
 run:
@@ -30,4 +32,6 @@ selfplay:
 
 curriculum:
   - {name: warmup, bots: 10, nations: disabled, promote: {survival: 0.6, min_episodes: 300}}
-  - {name: full, bots: 20, nations: default}
+  - {name: nations, bots: 20, nations: default, difficulty: {Easy: 2, Medium: 1},
+     promote: {survival: 0.4, min_episodes: 100, difficulty: Medium}}
+  - {name: full, bots: 20, nations: default, difficulty: {Easy: 1, Medium: 3}}

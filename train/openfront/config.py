@@ -165,8 +165,13 @@ def validate(cfg: dict) -> None:
         extra = set(stage) - CURRICULUM_ENV_KEYS - {"promote", "name", "weights"}
         if extra:
             raise ValueError(f"curriculum[{i}] has unknown keys {sorted(extra)}")
-        if stage.get("difficulty", env["difficulty"]) not in DIFFICULTIES:
-            raise ValueError(f"curriculum[{i}].difficulty must be one of {DIFFICULTIES}")
+        mix = difficulty_mix(stage.get("difficulty", env["difficulty"]))
+        if not mix or set(mix) - set(DIFFICULTIES) or min(mix.values()) <= 0:
+            raise ValueError(f"curriculum[{i}].difficulty must be one of {DIFFICULTIES} "
+                             "or a mix of them with weights > 0 (e.g. {Easy: 1, Medium: 2})")
+        judged = (stage.get("promote") or {}).get("difficulty")
+        if judged is not None and set([judged] if isinstance(judged, str) else judged) - set(DIFFICULTIES):
+            raise ValueError(f"curriculum[{i}].promote.difficulty must name {DIFFICULTIES}")
         unknown = set(stage.get("weights") or {}) - names
         if unknown:
             raise ValueError(f"curriculum[{i}].weights names unknown scenarios {sorted(unknown)}")
@@ -175,13 +180,37 @@ def validate(cfg: dict) -> None:
             raise ValueError(f"curriculum[{i}].promote.scenarios names unknown scenarios {sorted(unknown)}")
 
 
+def difficulty_mix(value) -> dict:
+    """{difficulty: weight} from a single difficulty or a mix of them."""
+    if isinstance(value, str):
+        return {value: 1.0}
+    return {str(k): float(v) for k, v in (value or {}).items()}
+
+
 def stage_env(cfg: dict, stage: int) -> dict:
-    """The env section with curriculum stage ``stage`` applied."""
+    """The env section with curriculum stage ``stage`` applied. A stage's
+    difficulty mix reads here as its most common difficulty; the per-worker
+    split is scenario_workers'."""
     env = copy.deepcopy(cfg["env"])
     if cfg["curriculum"]:
         stage_cfg = cfg["curriculum"][min(stage, len(cfg["curriculum"]) - 1)]
         env.update({k: v for k, v in stage_cfg.items() if k in CURRICULUM_ENV_KEYS})
+    mix = difficulty_mix(env.get("difficulty", "Medium"))
+    env["difficulty"] = max(mix, key=mix.get)
     return env
+
+
+def _split_difficulty(mix: dict, n: int) -> list[str]:
+    """``n`` difficulties in proportion to ``mix``, interleaved (E M E E M ...)
+    so that scenarios with several workers get some of each."""
+    total = sum(mix.values())
+    counts = dict.fromkeys(mix, 0)
+    out = []
+    for i in range(n):
+        pick = max(mix, key=lambda d: mix[d] / total * (i + 1) - counts[d])
+        counts[pick] += 1
+        out.append(pick)
+    return out
 
 
 MATCH_FALLBACK = {"map": "World", "bots": 20, "tick_cap": 12000, "close_spawn": 0.3, "seats": 4}
@@ -218,15 +247,18 @@ def scenario_workers(cfg: dict, stage: int = 0) -> list[tuple[str, dict]]:
     """(scenario name, env) per worker at curriculum ``stage``: workers split
     by weight (the stage's ``weights`` override the scenarios' own), each
     scenario getting at least one (largest remainder). Env: base, then the
-    stage's env keys, then the scenario's own keys."""
+    stage's env keys, then the scenario's own keys. A stage difficulty mix
+    ({Easy: 1, Medium: 2}) is split over the workers that have nations and
+    no difficulty of their own."""
     env = stage_env(cfg, stage)
     scenarios = cfg["scenarios"]
     workers = int(env["workers"])
+    stage_cfg = cfg["curriculum"][min(stage, len(cfg["curriculum"]) - 1)] if cfg["curriculum"] else {}
+    mix = difficulty_mix(stage_cfg.get("difficulty", cfg["env"]["difficulty"]))
     if not scenarios:
-        return [("default", copy.deepcopy(env))] * workers
-    overrides = {}
-    if cfg["curriculum"]:
-        overrides = cfg["curriculum"][min(stage, len(cfg["curriculum"]) - 1)].get("weights") or {}
+        return [("default", {**copy.deepcopy(env), "difficulty": d})
+                for d in _split_difficulty(mix, workers)]
+    overrides = stage_cfg.get("weights") or {}
     weights = [float(overrides.get(s["name"], s.get("weight", 1))) for s in scenarios]
     total = sum(weights)
     share = [1 + (workers - len(scenarios)) * w / total for w in weights]
@@ -236,7 +268,11 @@ def scenario_workers(cfg: dict, stage: int = 0) -> list[tuple[str, dict]]:
     out = []
     for sc, n in zip(scenarios, counts):
         merged = {**copy.deepcopy(env), **{k: v for k, v in sc.items() if k in SCENARIO_ENV_KEYS}}
-        out += [(str(sc["name"]), merged)] * n
+        out += [(str(sc["name"]), copy.deepcopy(merged)) for _ in range(n)]
+    mixed = [env for name, env in out if env["nations"] != "disabled"
+             and "difficulty" not in next(sc for sc in scenarios if sc["name"] == name)]
+    for env, difficulty in zip(mixed, _split_difficulty(mix, len(mixed))):
+        env["difficulty"] = difficulty
     return out
 
 
