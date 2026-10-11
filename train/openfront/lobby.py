@@ -109,7 +109,10 @@ def pick_public(rows: list[dict], kind: str = "ffa", min_lead: int = 10) -> dict
 def launch_context(pw, profile: Path, browser: str = "msedge", headless: bool = False):
     """A persistent browser context on ``profile``, falling back to bundled Chromium."""
     profile.mkdir(parents=True, exist_ok=True)
-    kwargs = dict(headless=headless, viewport={"width": 1400, "height": 860}, args=["--mute-audio"])
+    # Playwright turns the browser's sandbox off by default (--no-sandbox);
+    # this browser visits other people's sites, so it stays on.
+    kwargs = dict(headless=headless, viewport={"width": 1400, "height": 860}, args=["--mute-audio"],
+                  chromium_sandbox=True)
     channels = [browser] if browser != "chromium" else []
     for channel in [*channels, None]:
         try:
