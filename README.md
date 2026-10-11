@@ -121,6 +121,7 @@ Events and terminals:
 | crowdedPost | extra -0.5 per post within 20 tiles of another own post | spread posts along the front |
 | boatLaunch | +0.05 per boat with at least 10% of max troops, unless it fills the last of the 3 slots | keep boating, but never park all three boats out |
 | boatLanding | +0.2 per such boat that lands and takes its tile | boats that achieve something |
+| nuke | +0.05 per unit of damage of an own nuke that lands (hostile structure levels + hostile tiles/1000, own and allied losses x2 against it; at most ±3 a step) | nukes that hit something worth the gold; shot-down ones pay nothing |
 
 Action rules: donations, alliance breaking and embargoes are off
 (`env.allow_donations`, `env.allow_betrayal`, `env.allow_embargo`), attacks must leave
@@ -128,6 +129,18 @@ Action rules: donations, alliance breaking and embargoes are off
 by terrain (defense posts ~10 tiles behind a front with another player,
 ports on the coast, cities and factories inside the territory). Training
 games last 20 game minutes; evaluation games 60.
+
+Nukes: atom bomb, hydrogen bomb and MIRV are three launch actions aimed at
+a map cell with hostile land. They open when a silo is ready and the bomb
+is affordable; the game launches from the closest ready silo. The AI sees
+hostile SAM coverage, nukes in flight (its own and incoming), what it can
+afford and its ready silos. Checkpoints from before nukes (schema v3) load
+and resume: the new inputs start at zero weight, so the AI plays exactly as
+before until it learns them.
+
+Death reports: `OPENFRONT_DEATH_LOG=<file> python evaluate.py ...` appends
+one JSON line per AI death (when, peak size, who took its land, troops
+against its strongest neighbour, nukes aimed at it).
 
 ## Tests
 

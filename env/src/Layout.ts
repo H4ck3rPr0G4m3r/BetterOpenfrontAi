@@ -1,5 +1,5 @@
 /**
- * Observation and action layout, schema v2. One source of truth for the
+ * Observation and action layout, schema v4. One source of truth for the
  * encoder, the codec, the bridge, and (through HELLO) the Python side.
  *
  * Observation per seat, two parts:
@@ -10,7 +10,7 @@
  *   intent  [NUM_INTENTS]
  *   target  [NUM_INTENTS * NUM_SLOTS]   (row per intent: which slots that intent may use)
  *   ratio   [NUM_RATIO_BUCKETS]
- *   spatial [NUM_SPATIAL_KINDS * RASTER_CELLS]  (0 = boat landing, 1 = warship water)
+ *   spatial [NUM_SPATIAL_KINDS * RASTER_CELLS]  (0 = boat landing, 1 = warship water, 2 = nuke target)
  *   site    [NUM_SITE_KINDS * MAX_BUILD_SITES]  (0 = build, 1 = upgrade)
  *
  * Every head except intent is conditioned on the sampled intent: the policy
@@ -19,7 +19,9 @@
  * (not sampled, not part of the log-probability). See HEAD_USAGE.
  */
 
-export const SCHEMA_VERSION = 3;
+/** v4: nukes (three launch intents, a nuke-target map row, SAM and nuke
+ *  planes, nuke globals). v3 checkpoints migrate on load (train/openfront/model.py). */
+export const SCHEMA_VERSION = 4;
 
 export const RASTER_WIDTH = 128;
 export const RASTER_HEIGHT = 64;
@@ -39,8 +41,14 @@ export enum Plane {
   Targets = 8,
   OwnStructures = 9,
   EnemyStructures = 10,
+  /** Within range of a hostile SAM launcher: nukes aimed here may be shot down. */
+  EnemySAMCover = 11,
+  /** Blast zones of hostile nukes in flight. */
+  IncomingNukes = 12,
+  /** Blast zones of this seat's own nukes in flight. */
+  OwnNukes = 13,
 }
-export const NUM_PLANES = 11;
+export const NUM_PLANES = 14;
 export const RASTER_SIZE = NUM_PLANES * RASTER_CELLS;
 
 /** Slot 0 is terra nullius (expansion), slots 1..16 are players. */
@@ -108,8 +116,16 @@ export enum GlobalField {
   InSpawnPhase = 25,
   AllianceRequests = 26,
   Factories = 27,
+  /** Gold / price, clamped to 1: 1 means this bomb is affordable now. */
+  AtomAffordable = 28,
+  HydrogenAffordable = 29,
+  MIRVAffordable = 30,
+  /** Silos ready to launch (built, not reloading), / 3. */
+  SilosReady = 31,
+  /** Hostile nukes in flight aimed at this seat's land, / 3. */
+  IncomingNukes = 32,
 }
-export const NUM_GLOBALS = 28;
+export const NUM_GLOBALS = 33;
 
 export const SLOT_TABLE_SIZE = NUM_SLOTS * SLOT_FIELDS;
 export const SITE_TABLE_SIZE = MAX_BUILD_SITES * SITE_FIELDS;
@@ -133,14 +149,18 @@ export enum IntentType {
   DonateGold = 11,
   DonateTroops = 12,
   CancelAttack = 13,
+  /** Launch from the closest ready silo (the engine picks it) at a map cell. */
+  NukeAtom = 14,
+  NukeHydrogen = 15,
+  NukeMIRV = 16,
 }
-export const NUM_INTENTS = 14;
+export const NUM_INTENTS = 17;
 
 /** Troop/gold fraction per ratio bucket. */
 export const RATIO_BUCKETS = [0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 0.9, 1.0];
 export const NUM_RATIO_BUCKETS = RATIO_BUCKETS.length;
 
-export const NUM_SPATIAL_KINDS = 2; // 0 boat landing, 1 warship water
+export const NUM_SPATIAL_KINDS = 3; // 0 boat landing, 1 warship water, 2 nuke target
 export const NUM_SITE_KINDS = 2; // 0 build, 1 upgrade
 
 /** Unit types offered on build sites, in one-hot order. */
@@ -187,7 +207,17 @@ export const HEAD_USAGE: HeadUsage[] = [
   { ...none, target: true, ratio: true }, // donate gold
   { ...none, target: true, ratio: true }, // donate troops
   none, // cancel attack
+  { ...none, spatial: 2 }, // nuke: atom bomb
+  { ...none, spatial: 2 }, // nuke: hydrogen bomb
+  { ...none, spatial: 2 }, // nuke: MIRV
 ];
+
+/** Engine unit type per nuke intent. */
+export const NUKE_INTENTS: ReadonlyMap<number, "Atom Bomb" | "Hydrogen Bomb" | "MIRV"> = new Map([
+  [IntentType.NukeAtom, "Atom Bomb"],
+  [IntentType.NukeHydrogen, "Hydrogen Bomb"],
+  [IntentType.NukeMIRV, "MIRV"],
+]);
 
 /** Flat mask buffer for one seat, with typed views per head. */
 export interface Masks {

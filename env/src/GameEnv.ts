@@ -31,7 +31,7 @@ import { RewardWeights } from "./BehaviorConfig";
 import { createMasks, Masks } from "./Layout";
 import { createSeatObservation, ObservationEncoder, SeatObservation, MAX_SEATS } from "./ObservationEncoder";
 import { buildGameRecord, replayGameID, seatClientID, shouldRecordReplay, writeReplayFile } from "./Replay";
-import { boatEvents, BoatTrack, earnedGold, newDefensePosts, placementScore, Reward, SeatEvents } from "./Reward";
+import { boatEvents, BoatTrack, earnedGold, newDefensePosts, nukeEvents, NukeTrack, placementScore, Reward, SeatEvents } from "./Reward";
 import { loadFreshTerrainMap } from "./Terrain";
 import { TurnFeeder } from "./TurnFeeder";
 import type { Action, EnvConfig, TerminalReason } from "./types";
@@ -70,6 +70,8 @@ interface Seat {
   posts: Set<number>;
   /** Own boats at the previous step. */
   boats: Map<number, BoatTrack>;
+  /** Own nukes in flight at the previous step. */
+  nukes: Map<number, NukeTrack>;
   /** Set when OPENFRONT_DEATH_LOG is on. */
   death?: DeathReport;
 }
@@ -208,6 +210,7 @@ export class GameEnv {
         earned: 0,
         posts: new Set<number>(),
         boats: new Map<number, BoatTrack>(),
+        nukes: new Map<number, NukeTrack>(),
         death: DeathReport.file() !== undefined ? new DeathReport() : undefined,
       };
     });
@@ -267,6 +270,7 @@ export class GameEnv {
           postsCrowded: posts.crowded,
           boatsLaunched: boats.launched,
           boatsLanded: boats.landed,
+          nukeDamage: nukeEvents(game, player, seat.nukes),
           kills: seat.pendingKills,
           betrayals: seat.pendingBetrayals,
           diplomacy: diplomacy[i],

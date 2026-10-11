@@ -287,18 +287,63 @@ def save_checkpoint(path, model: OpenFrontPolicy, meta: dict | None = None, opti
 
 
 def load_checkpoint(path, device="cpu") -> tuple[OpenFrontPolicy, dict]:
-    """Load a policy checkpoint. Refuses v1 (SB3 .zip) and layout mismatches."""
+    """Load a policy checkpoint. Refuses v1 (SB3 .zip) and layout mismatches;
+    schema v3 checkpoints are migrated to v4 (see migrate_v3)."""
     if str(path).endswith(".zip"):
         raise ValueError(f"{path} is a v1 SB3 checkpoint; the v2 policy cannot load it (retrain)")
     payload = torch.load(str(path), map_location=device, weights_only=False)
     if payload.get("format") != CHECKPOINT_FORMAT:
         raise ValueError(f"{path} is not an {CHECKPOINT_FORMAT} checkpoint")
-    L.check_layout(payload["layout"])
     cfg = payload["model_config"]
     cfg["channels"] = tuple(cfg.get("channels", ModelConfig.channels))
     model = OpenFrontPolicy(ModelConfig(**cfg)).to(device)
+    if payload["layout"].get("version") == 3 and L.SCHEMA_VERSION == 4:
+        migrate_v3(payload, model)
+    L.check_layout(payload["layout"])
     model.load_state_dict(payload["state_dict"])
     return model, payload
+
+
+# v3 -> v4 (nukes): what each grown tensor had before.
+V3 = {"planes": 11, "globals": 28, "intents": 14, "spatial_kinds": 2}
+
+
+def migrate_v3(payload: dict, fresh: OpenFrontPolicy) -> None:
+    """Grow a v3 (no nukes) state dict into the v4 network in place, so it
+    acts exactly as before until it learns the new parts:
+
+    * new raster planes and globals enter with zero weights (unseen inputs
+      change nothing);
+    * the three nuke intents get zero weights and the median old intent
+      bias, so they are tried now and then when their masks open;
+    * the nuke-target map row and the new intent embeddings start from
+      ``fresh``'s random init (they only matter once a nuke is chosen).
+
+    The optimizer state is dropped: its moments match the old shapes."""
+    old = payload["state_dict"]
+    new = {k: v.clone() for k, v in fresh.state_dict().items()}
+    for key, value in old.items():
+        target = new[key]
+        if target.shape == value.shape:
+            new[key] = value.clone()
+            continue
+        slices = tuple(slice(0, n) for n in value.shape)
+        target[slices] = value
+        if key == "stem.0.weight":
+            target[:, V3["planes"]:] = 0
+        elif key == "global_mlp.0.weight":
+            target[:, V3["globals"]:] = 0
+        elif key == "intent_head.weight":
+            target[V3["intents"]:] = 0
+        elif key == "intent_head.bias":
+            target[V3["intents"]:] = value.median()
+        elif key not in ("intent_embed.weight", "spatial_out.weight", "spatial_out.bias"):
+            raise ValueError(f"cannot migrate {key}: {tuple(value.shape)} -> {tuple(target.shape)}")
+        new[key] = target
+    payload["state_dict"] = new
+    payload["layout"] = L.layout_dict()
+    payload.pop("optimizer", None)
+    payload["migrated_from"] = 3
 
 
 def parameter_count(model: nn.Module) -> int:

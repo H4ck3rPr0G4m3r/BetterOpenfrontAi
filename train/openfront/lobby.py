@@ -37,7 +37,7 @@ PROFILES = Path(__file__).resolve().parents[1] / ".lobby_profiles"
 HOSTS = {"local": "http://localhost:9000", "openfront": "https://openfront.io"}
 # Local dev servers mint 8-character IDs, openfront.io currently 10.
 GAME_ID = re.compile(r"^[A-Za-z0-9]{6,16}$")
-PAGE_AGENT_VERSION = 2
+PAGE_AGENT_VERSION = 3
 # Public lobbies the site schedules itself; "hosted" ones are player-run.
 PUBLIC_KINDS = ("ffa", "team", "special")
 

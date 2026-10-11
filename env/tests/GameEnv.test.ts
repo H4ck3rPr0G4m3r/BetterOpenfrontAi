@@ -7,7 +7,7 @@ import { createGameRunner } from "../../OpenFrontIO/src/core/GameRunner";
 import { Difficulty } from "../../OpenFrontIO/src/core/game/Game";
 import { NodeGameMapLoader } from "../../OpenFrontIO/tests/perf/fullgame/NodeGameMapLoader";
 import type { SeatStep } from "../src/GameEnv";
-import { GlobalField, GLOBAL_OFFSET } from "../src/Layout";
+import { GlobalField, GLOBAL_OFFSET, NUM_INTENTS } from "../src/Layout";
 import { NOOP_ACTION } from "../src/types";
 import { MAPS_DIR, makeEnv, randomAction, seededRandom, stateHash } from "./helpers/env";
 
@@ -110,7 +110,7 @@ describe("GameEnv lifecycle", () => {
       rows = env.step([NOOP_ACTION, NOOP_ACTION]);
       expect(rows[deadSeat].active).toBe(false);
       expect(rows[deadSeat].reward).toBe(0);
-      expect(Array.from(rows[deadSeat].masks.intent)).toEqual([1, ...new Array(13).fill(0)]);
+      expect(Array.from(rows[deadSeat].masks.intent)).toEqual([1, ...new Array(NUM_INTENTS - 1).fill(0)]);
     }
   }, LONG);
 });

@@ -407,3 +407,36 @@ def test_trainer_runs_mixed_scenarios(tmp_path):
     trainer.train()
     last = json.loads((tmp_path / "runs" / "t" / "metrics.jsonl").read_text().splitlines()[-1])
     assert {"scenario/solo/survival_rate", "scenario/duel/survival_rate", "scenario/ffa/survival_rate"} <= set(last)
+
+
+def test_v3_checkpoints_migrate_to_v4_and_act_as_before(tmp_path):
+    from openfront.model import V3, load_checkpoint, save_checkpoint
+
+    fresh = OpenFrontPolicy()
+    # A v3 checkpoint is the v4 network without the nuke parts.
+    cut = {"stem.0.weight": (slice(None), slice(0, V3["planes"])), "global_mlp.0.weight": (slice(None), slice(0, V3["globals"])),
+           "intent_head.weight": (slice(0, V3["intents"]),), "intent_head.bias": (slice(0, V3["intents"]),),
+           "intent_embed.weight": (slice(0, V3["intents"]),), "spatial_out.weight": (slice(0, V3["spatial_kinds"]),),
+           "spatial_out.bias": (slice(0, V3["spatial_kinds"]),)}
+    old = {k: (v[cut[k]] if k in cut else v).clone() for k, v in fresh.state_dict().items()}
+    path = tmp_path / "v3.pt"
+    save_checkpoint(path, fresh, meta={"global_step": 7})
+    payload = torch.load(path, weights_only=False)
+    payload["state_dict"] = old
+    payload["layout"] = {**payload["layout"], "version": 3}
+    payload["optimizer"] = {"state": {}}
+    torch.save(payload, path)
+
+    model, loaded = load_checkpoint(path)
+    assert loaded["migrated_from"] == 3 and "optimizer" not in loaded and loaded["meta"]["global_step"] == 7
+    assert torch.equal(model.stem[0].weight[:, :V3["planes"]], old["stem.0.weight"])
+    # Whatever the new planes and globals hold, the old network's outputs do not move.
+    raster = torch.randint(0, 255, (2, L.RASTER_PLANES, L.RASTER_HEIGHT, L.RASTER_WIDTH), dtype=torch.uint8)
+    features = torch.rand(2, L.FEATURE_SIZE)
+    blank_r, blank_f = raster.clone(), features.clone()
+    blank_r[:, V3["planes"]:] = 0
+    blank_f[:, L.SLOT_TABLE + L.SITE_TABLE + V3["globals"]:] = 0
+    with torch.no_grad():
+        a, b = model.encode(raster, features), model.encode(blank_r, blank_f)
+        assert torch.allclose(model.intent_head(a["h"]), model.intent_head(b["h"]))
+        assert torch.allclose(model.value(a), model.value(b))

@@ -101,6 +101,9 @@ class Trainer:
             self.update = int(meta.get("update", 0))
             self.stage = int(meta.get("stage", 0))
             self._resumed_meta = meta
+            if payload.get("migrated_from"):
+                self.log(f"[{self.name}] {resume} is schema v{payload['migrated_from']}: migrated to "
+                         f"v{L.SCHEMA_VERSION} (nukes), optimizer state starts fresh")
         else:
             self.model = OpenFrontPolicy(ModelConfig(**cfg["model"])).to(self.device)
             payload = {}

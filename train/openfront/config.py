@@ -66,6 +66,7 @@ DEFAULTS: dict = {
         "crowdedPost": -0.5,
         "boatLaunch": 0.05,
         "boatLanding": 0.2,
+        "nuke": 0.05,
     },
     "ppo": {
         "n_steps": 256,

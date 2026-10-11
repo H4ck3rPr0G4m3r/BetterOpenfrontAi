@@ -1,4 +1,4 @@
-"""Observation / action layout, schema v2. Mirrors ``env/src/Layout.ts``.
+"""Observation / action layout, schema v4. Mirrors ``env/src/Layout.ts``.
 
 The worker's HELLO carries its layout; ``check_layout`` refuses to run when
 the two sides disagree, so they cannot drift silently.
@@ -8,9 +8,9 @@ from __future__ import annotations
 
 import numpy as np
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
-RASTER_PLANES = 11
+RASTER_PLANES = 14
 RASTER_HEIGHT = 64
 RASTER_WIDTH = 128
 RASTER_CELLS = RASTER_HEIGHT * RASTER_WIDTH
@@ -18,13 +18,14 @@ RASTER_SIZE = RASTER_PLANES * RASTER_CELLS
 PLANE_NAMES = (
     "land", "self", "ally", "enemy", "unowned", "self_troops", "enemy_troops",
     "threat", "targets", "own_structures", "enemy_structures",
+    "enemy_sam_cover", "incoming_nukes", "own_nukes",
 )
 
 NUM_SLOTS = 17
 SLOT_FIELDS = 16
 MAX_BUILD_SITES = 32
 SITE_FIELDS = 12
-NUM_GLOBALS = 28
+NUM_GLOBALS = 33
 SLOT_TABLE = NUM_SLOTS * SLOT_FIELDS
 SITE_TABLE = MAX_BUILD_SITES * SITE_FIELDS
 FEATURE_SIZE = SLOT_TABLE + SITE_TABLE + NUM_GLOBALS
@@ -37,12 +38,15 @@ INTENT_NAMES = (
     "noop", "attack", "boat", "build", "upgrade", "move_warship", "target_player",
     "alliance_request", "alliance_reject", "break_alliance", "embargo",
     "donate_gold", "donate_troops", "cancel_attack",
+    "nuke_atom", "nuke_hydrogen", "nuke_mirv",
 )
 NUM_INTENTS = len(INTENT_NAMES)
 NOOP, ATTACK, BOAT, BUILD, UPGRADE, MOVE_WARSHIP = range(6)
+NUKE_ATOM, NUKE_HYDROGEN, NUKE_MIRV = 14, 15, 16
+NUKE_NAMES = {NUKE_ATOM: "atom bomb", NUKE_HYDROGEN: "hydrogen bomb", NUKE_MIRV: "MIRV"}
 RATIO_BUCKETS = (0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 0.9, 1.0)
 NUM_RATIOS = len(RATIO_BUCKETS)
-SPATIAL_KINDS = 2
+SPATIAL_KINDS = 3  # boat landing, warship water, nuke target
 SITE_KINDS = 2
 BUILD_TYPES = ("City", "Defense Post", "Port", "SAM Launcher", "Missile Silo", "Factory", "Warship")
 
@@ -54,10 +58,10 @@ MASK_SITE = MASK_SPATIAL + SPATIAL_KINDS * RASTER_CELLS
 MASK_SIZE = MASK_SITE + SITE_KINDS * MAX_BUILD_SITES
 
 # Which conditional heads each intent uses: target?, ratio?, spatial kind (-1 none), site kind (-1 none).
-USES_TARGET = np.array([0, 1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0], dtype=bool)
-USES_RATIO = np.array([0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0], dtype=bool)
-SPATIAL_KIND = np.array([-1, -1, 0, -1, -1, 1, -1, -1, -1, -1, -1, -1, -1, -1], dtype=np.int64)
-SITE_KIND = np.array([-1, -1, -1, 0, 1, -1, -1, -1, -1, -1, -1, -1, -1, -1], dtype=np.int64)
+USES_TARGET = np.array([0, 1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0], dtype=bool)
+USES_RATIO = np.array([0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0], dtype=bool)
+SPATIAL_KIND = np.array([-1, -1, 0, -1, -1, 1, -1, -1, -1, -1, -1, -1, -1, -1, 2, 2, 2], dtype=np.int64)
+SITE_KIND = np.array([-1, -1, -1, 0, 1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1], dtype=np.int64)
 
 TERMINALS = {0: None, 1: "win", 2: "death", 3: "tick_cap", 4: "sim_error", 5: "aborted", 6: "worker_death"}
 WORKER_DEATH = 6
@@ -118,6 +122,8 @@ def describe_action(action) -> str:
         return f"boat to cell ({cell % RASTER_WIDTH},{cell // RASTER_WIDTH}) with {int(RATIO_BUCKETS[ratio] * 100)}%"
     if intent == MOVE_WARSHIP:
         return f"warship to cell ({cell % RASTER_WIDTH},{cell // RASTER_WIDTH})"
+    if intent in NUKE_NAMES:
+        return f"{NUKE_NAMES[intent]} at cell ({cell % RASTER_WIDTH},{cell // RASTER_WIDTH})"
     if intent in (BUILD, UPGRADE):
         return f"{name} site {site}"
     if USES_TARGET[intent]:

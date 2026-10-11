@@ -1,5 +1,5 @@
-import type { Game, Player, PlayerID } from "../../OpenFrontIO/src/core/game/Game";
-import { UnitType } from "../../OpenFrontIO/src/core/game/Game";
+import type { Game, Player, PlayerID, Unit } from "../../OpenFrontIO/src/core/game/Game";
+import { Structures, UnitType } from "../../OpenFrontIO/src/core/game/Game";
 import type { TileRef } from "../../OpenFrontIO/src/core/game/GameMap";
 import { GOLD_INDEX_WORK } from "../../OpenFrontIO/src/core/StatsSchemas";
 import { DEFAULT_REWARD_WEIGHTS, RewardWeights } from "./BehaviorConfig";
@@ -22,6 +22,13 @@ const STEPS_PER_MINUTE = 60;
 export const POST_SPACING = 20;
 /** A boat launch pays only with at least this share of max troops aboard. */
 export const BOAT_MIN_SHARE = 0.1;
+/** Nuke damage counts hostile structure levels plus hostile tiles / NUKE_TILE_REF. */
+export const NUKE_TILE_REF = 1000;
+/** Own and allied losses in a blast count this many times against it. */
+export const NUKE_FRIENDLY_FACTOR = 2;
+/** Bound on the nuke term per step: a MIRV's warheads can wipe a whole
+ *  empire, and one step must not outweigh winning the game. */
+export const NUKE_REWARD_CAP = 3;
 
 /** Paid by the structures potential. Defense posts are left out: they are
  *  priced per build (defensePost, crowdedPost) instead. */
@@ -55,6 +62,8 @@ export interface SeatEvents {
   boatsLaunched: number;
   /** Own boats that landed and took their landing tile this step. */
   boatsLanded: number;
+  /** Damage of own nukes that detonated this step (nukeDamage units). */
+  nukeDamage: number;
 }
 
 export const NO_EVENTS: SeatEvents = {
@@ -68,6 +77,7 @@ export const NO_EVENTS: SeatEvents = {
   postsCrowded: 0,
   boatsLaunched: 0,
   boatsLanded: 0,
+  nukeDamage: 0,
 };
 
 /**
@@ -79,6 +89,7 @@ export const NO_EVENTS: SeatEvents = {
  *         + advantage · land · advantageTiles / (LAND_REF + tiles) + defend · repelled
  *         + defensePost · posts built + crowdedPost · posts built near another post
  *         + boatLaunch · paid boat launches + boatLanding · boats landed
+ *         + clip(nuke · damage of own nukes that detonated, ±NUKE_REWARD_CAP)
  *   Φ(s) = land · log(1 + tiles / LAND_REF) + structures · log(1 + structure levels)
  *          + cities · log(1 + city levels) + popCap · log(1 + max troops / POP_REF)
  *          + income · log(1 + income per minute / INCOME_REF)
@@ -104,6 +115,10 @@ export const NO_EVENTS: SeatEvents = {
  * by 300k steps): a boat costs troops at once and its land arrives later.
  * Launches with a real force pay a little while a slot stays free, and a
  * landing that takes its tile pays more.
+ *
+ * v9: nukes. A bomb costs its gold at once and pays here only if it lands
+ * (not shot down): hostile structure levels in the blast plus hostile land,
+ * own and allied losses counted NUKE_FRIENDLY_FACTOR times against it.
  *
  * Why this shape (2026-10 diagnosis): the v1 reward paid `kill` for every
  * elimination anywhere on the map (~70 per World game, nearly all bots dying
@@ -157,6 +172,7 @@ export class Reward {
     r += this.add("crowdedPost", w.crowdedPost * events.postsCrowded);
     r += this.add("boatLaunch", w.boatLaunch * events.boatsLaunched);
     r += this.add("boatLanding", w.boatLanding * events.boatsLanded);
+    r += this.add("nuke", Math.max(-NUKE_REWARD_CAP, Math.min(NUKE_REWARD_CAP, w.nuke * events.nukeDamage)));
     if (player.isAlive()) {
       r += this.add("survive", w.survive);
       r += this.add("lowTroops", w.lowTroops * lowTroopDeficit(game, player, w.lowTroopsBelow));
@@ -290,6 +306,89 @@ export function boatEvents(game: Game, player: Player, known: Map<number, BoatTr
     known.set(boat.id(), { target, retreating: boat.transportShipState().isRetreating, targetOwned: ours(target), real });
   }
   return { launched, landed };
+}
+
+/** One of our nukes in flight, with the damage it was worth when first seen. */
+export interface NukeTrack {
+  unit: Unit;
+  damage: number;
+}
+
+const PAID_NUKES = [UnitType.AtomBomb, UnitType.HydrogenBomb, UnitType.MIRVWarhead] as const;
+
+/**
+ * Damage of own nukes that detonated since the last call. A nuke that is
+ * gone counts only when it reached its target: intercepted ones are deleted
+ * without that flag. A MIRV pays through its warheads. The damage is valued
+ * when a nuke is first seen, on the land as it stood at launch (flights are
+ * short). `known` is updated in place.
+ */
+export function nukeEvents(game: Game, player: Player, known: Map<number, NukeTrack>): number {
+  const nukes = player.isAlive() ? player.units(...PAID_NUKES) : [];
+  const now = new Set(nukes.map((n) => n.id()));
+  let damage = 0;
+  for (const [id, track] of known) {
+    if (now.has(id)) continue;
+    if (track.unit.reachedTarget()) damage += track.damage;
+    known.delete(id);
+  }
+  for (const nuke of nukes) {
+    const target = nuke.targetTile();
+    if (known.has(nuke.id()) || target === undefined) continue;
+    known.set(nuke.id(), { unit: nuke, damage: nukeDamage(game, player, target, nuke.type()) });
+  }
+  return damage;
+}
+
+/**
+ * What a blast at `tile` would destroy, from `player`'s point of view:
+ * hostile structure levels + hostile tiles / NUKE_TILE_REF, minus
+ * NUKE_FRIENDLY_FACTOR times the same for own and allied ones. Inner-radius
+ * tiles count fully, outer-ring tiles half (the engine destroys those with
+ * probability 1/2); every structure inside the outer radius is destroyed.
+ */
+export function nukeDamage(game: Game, player: Player, tile: TileRef, type: UnitType): number {
+  const { inner, outer } = game.config().nukeMagnitudes(type);
+  const map = game.map();
+  const w = map.width();
+  const h = map.height();
+  const x0 = tile % w;
+  const y0 = Math.floor(tile / w);
+  const inner2 = inner * inner;
+  const outer2 = outer * outer;
+  const friendlyByOwner = new Map<number, boolean>();
+  const friendly = (smallID: number): boolean => {
+    let f = friendlyByOwner.get(smallID);
+    if (f === undefined) {
+      const p = game.playerBySmallID(smallID);
+      f = smallID === player.smallID() || (p.isPlayer() && player.isFriendly(p as Player));
+      friendlyByOwner.set(smallID, f);
+    }
+    return f;
+  };
+  let hostileTiles = 0;
+  let friendlyTiles = 0;
+  for (let y = Math.max(0, y0 - outer); y <= Math.min(h - 1, y0 + outer); y++) {
+    for (let x = Math.max(0, x0 - outer); x <= Math.min(w - 1, x0 + outer); x++) {
+      const d2 = (x - x0) * (x - x0) + (y - y0) * (y - y0);
+      if (d2 > outer2) continue;
+      const t = y * w + x;
+      if (!map.isLand(t)) continue;
+      const owner = map.ownerID(t);
+      if (owner === 0) continue;
+      const weight = d2 <= inner2 ? 1 : 0.5;
+      if (friendly(owner)) friendlyTiles += weight;
+      else hostileTiles += weight;
+    }
+  }
+  let hostileLevels = 0;
+  let friendlyLevels = 0;
+  for (const { unit, distSquared } of game.nearbyUnits(tile, outer, Structures.types)) {
+    if (distSquared >= outer2) continue;
+    if (friendly(unit.owner().smallID())) friendlyLevels += unit.level();
+    else hostileLevels += unit.level();
+  }
+  return hostileLevels + hostileTiles / NUKE_TILE_REF - NUKE_FRIENDLY_FACTOR * (friendlyLevels + friendlyTiles / NUKE_TILE_REF);
 }
 
 export function structureLevels(player: Player): number {

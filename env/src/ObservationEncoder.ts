@@ -1,5 +1,6 @@
 import type { Game, Player, PlayerID } from "../../OpenFrontIO/src/core/game/Game";
 import { PlayerType, Structures, UnitType } from "../../OpenFrontIO/src/core/game/Game";
+import type { TileRef } from "../../OpenFrontIO/src/core/game/GameMap";
 import { buildCandidates } from "./BuildSites";
 import { cellGeometry, CellGeometry, tileCell } from "./Geometry";
 import {
@@ -12,6 +13,7 @@ import {
   Plane,
   RASTER_CELLS,
   RASTER_SIZE,
+  RASTER_WIDTH,
   SITE_FIELDS,
   SITE_OFFSET,
   SiteField,
@@ -78,6 +80,10 @@ export class ObservationEncoder {
   private allyTroop = new Float32Array(0);
   private ownStructures = new Float32Array(0);
   private enemyStructures = new Float32Array(0);
+  private samCover = new Uint8Array(0);
+  private nukesIn = new Uint8Array(0);
+  private nukesOwn = new Uint8Array(0);
+  private incomingNukes: number[] = [];
 
   /** @param horizonTicks post-spawn ticks that map to TimeFraction = 1 (the env's tick cap). */
   constructor(private readonly horizonTicks: number = 6000) {}
@@ -166,9 +172,42 @@ export class ObservationEncoder {
       }
     }
 
+    // Nukes and SAMs: hostile SAM cover, hostile and own blast zones in flight.
+    this.samCover.fill(0);
+    this.nukesIn.fill(0);
+    this.nukesOwn.fill(0);
+    this.incomingNukes = new Array(S).fill(0);
+    const config = game.config();
+    const hostileTo = (s: number, ownerSmall: number): boolean =>
+      ownerSmall !== seats[s].smallID() &&
+      (ownerSmall > maxSmallID || (roleBits[ownerSmall] & (1 << (s * ROLES + ROLE_ALLY))) === 0);
+    for (const sam of game.units(UnitType.SAMLauncher)) {
+      if (sam.isUnderConstruction()) continue;
+      const ownerSmall = sam.owner().smallID();
+      const range = config.samRange(sam.level());
+      for (let s = 0; s < S; s++) {
+        if (hostileTo(s, ownerSmall)) markDisk(this.samCover, s * RASTER_CELLS, geometry, sam.tile(), range);
+      }
+    }
+    for (const nuke of game.units(UnitType.AtomBomb, UnitType.HydrogenBomb, UnitType.MIRVWarhead)) {
+      const target = nuke.targetTile();
+      if (target === undefined) continue;
+      const ownerSmall = nuke.owner().smallID();
+      const radius = config.nukeMagnitudes(nuke.type()).outer;
+      const targetOwner = map.ownerID(target);
+      for (let s = 0; s < S; s++) {
+        if (ownerSmall === seats[s].smallID()) {
+          markDisk(this.nukesOwn, s * RASTER_CELLS, geometry, target, radius);
+        } else if (hostileTo(s, ownerSmall)) {
+          markDisk(this.nukesIn, s * RASTER_CELLS, geometry, target, radius);
+          if (targetOwner === seats[s].smallID()) this.incomingNukes[s]++;
+        }
+      }
+    }
+
     for (let s = 0; s < S; s++) {
       this.writeRaster(s, seats[s], density, land, out[s].raster);
-      this.writeFeatures(game, seats[s], players, out[s].features, geometry);
+      this.writeFeatures(game, seats[s], players, out[s].features, geometry, this.incomingNukes[s]);
     }
   }
 
@@ -201,6 +240,10 @@ export class ObservationEncoder {
       const hostile = this.enemyStructures[s * RASTER_CELLS + cell];
       q(Plane.OwnStructures, cell, own / 3);
       q(Plane.EnemyStructures, cell, hostile / 3);
+      const at = s * RASTER_CELLS + cell;
+      raster[Plane.EnemySAMCover * RASTER_CELLS + cell] = this.samCover[at] ? 255 : 0;
+      raster[Plane.IncomingNukes * RASTER_CELLS + cell] = this.nukesIn[at] ? 255 : 0;
+      raster[Plane.OwnNukes * RASTER_CELLS + cell] = this.nukesOwn[at] ? 255 : 0;
       if (landT <= 0) {
         for (const p of [Plane.Self, Plane.Ally, Plane.Enemy, Plane.Unowned, Plane.SelfTroops, Plane.EnemyTroops, Plane.Threat, Plane.Targets]) {
           raster[p * RASTER_CELLS + cell] = 0;
@@ -228,6 +271,7 @@ export class ObservationEncoder {
     players: Player[],
     out: Float32Array,
     geometry: CellGeometry,
+    incomingNukes: number,
   ): void {
     out.fill(0);
     const config = game.config();
@@ -322,8 +366,17 @@ export class ObservationEncoder {
       const maxTroops = Math.max(1, config.maxTroops(seat));
       out[g + GlobalField.TroopRatio] = clamp01(ourTroops / maxTroops);
       out[g + GlobalField.GrowthRate] = clamp01((config.troopIncreaseRate(seat) / maxTroops) * 100);
-      const cityCost = Number(game.unitInfo(UnitType.City).cost(game, seat));
-      out[g + GlobalField.CityAffordable] = cityCost > 0 ? clamp01(Number(seat.gold()) / cityCost) : 0;
+      const gold = Number(seat.gold());
+      const affordable = (type: UnitType): number => {
+        const cost = Number(game.unitInfo(type).cost(game, seat));
+        return cost > 0 ? clamp01(gold / cost) : 0;
+      };
+      out[g + GlobalField.CityAffordable] = affordable(UnitType.City);
+      out[g + GlobalField.AtomAffordable] = affordable(UnitType.AtomBomb);
+      out[g + GlobalField.HydrogenAffordable] = affordable(UnitType.HydrogenBomb);
+      out[g + GlobalField.MIRVAffordable] = affordable(UnitType.MIRV);
+      const ready = seat.units(UnitType.MissileSilo).filter((u) => u.isActive() && !u.isUnderConstruction() && !u.isInCooldown());
+      out[g + GlobalField.SilosReady] = clamp01(ready.length / 3);
     }
     out[g + GlobalField.OutgoingTroops] = clamp01(outgoingTroops / Math.max(1, ourTroops + outgoingTroops));
     out[g + GlobalField.IncomingTroops] = vsUs(incomingTroops);
@@ -345,6 +398,7 @@ export class ObservationEncoder {
     out[g + GlobalField.Embargoed] = clamp01(others.filter((p) => p.hasEmbargoAgainst(seat)).length / 16);
     out[g + GlobalField.InSpawnPhase] = game.inSpawnPhase() ? 1 : 0;
     out[g + GlobalField.AllianceRequests] = clamp01(requesting.size / 4);
+    out[g + GlobalField.IncomingNukes] = clamp01(incomingNukes / 3);
   }
 
   private ensureScratch(S: number): void {
@@ -353,6 +407,9 @@ export class ObservationEncoder {
     this.allyTroop = new Float32Array(S * RASTER_CELLS);
     this.ownStructures = new Float32Array(S * RASTER_CELLS);
     this.enemyStructures = new Float32Array(S * RASTER_CELLS);
+    this.samCover = new Uint8Array(S * RASTER_CELLS);
+    this.nukesIn = new Uint8Array(S * RASTER_CELLS);
+    this.nukesOwn = new Uint8Array(S * RASTER_CELLS);
   }
 
   /** Land membership per tile and land/total tile counts per cell, cached per
@@ -386,6 +443,30 @@ export class ObservationEncoder {
     cache.waterVersion = map.waterVersion();
     this.landByMap.set(map, cache);
     return cache;
+  }
+}
+
+/** Mark the cells whose centre tile lies within `radius` tiles of `tile`. */
+function markDisk(buf: Uint8Array, base: number, geometry: CellGeometry, tile: TileRef, radius: number): void {
+  const { w, h, cxForX, rowBaseForY, centerTile } = geometry;
+  const x = tile % w;
+  const y = Math.floor(tile / w);
+  const cx0 = cxForX[Math.max(0, Math.floor(x - radius))];
+  const cx1 = cxForX[Math.min(w - 1, Math.ceil(x + radius))];
+  const row0 = rowBaseForY[Math.max(0, Math.floor(y - radius))];
+  const row1 = rowBaseForY[Math.min(h - 1, Math.ceil(y + radius))];
+  const r2 = radius * radius;
+  // The cell holding the tile is always marked, even when the radius is
+  // smaller than a cell.
+  buf[base + tileCell(tile, geometry)] = 1;
+  for (let row = row0; row <= row1; row += RASTER_WIDTH) {
+    for (let cx = cx0; cx <= cx1; cx++) {
+      const center = centerTile[row + cx];
+      if (center < 0) continue;
+      const dx = (center % w) - x;
+      const dy = Math.floor(center / w) - y;
+      if (dx * dx + dy * dy <= r2) buf[base + row + cx] = 1;
+    }
   }
 }
 

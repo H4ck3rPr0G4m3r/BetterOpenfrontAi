@@ -126,8 +126,8 @@ export class ViewGame {
   hasPlayer(id: string): boolean {
     return this.view.hasPlayer(id);
   }
-  units(types: any): any[] {
-    const list = Array.isArray(types) ? types : [types];
+  units(types: any, ...rest: any[]): any[] {
+    const list = Array.isArray(types) ? types : [types, ...rest];
     return this.view.units(...list).map((u: any) => this.wrapUnit(u));
   }
   unitInfo(type: string): any {
@@ -168,6 +168,9 @@ export class ViewGame {
       level: () => u.level(),
       isActive: () => u.isActive(),
       isUnderConstruction: () => u.isUnderConstruction(),
+      isInCooldown: () => u.isInCooldown?.() ?? false,
+      targetTile: () => u.targetTile?.(),
+      reachedTarget: () => u.reachedTarget?.() ?? false,
     };
   }
 }

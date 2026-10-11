@@ -66,6 +66,10 @@ export interface RewardWeights {
   boatLaunch: number;
   /** Per boat that lands and takes its landing tile. */
   boatLanding: number;
+  /** Per unit of damage an own nuke did when it landed: hostile structure
+   *  levels + hostile tiles / 1000, own and allied losses counted double
+   *  against it (Reward.ts nukeDamage). Shot-down nukes pay nothing. */
+  nuke: number;
 }
 
 export const DEFAULT_REWARD_WEIGHTS: RewardWeights = {
@@ -90,6 +94,7 @@ export const DEFAULT_REWARD_WEIGHTS: RewardWeights = {
   crowdedPost: -0.5,
   boatLaunch: 0.05,
   boatLanding: 0.2,
+  nuke: 0.05,
 };
 
 /**

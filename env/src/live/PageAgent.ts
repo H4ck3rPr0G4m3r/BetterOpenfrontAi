@@ -100,7 +100,7 @@ class PageAgent {
   private readonly codec = new ActionCodecImpl();
   private handlers = new Map<string, (event: unknown) => void>();
   private last: ViewGame | null = null;
-  readonly version = 2;
+  readonly version = 3;
 
   status() {
     const v = gameView();

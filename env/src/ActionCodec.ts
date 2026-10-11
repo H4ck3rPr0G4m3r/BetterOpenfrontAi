@@ -9,6 +9,7 @@ import {
   IntentType,
   MAX_BUILD_SITES,
   Masks,
+  NUKE_INTENTS,
   NUM_INTENTS,
   NUM_RATIO_BUCKETS,
   NUM_SLOTS,
@@ -116,6 +117,10 @@ export class ActionCodecImpl {
         return this.decodeBuild(ctx, action.buildSite, intent === IntentType.UpgradeStructure);
       case IntentType.MoveWarship:
         return this.decodeMoveWarship(ctx, action.spatialCell);
+      case IntentType.NukeAtom:
+      case IntentType.NukeHydrogen:
+      case IntentType.NukeMIRV:
+        return this.decodeNuke(ctx, NUKE_INTENTS.get(intent)! as UnitType, action.spatialCell);
       case IntentType.CancelAttack: {
         const attacks = ctx.agent.outgoingAttacks();
         return attacks.length > 0 ? [{ type: "cancel_attack", attackID: attacks[0].id() } as Intent] : [];
@@ -223,6 +228,14 @@ export class ActionCodecImpl {
     return [{ type: "move_warship", unitIds: same.map((w) => w.id()), tile: dst } as Intent];
   }
 
+  /** The target tile goes in the intent; the engine launches from the
+   *  closest ready silo itself (PlayerImpl.nukeSpawn). */
+  private decodeNuke(ctx: Context, type: UnitType, cell: number): Intent[] {
+    const dst = resolveNukeDst(ctx, cell);
+    if (dst < 0 || ctx.agent.canBuild(type, dst) === false) return [];
+    return [{ type: "build_unit", unit: type, tile: dst } as Intent];
+  }
+
   masks(game: Game, playerID: PlayerID, out: Masks): void {
     out.flat.fill(0);
     out.intent[IntentType.Noop] = 1;
@@ -247,11 +260,14 @@ export class ActionCodecImpl {
     }
     for (let b = 0; b < NUM_RATIO_BUCKETS; b++) out.ratio[b] = this.ratioOpen(game, agent, b) ? 1 : 0;
 
-    // Spatial rows: boat landings (row 0), warship water (row 1).
+    // Spatial rows: boat landings (row 0), warship water (row 1), nuke targets (row 2).
     const map = game.map();
     const geometry = cellGeometry(map.width(), map.height());
     const boatRow = spatialRow(out, 0);
     const waterRow = spatialRow(out, 1);
+    const nukeRow = spatialRow(out, 2);
+    const nukesOpen = [...NUKE_INTENTS.keys()].some(open);
+    let nukeProbe: TileRef = -1;
     const hasWarships = agent.units(UnitType.Warship).some((u) => u.isActive());
     const agentSmall = agent.smallID();
     const boatProbes: TileRef[] = [];
@@ -267,6 +283,10 @@ export class ActionCodecImpl {
       if (owner === agentSmall) continue;
       if (owner !== 0) {
         const p = ctx.bySmallID.get(owner);
+        if (nukesOpen && p !== undefined && isHostile(agent, p)) {
+          nukeRow[cell] = 1;
+          if (nukeProbe < 0) nukeProbe = tile;
+        }
         if (p === undefined || !agent.canAttackPlayer(p)) continue;
       }
       boatRow[cell] = 1;
@@ -276,6 +296,16 @@ export class ActionCodecImpl {
     if (out.intent[IntentType.Boat] === 0) boatRow.fill(0);
     out.intent[IntentType.MoveWarship] = open(IntentType.MoveWarship) && hasWarships ? 1 : 0;
     if (out.intent[IntentType.MoveWarship] === 0) waterRow.fill(0);
+    // A bomb is open when the engine would launch it at a hostile tile now:
+    // a ready silo, its price in gold, spawn immunity over (canBuild checks
+    // all of it). Every hostile cell is then a legal target.
+    let anyNuke = false;
+    for (const [intent, type] of NUKE_INTENTS) {
+      const ok = open(intent) && nukeProbe >= 0 && agent.canBuild(type as UnitType, nukeProbe) !== false;
+      out.intent[intent] = ok ? 1 : 0;
+      anyNuke ||= ok;
+    }
+    if (!anyNuke) nukeRow.fill(0);
 
     // Build sites: one single-type engine query per candidate.
     const buildRow = siteRow(out, 0);
@@ -346,6 +376,38 @@ function resolveBoatDst(ctx: Context, cell: number): TileRef {
     }
   }
   return unowned;
+}
+
+/** Not this player, not an ally or teammate: fair game for a nuke. */
+function isHostile(agent: Player, p: Player): boolean {
+  return p.smallID() !== agent.smallID() && !agent.isFriendly(p);
+}
+
+/** Nuke aim inside a cell: the hostile land tile closest to the cell's
+ *  centre, so the blast covers as much of the chosen cell as it can. */
+function resolveNukeDst(ctx: Context, cell: number): TileRef {
+  const map = ctx.game.map();
+  const r = cellRect(cell, map.width(), map.height());
+  const cx = (r.x0 + r.x1 - 1) / 2;
+  const cy = (r.y0 + r.y1 - 1) / 2;
+  let best: TileRef = -1;
+  let bestD = Infinity;
+  for (let y = r.y0; y < r.y1; y++) {
+    for (let x = r.x0; x < r.x1; x++) {
+      const tile = y * map.width() + x;
+      if (!map.isLand(tile) || map.isImpassable(tile)) continue;
+      const owner = map.ownerID(tile);
+      if (owner === 0) continue;
+      const p = ctx.bySmallID.get(owner);
+      if (p === undefined || !isHostile(ctx.agent, p)) continue;
+      const d = (x - cx) * (x - cx) + (y - cy) * (y - cy);
+      if (d < bestD) {
+        bestD = d;
+        best = tile;
+      }
+    }
+  }
+  return best;
 }
 
 /** Warship patrol tile inside a cell: its first water tile. */
