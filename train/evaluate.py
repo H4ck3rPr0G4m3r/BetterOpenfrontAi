@@ -53,6 +53,7 @@ def evaluate(
     reward: dict | None = None,
     replay_dir: str | None = None,
     close_spawn: float = 0.0,
+    difficulty: str = "Medium",
     log=print,
     worker_factory=None,
 ) -> dict:
@@ -67,7 +68,7 @@ def evaluate(
         os.environ.pop("OPENFRONT_REPLAY_DIR", None)
     workers = max(1, min(games, workers or max(1, (os.cpu_count() or 2) // 2)))
     config = WorkerConfig(games=1, seats=seats, map=map_name, bots=bots, nations=nations, tick_cap=tick_cap,
-                          close_spawn=close_spawn, reward=reward or {})
+                          close_spawn=close_spawn, difficulty=difficulty, reward=reward or {})
     factory = None if worker_factory is None else (lambda i: worker_factory(i, config))
     vec = VecGames(config, workers, seed=seed, worker_factory=factory)
     results: dict[str, list[dict]] = defaultdict(list)
@@ -153,6 +154,8 @@ def main(argv: list[str] | None = None) -> dict:
     parser.add_argument("--games", type=int, default=10)
     parser.add_argument("--bots", type=int, default=20)
     parser.add_argument("--nations", default="default", choices=("default", "disabled"))
+    parser.add_argument("--difficulty", default="Medium", choices=("Easy", "Medium", "Hard", "Impossible"),
+                        help="nation difficulty")
     parser.add_argument("--tick-cap", type=int, default=36000, help="post-spawn ticks, 10 per second (36000 = 60 min)")
     parser.add_argument("--map", default="World")
     parser.add_argument("--workers", type=int, default=None)
@@ -167,6 +170,7 @@ def main(argv: list[str] | None = None) -> dict:
         args.seats, games=args.games, bots=args.bots, nations=args.nations, tick_cap=args.tick_cap,
         map_name=args.map, workers=args.workers, seed=args.seed, device=args.device,
         deterministic=args.deterministic, replay_dir=args.replay_dir, close_spawn=args.close_spawn,
+        difficulty=args.difficulty,
     )
     print(f"\n{'predictor':30} games  survive  win   return   tiles  place  kills")
     for spec, s in result["predictors"].items():

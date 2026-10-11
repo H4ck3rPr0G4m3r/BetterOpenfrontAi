@@ -150,14 +150,23 @@
         <select id="match-mode">
           <option value="selfplay">Self-play, like its training games</option>
           <option value="bots">The AI alone vs tribes</option>
+          <option value="nations">The AI alone vs nations</option>
         </select>
       </label>
       <label>Minutes <input id="match-minutes" type="number" min="1" max="120" placeholder="As trained"></label>
-      <label class="check"><input id="match-nations" type="checkbox"> Nations</label>
+      <label>Nations
+        <select id="match-nations">
+          <option value="off">Off</option>
+          <option value="Easy">Easy</option>
+          <option value="Medium">Medium</option>
+          <option value="Hard">Hard</option>
+          <option value="Impossible">Impossible</option>
+        </select>
+      </label>
       <div class="form-actions"><button type="submit" class="primary">Play quick match</button></div>
     </form>
     <div id="match-error" class="error" hidden></div>
-    <div id="match-jobs" class="job-cards" data-empty="Self-play copies the AI's own training games: same number of AIs, tribes, map and length. Nations only when ticked. Finished matches show up in the list below."></div>
+    <div id="match-jobs" class="job-cards" data-empty="Self-play copies the AI's own training games: same number of AIs, tribes, map and length. Vs nations seats the AI alone among the tribes and nations at the difficulty you pick. Finished matches show up in the list below."></div>
 
     <div class="replay-tools">
       <input id="replay-filter" placeholder="Filter by run or outcome" aria-label="Filter replays">

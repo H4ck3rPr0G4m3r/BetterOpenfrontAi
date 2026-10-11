@@ -31,6 +31,7 @@ TRAIN_DIR = Path(__file__).resolve().parent
 JOBS_DIR = TRAIN_DIR / "control" / "jobs"
 DASHBOARD_DIR = TRAIN_DIR.parent / "dashboard"
 AGENTS = ("scripted", "random", "noop")
+DIFFICULTIES = ("Easy", "Medium", "Hard", "Impossible")
 LOG_TAIL = 200
 METRIC_POINTS = 400
 METRIC_KEYS = (
@@ -302,26 +303,33 @@ class JobManager:
         """One recorded game in the background, to watch from the replay list.
         Self-play copies the AI's own training games (seats, tribes, map,
         length, spawns at its curriculum stage); "bots" seats it alone among
-        the tribes. Nations only when asked for."""
+        the tribes; "nations" seats it alone among the tribes and nations.
+        Nations ("nations": off | Easy | Medium | Hard | Impossible) only
+        when asked for, except in the nations mode (Medium by default)."""
         from openfront.config import match_env
 
         model = model_spec(body.get("model", "scripted"))
         mode = str(body.get("mode", "selfplay"))
-        if mode not in ("selfplay", "bots"):
-            raise ValueError("mode must be selfplay or bots")
+        if mode not in ("selfplay", "bots", "nations"):
+            raise ValueError("mode must be selfplay, bots or nations")
+        raw = body.get("nations")
+        difficulty = "Medium" if raw is True else "" if raw in (None, False, "", "off") else str(raw)
+        if mode == "nations" and not difficulty:
+            difficulty = "Medium"
+        if difficulty and difficulty not in DIFFICULTIES:
+            raise ValueError(f"nations must be off or one of {', '.join(DIFFICULTIES)}")
         cfg, stage = training_config(model)
-        env = match_env(cfg, stage, mode)
+        env = match_env(cfg, stage, "selfplay" if mode == "selfplay" else "bots")
         if body.get("minutes") not in (None, ""):
             env["tick_cap"] = int_in(body, "minutes", 20, 1, 120) * 600
-        nations = bool(body.get("nations"))
         # Named by time: job numbers restart with the server, folders do not.
         seed = f"match{datetime.now():%Y%m%d%H%M%S}"
         argv = ["evaluate.py", "--seats", *[model] * env["seats"], "--games", "1", "--workers", "1",
                 "--map", str(env["map"]), "--bots", str(env["bots"]), "--tick-cap", str(env["tick_cap"]),
-                "--close-spawn", str(env["close_spawn"]), "--nations", "default" if nations else "disabled",
-                "--seed", seed, "--replay-dir", f"replays/matches/{seed}"]
+                "--close-spawn", str(env["close_spawn"]), "--nations", "default" if difficulty else "disabled",
+                "--difficulty", difficulty or "Medium", "--seed", seed, "--replay-dir", f"replays/matches/{seed}"]
         who = f"self-play, {env['seats']} AIs" if mode == "selfplay" else "alone"
-        extra = ", nations" if nations else ""
+        extra = f", {difficulty} nations" if difficulty else ""
         title = f"{Path(model).stem}: {who}, {env['bots']} tribes{extra}, {env['tick_cap'] // 600} min"
         return self.start("match", title, argv)
 

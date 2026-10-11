@@ -478,7 +478,9 @@ function renderReplays() {
   const filter = $("replay-filter").value.trim().toLowerCase();
   const body = $("replay-table").querySelector("tbody");
   const rows = replays.map((r) => {
-    const outcome = /-alive\.json$/.test(r.path) ? "Survived" : /-dead\.json$/.test(r.path) ? "Eliminated" : "";
+    // Named for the best agent seat in the game (older files: seat 0 only).
+    const outcome = /-won\.json$/.test(r.path) ? "Won" : /-alive\.json$/.test(r.path) ? "Survived"
+      : /-dead\.json$/.test(r.path) ? "Eliminated" : "";
     const parts = r.path.split("/");
     return { ...r, outcome, run: parts.length > 1 ? parts[0] : "", file: parts[parts.length - 1] };
   });
@@ -519,7 +521,7 @@ function renderReplays() {
       el("td", { class: "pick" }, pick),
       el("td", { class: "file" }, r.file.replace(/\.json$/, "")),
       el("td", {}, r.run),
-      el("td", {}, r.outcome ? el("span", { class: `badge ${r.outcome === "Survived" ? "good" : ""}` }, r.outcome) : ""),
+      el("td", {}, r.outcome ? el("span", { class: `badge ${r.outcome === "Survived" || r.outcome === "Won" ? "good" : ""}` }, r.outcome) : ""),
       el("td", { class: "hint" }, ago(r.modified)),
       el("td", { class: "row-actions" }, watch, remove));
     return row;
@@ -549,8 +551,16 @@ async function boot() {
     model: $("match-model").value,
     mode: $("match-mode").value,
     minutes: $("match-minutes").value === "" ? "" : Number($("match-minutes").value),
-    nations: $("match-nations").checked,
+    nations: $("match-nations").value,
   }]);
+  // The vs-nations match needs nations: it cannot be played with them off.
+  const syncMatchNations = () => {
+    const vsNations = $("match-mode").value === "nations";
+    $("match-nations").querySelector('option[value="off"]').disabled = vsNations;
+    if (vsNations && $("match-nations").value === "off") $("match-nations").value = "Medium";
+  };
+  $("match-mode").addEventListener("change", syncMatchNations);
+  syncMatchNations();
   $("public-find").addEventListener("click", findPublic);
   $("public-next").addEventListener("click", (ev) => joinPublic({ public: $("public-kind").value }, ev.currentTarget));
   const trainError = el("div", { class: "error", hidden: "" });

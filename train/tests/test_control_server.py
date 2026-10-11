@@ -113,6 +113,16 @@ def test_quick_match_records_one_game(base_url):
     assert argv[argv.index("--tick-cap") + 1] == "12000"  # blank minutes: the training length
     status, _, _ = _request("POST", f"{url}/api/jobs/match", {"model": "scripted", "mode": "chaos"})
     assert status == 400
+    # Vs nations: alone, nations on at the chosen difficulty (Medium when off).
+    status, _, _ = _request("POST", f"{url}/api/jobs/match", {"model": "scripted", "mode": "nations", "nations": "Hard"})
+    argv = launched[-1]["argv"]
+    assert status == 201 and argv[argv.index("--seats") + 1: argv.index("--games")] == ["scripted"]
+    assert argv[argv.index("--nations") + 1] == "default" and argv[argv.index("--difficulty") + 1] == "Hard"
+    status, _, _ = _request("POST", f"{url}/api/jobs/match", {"model": "scripted", "mode": "nations", "nations": "off"})
+    argv = launched[-1]["argv"]
+    assert argv[argv.index("--nations") + 1] == "default" and argv[argv.index("--difficulty") + 1] == "Medium"
+    status, _, _ = _request("POST", f"{url}/api/jobs/match", {"model": "scripted", "mode": "bots", "nations": "Brutal"})
+    assert status == 400
 
 
 def test_match_env_follows_the_training_stage():

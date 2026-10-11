@@ -26,6 +26,7 @@ import type { GameConfig, GameStartInfo, Turn } from "../../OpenFrontIO/src/core
 import { simpleHash } from "../../OpenFrontIO/src/core/Util";
 import { ActionCodecImpl } from "./ActionCodec";
 import { CombatTracker, observeConquests } from "./Combat";
+import { DeathReport } from "./DeathReport";
 import { RewardWeights } from "./BehaviorConfig";
 import { createMasks, Masks } from "./Layout";
 import { createSeatObservation, ObservationEncoder, SeatObservation, MAX_SEATS } from "./ObservationEncoder";
@@ -69,6 +70,8 @@ interface Seat {
   posts: Set<number>;
   /** Own boats at the previous step. */
   boats: Map<number, BoatTrack>;
+  /** Set when OPENFRONT_DEATH_LOG is on. */
+  death?: DeathReport;
 }
 
 /** Minimum tile distance between seat spawns, halved until it fits. */
@@ -181,7 +184,10 @@ export class GameEnv {
     const nations = createNationsForGame(gameStart, terrain.nations, terrain.additionalNations, S, random);
     const game = createGame(humans, nations, terrain.gameMap, terrain.miniGameMap, new Config(gameConfig, null, false), terrain.teamGameSpawnAreas);
     observeConquests(game, (winner, loser) => {
-      for (const seat of this.seats) seat.combat.onConquer(winner, loser);
+      for (const seat of this.seats) {
+        seat.combat.onConquer(winner, loser);
+        if (seat.death !== undefined && loser !== null && loser.id() === seat.id) seat.death.onConquer(winner);
+      }
     });
     this.runner = new GameRunner(game, new Executor(game, gameStart.gameID, undefined), (gu) => this.onGameUpdate(gu));
     this.runner.init();
@@ -202,6 +208,7 @@ export class GameEnv {
         earned: 0,
         posts: new Set<number>(),
         boats: new Map<number, BoatTrack>(),
+        death: DeathReport.file() !== undefined ? new DeathReport() : undefined,
       };
     });
 
@@ -272,6 +279,7 @@ export class GameEnv {
         return seat.reward.step(game, seat.id, terminals[i], events);
       });
       const out = this.observe(terminals, rewards);
+      this.reportDeaths(terminals);
       this.seats.forEach((seat, i) => {
         if (terminals[i] !== null) seat.active = false;
       });
@@ -357,6 +365,21 @@ export class GameEnv {
     return rows;
   }
 
+  private reportDeaths(terminals: TerminalReason[]): void {
+    const file = DeathReport.file();
+    if (file === undefined) return;
+    const game = this.runner.game;
+    const minute = Math.round(((game.ticks() - this.ticksAtSpawnEnd) / 600) * 10) / 10;
+    this.seats.forEach((seat, i) => {
+      if (seat.death === undefined || !seat.active) return;
+      if (terminals[i] === "death") {
+        seat.death.write(file, { seed: this.lastSeed, seat: i, minute, difficulty: String(this.config.difficulty ?? "Medium") });
+      } else {
+        seat.death.step(game, game.player(seat.id), minute);
+      }
+    });
+  }
+
   private finish(): void {
     if (this.over) return;
     this.over = true;
@@ -403,7 +426,12 @@ export class GameEnv {
         endedAt: Date.now(),
         hashes: this.replayHashes,
       });
-      const outcome = this.seats[0] !== undefined && this.runner.game.player(this.seats[0].id).isAlive() ? "alive" : "dead";
+      // The best any agent seat did, not just seat 0: a game where seat 0
+      // fell early but another seat took the map is not a loss.
+      const game = this.runner.game;
+      const won = this.seats.some((s) => s.clientID === this.winnerClientID);
+      const alive = this.seats.some((s) => game.player(s.id).isAlive());
+      const outcome = won ? "won" : alive ? "alive" : "dead";
       const file = writeReplayFile(replay, this.lastSeed, index, outcome, record);
       if (file !== undefined) console.log(`replay recorded: ${file}`);
     } catch (e) {
