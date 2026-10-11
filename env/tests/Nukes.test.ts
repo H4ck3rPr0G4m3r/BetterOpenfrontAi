@@ -125,9 +125,9 @@ describe("nuke reward bookkeeping", () => {
     const known = new Map();
     const landed = fakeNuke(1, true);
     const intercepted = fakeNuke(2, false);
-    known.set(1, { unit: landed, damage: 4 });
-    known.set(2, { unit: intercepted, damage: 7 });
-    expect(nukeEvents({} as never, player([]), known)).toBe(4);
+    known.set(1, { unit: landed, damage: { hostile: 4, friendly: 1 } });
+    known.set(2, { unit: intercepted, damage: { hostile: 7, friendly: 3 } });
+    expect(nukeEvents({} as never, player([]), known)).toEqual({ hostile: 4, friendly: 1 });
     expect(known.size).toBe(0);
   });
 });

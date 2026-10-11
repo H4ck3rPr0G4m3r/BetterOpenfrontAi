@@ -24,8 +24,6 @@ export const POST_SPACING = 20;
 export const BOAT_MIN_SHARE = 0.1;
 /** Nuke damage counts hostile structure levels plus hostile tiles / NUKE_TILE_REF. */
 export const NUKE_TILE_REF = 1000;
-/** Own and allied losses in a blast count this many times against it. */
-export const NUKE_FRIENDLY_FACTOR = 2;
 /** Bound on the nuke term per step: a MIRV's warheads can wipe a whole
  *  empire, and one step must not outweigh winning the game. */
 export const NUKE_REWARD_CAP = 3;
@@ -62,8 +60,10 @@ export interface SeatEvents {
   boatsLaunched: number;
   /** Own boats that landed and took their landing tile this step. */
   boatsLanded: number;
-  /** Damage of own nukes that detonated this step (nukeDamage units). */
+  /** Hostile damage of own nukes that detonated this step (nukeDamage units). */
   nukeDamage: number;
+  /** Own and allied damage of those nukes, same units (>= 0). */
+  nukeSelfDamage: number;
 }
 
 export const NO_EVENTS: SeatEvents = {
@@ -78,6 +78,7 @@ export const NO_EVENTS: SeatEvents = {
   boatsLaunched: 0,
   boatsLanded: 0,
   nukeDamage: 0,
+  nukeSelfDamage: 0,
 };
 
 /**
@@ -89,7 +90,8 @@ export const NO_EVENTS: SeatEvents = {
  *         + advantage · land · advantageTiles / (LAND_REF + tiles) + defend · repelled
  *         + defensePost · posts built + crowdedPost · posts built near another post
  *         + boatLaunch · paid boat launches + boatLanding · boats landed
- *         + clip(nuke · damage of own nukes that detonated, ±NUKE_REWARD_CAP)
+ *         + min(nuke · hostile damage of own nukes that detonated, NUKE_REWARD_CAP)
+ *         + max(nukeSelf · own and allied damage of them, −NUKE_REWARD_CAP)
  *   Φ(s) = land · log(1 + tiles / LAND_REF) + structures · log(1 + structure levels)
  *          + cities · log(1 + city levels) + popCap · log(1 + max troops / POP_REF)
  *          + income · log(1 + income per minute / INCOME_REF)
@@ -118,7 +120,8 @@ export const NO_EVENTS: SeatEvents = {
  *
  * v9: nukes. A bomb costs its gold at once and pays here only if it lands
  * (not shot down): hostile structure levels in the blast plus hostile land,
- * own and allied losses counted NUKE_FRIENDLY_FACTOR times against it.
+ * own and allied losses are a separate penalty (nukeSelf) that hostile
+ * damage in the same blast cannot offset.
  *
  * Why this shape (2026-10 diagnosis): the v1 reward paid `kill` for every
  * elimination anywhere on the map (~70 per World game, nearly all bots dying
@@ -172,7 +175,8 @@ export class Reward {
     r += this.add("crowdedPost", w.crowdedPost * events.postsCrowded);
     r += this.add("boatLaunch", w.boatLaunch * events.boatsLaunched);
     r += this.add("boatLanding", w.boatLanding * events.boatsLanded);
-    r += this.add("nuke", Math.max(-NUKE_REWARD_CAP, Math.min(NUKE_REWARD_CAP, w.nuke * events.nukeDamage)));
+    r += this.add("nuke", Math.min(NUKE_REWARD_CAP, w.nuke * events.nukeDamage));
+    r += this.add("nukeSelf", Math.max(-NUKE_REWARD_CAP, w.nukeSelf * events.nukeSelfDamage));
     if (player.isAlive()) {
       r += this.add("survive", w.survive);
       r += this.add("lowTroops", w.lowTroops * lowTroopDeficit(game, player, w.lowTroopsBelow));
@@ -308,10 +312,16 @@ export function boatEvents(game: Game, player: Player, known: Map<number, BoatTr
   return { launched, landed };
 }
 
+/** Blast damage split by who suffers it (nukeDamage units, both >= 0). */
+export interface NukeDamage {
+  hostile: number;
+  friendly: number;
+}
+
 /** One of our nukes in flight, with the damage it was worth when first seen. */
 export interface NukeTrack {
   unit: Unit;
-  damage: number;
+  damage: NukeDamage;
 }
 
 const PAID_NUKES = [UnitType.AtomBomb, UnitType.HydrogenBomb, UnitType.MIRVWarhead] as const;
@@ -323,13 +333,16 @@ const PAID_NUKES = [UnitType.AtomBomb, UnitType.HydrogenBomb, UnitType.MIRVWarhe
  * when a nuke is first seen, on the land as it stood at launch (flights are
  * short). `known` is updated in place.
  */
-export function nukeEvents(game: Game, player: Player, known: Map<number, NukeTrack>): number {
+export function nukeEvents(game: Game, player: Player, known: Map<number, NukeTrack>): NukeDamage {
   const nukes = player.isAlive() ? player.units(...PAID_NUKES) : [];
   const now = new Set(nukes.map((n) => n.id()));
-  let damage = 0;
+  const damage = { hostile: 0, friendly: 0 };
   for (const [id, track] of known) {
     if (now.has(id)) continue;
-    if (track.unit.reachedTarget()) damage += track.damage;
+    if (track.unit.reachedTarget()) {
+      damage.hostile += track.damage.hostile;
+      damage.friendly += track.damage.friendly;
+    }
     known.delete(id);
   }
   for (const nuke of nukes) {
@@ -342,12 +355,12 @@ export function nukeEvents(game: Game, player: Player, known: Map<number, NukeTr
 
 /**
  * What a blast at `tile` would destroy, from `player`'s point of view:
- * hostile structure levels + hostile tiles / NUKE_TILE_REF, minus
- * NUKE_FRIENDLY_FACTOR times the same for own and allied ones. Inner-radius
+ * structure levels + tiles / NUKE_TILE_REF, hostile and own-or-allied
+ * counted apart. Inner-radius
  * tiles count fully, outer-ring tiles half (the engine destroys those with
  * probability 1/2); every structure inside the outer radius is destroyed.
  */
-export function nukeDamage(game: Game, player: Player, tile: TileRef, type: UnitType): number {
+export function nukeDamage(game: Game, player: Player, tile: TileRef, type: UnitType): NukeDamage {
   const { inner, outer } = game.config().nukeMagnitudes(type);
   const map = game.map();
   const w = map.width();
@@ -388,7 +401,10 @@ export function nukeDamage(game: Game, player: Player, tile: TileRef, type: Unit
     if (friendly(unit.owner().smallID())) friendlyLevels += unit.level();
     else hostileLevels += unit.level();
   }
-  return hostileLevels + hostileTiles / NUKE_TILE_REF - NUKE_FRIENDLY_FACTOR * (friendlyLevels + friendlyTiles / NUKE_TILE_REF);
+  return {
+    hostile: hostileLevels + hostileTiles / NUKE_TILE_REF,
+    friendly: friendlyLevels + friendlyTiles / NUKE_TILE_REF,
+  };
 }
 
 export function structureLevels(player: Player): number {

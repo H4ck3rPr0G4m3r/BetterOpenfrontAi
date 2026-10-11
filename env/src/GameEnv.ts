@@ -76,6 +76,8 @@ interface Seat {
   death?: DeathReport;
 }
 
+const nukeTerms = (d: { hostile: number; friendly: number }) => ({ nukeDamage: d.hostile, nukeSelfDamage: d.friendly });
+
 /** Minimum tile distance between seat spawns, halved until it fits. */
 const SEAT_SPAWN_DISTANCE = 150;
 /** Close-spawn games: every seat within this distance of seat 0. */
@@ -270,7 +272,7 @@ export class GameEnv {
           postsCrowded: posts.crowded,
           boatsLaunched: boats.launched,
           boatsLanded: boats.landed,
-          nukeDamage: nukeEvents(game, player, seat.nukes),
+          ...nukeTerms(nukeEvents(game, player, seat.nukes)),
           kills: seat.pendingKills,
           betrayals: seat.pendingBetrayals,
           diplomacy: diplomacy[i],

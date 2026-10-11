@@ -67,6 +67,7 @@ DEFAULTS: dict = {
         "boatLaunch": 0.05,
         "boatLanding": 0.2,
         "nuke": 0.05,
+        "nukeSelf": -0.2,
     },
     "ppo": {
         "n_steps": 256,

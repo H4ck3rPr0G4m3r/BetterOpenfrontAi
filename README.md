@@ -121,7 +121,8 @@ Events and terminals:
 | crowdedPost | extra -0.5 per post within 20 tiles of another own post | spread posts along the front |
 | boatLaunch | +0.05 per boat with at least 10% of max troops, unless it fills the last of the 3 slots | keep boating, but never park all three boats out |
 | boatLanding | +0.2 per such boat that lands and takes its tile | boats that achieve something |
-| nuke | +0.05 per unit of damage of an own nuke that lands (hostile structure levels + hostile tiles/1000, own and allied losses x2 against it; at most ±3 a step) | nukes that hit something worth the gold; shot-down ones pay nothing |
+| nuke | +0.05 per unit of hostile damage of an own nuke that lands (structure levels + tiles/1000; at most +3 a step) | nukes that hit something worth the gold; shot-down ones pay nothing |
+| nukeSelf | -0.2 per unit of own or allied damage of an own nuke (at most -3 a step), not offset by hostile damage in the same blast | never nuke yourself or your allies |
 
 Action rules: donations, alliance breaking and embargoes are off
 (`env.allow_donations`, `env.allow_betrayal`, `env.allow_embargo`), attacks must leave

@@ -195,6 +195,21 @@ describe("Reward v3", () => {
   });
 });
 
+describe("nukes", () => {
+  it("charges own and allied blast damage on its own, not netted against hits", () => {
+    const g = fakeGame([{ id: "a", tiles: 100, alive: true, structures: [] }]);
+    const r = new Reward({ survive: 0, lowTroops: 0, income: 0, nuke: 0.05, nukeSelf: -0.2 });
+    r.init(g, "a");
+    expect(r.step(g, "a", null, { ...NO_EVENTS, nukeDamage: 10, nukeSelfDamage: 2 })).toBeCloseTo(0.1);
+    expect(r.terms.nuke).toBeCloseTo(0.5);
+    expect(r.terms.nukeSelf).toBeCloseTo(-0.4);
+    // A nuke that only hit home still costs, however little it destroyed.
+    expect(r.step(g, "a", null, { ...NO_EVENTS, nukeSelfDamage: 0.5 })).toBeCloseTo(-0.1);
+    // Each term is bounded per step.
+    expect(r.step(g, "a", null, { ...NO_EVENTS, nukeSelfDamage: 1000 })).toBeCloseTo(-3);
+  });
+});
+
 describe("defense posts", () => {
   // Tiles on a line: distance is the index difference.
   const game = { euclideanDistSquared: (a: number, b: number) => (a - b) ** 2 } as never;
