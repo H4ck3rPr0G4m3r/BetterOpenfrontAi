@@ -104,19 +104,22 @@ async function loadCatalog() {
 
 /* ---------------- jobs ---------------- */
 
-const STATUS_TEXT = { running: "Running", done: "Finished", error: "Failed", stopped: "Stopped" };
+const STATUS_TEXT = { running: "Running", stopping: "Stopping", done: "Finished", error: "Failed", stopped: "Stopped" };
 const openLogs = new Set();
 
 function jobCard(job) {
   const action = job.status === "running"
     ? el("button", { type: "button", class: "small", onclick: () => stopJob(job.id) }, job.kind === "lobby" ? "Leave" : "Stop")
-    : el("button", { type: "button", class: "small ghost", onclick: () => stopJob(job.id) }, "Dismiss");
+    : job.status === "stopping"
+      ? el("button", { type: "button", class: "small", title: "Kill it now; updates since its last save are lost", onclick: () => stopJob(job.id) }, "Force stop")
+      : el("button", { type: "button", class: "small ghost", onclick: () => stopJob(job.id) }, "Dismiss");
   const head = el("div", { class: "job-head" },
     el("strong", {}, job.title),
     el("span", { class: `pill ${job.status}` }, STATUS_TEXT[job.status] || job.status),
     el("span", { class: "hint" }, ago(job.started)),
     action);
   const card = el("div", { class: `job-card ${job.status}` }, head);
+  if (job.status === "stopping") card.append(el("div", { class: "hint" }, "Finishing the current update, then it saves and stops"));
   if (job.result) card.append(evalTable(job.result));
   const lines = job.log_tail || [];
   if (lines.length) {
@@ -191,7 +194,7 @@ async function refreshState() {
   try {
     const st = await api("GET", "/api/state");
     renderJobs(st.jobs);
-    const running = st.jobs.filter((j) => j.status === "running").length;
+    const running = st.jobs.filter((j) => j.status === "running" || j.status === "stopping").length;
     if (st.stale !== false) { // servers from before this check do not send it
       // The page is new but the server process is not: new buttons would fail.
       status.textContent = "Server outdated, restart it";

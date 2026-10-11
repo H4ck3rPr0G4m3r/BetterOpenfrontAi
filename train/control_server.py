@@ -113,6 +113,9 @@ class Job:
     ended: str = ""
     returncode: int | None = None
     result_path: str = ""
+    # Training runs stop cleanly through this file (checked after every
+    # update, then the run saves); everything else is terminated.
+    stop_file: str = ""
     proc: subprocess.Popen | None = field(default=None, repr=False)
 
 
@@ -123,14 +126,14 @@ class JobManager:
         self._jobs: dict[str, Job] = {}
         self._counter = 0
 
-    def start(self, kind: str, title: str, argv: list, result_path: str = "") -> Job:
+    def start(self, kind: str, title: str, argv: list, result_path: str = "", stop_file: str = "") -> Job:
         with self._lock:
             self._counter += 1
             job_id = f"{kind}-{self._counter:03d}"
         run_dir = self.jobs_dir / job_id
         run_dir.mkdir(parents=True, exist_ok=True)
         job = Job(job_id, kind, title, [sys.executable, "-u", *argv], str(run_dir / "output.log"),
-                  result_path=result_path)
+                  result_path=result_path, stop_file=stop_file)
         (run_dir / "command.json").write_text(json.dumps(job.argv, indent=2), encoding="utf-8")
         log = open(job.log_path, "w", encoding="utf-8")
         job.proc = subprocess.Popen(job.argv, cwd=str(TRAIN_DIR), stdout=log, stderr=subprocess.STDOUT)
@@ -146,7 +149,9 @@ class JobManager:
         finally:
             log.close()
         with self._lock:
-            if job.status == "running":
+            if job.status == "stopping":
+                job.status = "stopped"
+            elif job.status == "running":
                 job.status = "done" if code == 0 else "error"
             job.returncode = code
             job.ended = now_iso()
@@ -156,10 +161,33 @@ class JobManager:
         for jid in finished[: max(0, len(self._jobs) - keep)]:
             del self._jobs[jid]
 
+    GRACEFUL_STOP_SECONDS = 600
+
     def stop(self, job_id: str) -> Job:
+        """Stop a job. A training run first gets its STOP file: it finishes
+        the update it is in, saves and exits (killing it would lose every
+        update since the last checkpoint). Stopping it again, or no exit in
+        GRACEFUL_STOP_SECONDS, terminates it."""
         job = self.get(job_id)
         if job is None:
             raise KeyError(job_id)
+        if job.stop_file and job.status == "running" and job.proc is not None and job.proc.poll() is None:
+            Path(job.stop_file).parent.mkdir(parents=True, exist_ok=True)
+            Path(job.stop_file).touch()
+            with self._lock:
+                job.status = "stopping"
+            threading.Thread(target=self._stop_deadline, args=(job,), daemon=True).start()
+            return job
+        self._terminate(job)
+        return job
+
+    def _stop_deadline(self, job: Job) -> None:
+        try:
+            job.proc.wait(timeout=self.GRACEFUL_STOP_SECONDS)
+        except subprocess.TimeoutExpired:
+            self._terminate(job)
+
+    def _terminate(self, job: Job) -> None:
         if job.proc is not None and job.proc.poll() is None:
             job.proc.terminate()
             try:
@@ -169,14 +197,13 @@ class JobManager:
             with self._lock:
                 job.status = "stopped"
                 job.ended = now_iso()
-        return job
 
     def remove(self, job_id: str) -> None:
         with self._lock:
             job = self._jobs.get(job_id)
             if job is None:
                 raise KeyError(job_id)
-            if job.status == "running":
+            if job.status in ("running", "stopping"):
                 raise ValueError("job still running, stop it first")
             del self._jobs[job_id]
 
@@ -248,7 +275,11 @@ class JobManager:
             argv += ["--set", f"env.workers={int_in(body, 'workers', 8, 1, 64)}"]
         if body.get("resume"):
             argv.append("--resume")
-        return self.start("train", f"{name}: {steps:,} steps from {config.name}", argv)
+        from openfront.config import load_config
+
+        ckpt = Path(load_config(config)["run"]["checkpoint_dir"])
+        stop_file = (ckpt if ckpt.is_absolute() else TRAIN_DIR / ckpt) / name / "STOP"
+        return self.start("train", f"{name}: {steps:,} steps from {config.name}", argv, stop_file=str(stop_file))
 
     def start_eval(self, body: dict) -> Job:
         seats = [model_spec(s) for s in body.get("seats", []) if str(s).strip()]
@@ -529,7 +560,7 @@ class Handler(BaseHTTPRequestHandler):
         job = JOBS.get(job_id)
         if job is None:
             raise KeyError(job_id)
-        if job.status == "running":
+        if job.status in ("running", "stopping"):
             return self.send_json(JOBS.describe(JOBS.stop(job_id)))
         JOBS.remove(job_id)
         self.send_json({"deleted": job_id})

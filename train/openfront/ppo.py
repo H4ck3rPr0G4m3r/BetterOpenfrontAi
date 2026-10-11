@@ -99,6 +99,7 @@ class Trainer:
             self.global_step = int(meta.get("global_step", 0))
             self.update = int(meta.get("update", 0))
             self.stage = int(meta.get("stage", 0))
+            self._resumed_meta = meta
         else:
             self.model = OpenFrontPolicy(ModelConfig(**cfg["model"])).to(self.device)
             payload = {}
@@ -113,6 +114,13 @@ class Trainer:
         self.stage_episodes: deque = deque(maxlen=1000)
         self.head_to_head: deque = deque(maxlen=400)
         self.amp = bool(cfg["ppo"]["amp"]) and self.device == "cuda"
+        # Recent episodes come back with the weights: the first rollouts
+        # after a restart only see games that end early (deaths), so stats
+        # and curriculum judged on those alone read as a collapse.
+        meta = getattr(self, "_resumed_meta", {})
+        self.episodes.extend(meta.get("episodes", []))
+        self.stage_episodes.extend(meta.get("stage_episodes", []))
+        self.head_to_head.extend(meta.get("head_to_head", []))
 
     # ----- environment ---------------------------------------------------
 
@@ -159,6 +167,7 @@ class Trainer:
         total = int(cfg["run"]["total_steps"])
         writer = SummaryWriter(str(self.log_dir))
         metrics_path = self.log_dir / "metrics.jsonl"
+        self._rewind_metrics(metrics_path)
         self.log(f"[{self.name}] device {self.device}, {parameter_count(self.model):,} params, "
                  f"stage {self.stage}, resuming at step {self.global_step:,}")
         self.refresh_opponents()
@@ -257,6 +266,9 @@ class Trainer:
                     self.refresh_opponents()
                 if self.update % int(cfg["run"]["checkpoint_every"]) == 0:
                     self.save(f"{self.name}_{self.global_step}.pt")
+                else:
+                    # Latest after every update, so a crash or kill loses one.
+                    self.save(None)
                 if self._maybe_promote():
                     vec.close()
                     vec = self.build_vec()
@@ -481,13 +493,35 @@ class Trainer:
                 f"vs pool {g('selfplay/learner_beats_pool')} | kl {g('train/approx_kl', '{:.3f}')} "
                 f"ev {g('train/explained_variance')} | {g('time/steps_per_second', '{:.0f}')} sps")
 
-    def save(self, filename: str) -> Path:
+    def _rewind_metrics(self, path: Path) -> None:
+        """Metrics past the resume point belong to updates that were lost
+        (the run was killed before saving them); they move aside to
+        metrics.rewound.jsonl so the charts do not run backwards."""
+        if not path.exists():
+            return
+        keep, lost = [], []
+        for line in path.read_text(encoding="utf-8").splitlines(keepends=True):
+            try:
+                late = int(json.loads(line).get("step", 0)) > self.global_step
+            except ValueError:
+                late = False
+            (lost if late else keep).append(line)
+        if lost:
+            with open(path.with_name("metrics.rewound.jsonl"), "a", encoding="utf-8") as handle:
+                handle.writelines(lost)
+            path.write_text("".join(keep), encoding="utf-8")
+            self.log(f"[{self.name}] {len(lost)} metric lines past step {self.global_step:,} moved to metrics.rewound.jsonl")
+
+    def save(self, filename: str | None) -> Path:
+        """Write ``filename`` (when given) and ``<name>_latest.pt``."""
         meta = {"global_step": self.global_step, "update": self.update, "stage": self.stage,
-                "config": self.cfg, "name": self.name}
-        path = self.ckpt_dir / filename
+                "config": self.cfg, "name": self.name, "episodes": list(self.episodes),
+                "stage_episodes": list(self.stage_episodes), "head_to_head": list(self.head_to_head)}
+        latest = self.ckpt_dir / f"{self.name}_latest.pt"
         if not all(torch.isfinite(p).all() for p in self.model.parameters()):
-            self.log(f"[{self.name}] not saving {filename}: weights are non-finite")
-            return self.ckpt_dir / f"{self.name}_latest.pt"
-        save_checkpoint(path, self.model, meta=meta, optimizer=self.optimizer)
-        save_checkpoint(self.ckpt_dir / f"{self.name}_latest.pt", self.model, meta=meta, optimizer=self.optimizer)
-        return path
+            self.log(f"[{self.name}] not saving {filename or latest.name}: weights are non-finite")
+            return latest
+        if filename:
+            save_checkpoint(self.ckpt_dir / filename, self.model, meta=meta, optimizer=self.optimizer)
+        save_checkpoint(latest, self.model, meta=meta, optimizer=self.optimizer)
+        return self.ckpt_dir / filename if filename else latest

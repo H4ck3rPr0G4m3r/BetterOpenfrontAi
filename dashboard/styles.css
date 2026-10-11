@@ -219,7 +219,7 @@ button.danger-fill:hover { background: #d47a7a; border-color: #d47a7a; }
   padding: 0.75rem 1rem;
   min-width: 0;
 }
-.job-card.running { border-left-color: var(--accent); }
+.job-card.running, .job-card.stopping { border-left-color: var(--accent); }
 .job-card.error { border-left-color: var(--bad); }
 .job-head { display: flex; align-items: center; gap: 0.7rem; flex-wrap: wrap; }
 .job-head strong { font-weight: 600; overflow-wrap: anywhere; }
@@ -238,7 +238,7 @@ button.danger-fill:hover { background: #d47a7a; border-color: #d47a7a; }
   color: var(--muted);
   background: var(--raise);
 }
-.pill.running { color: var(--accent); background: var(--accent-soft); }
+.pill.running, .pill.stopping { color: var(--accent); background: var(--accent-soft); }
 .pill.error { color: var(--bad); background: var(--bad-soft); }
 
 pre.log {

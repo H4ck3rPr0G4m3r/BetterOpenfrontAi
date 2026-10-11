@@ -20,7 +20,9 @@ Architecture (why each piece is shaped the way it is):
 
 from __future__ import annotations
 
+import os
 from dataclasses import asdict, dataclass
+from pathlib import Path
 
 import torch
 import torch.nn.functional as F
@@ -278,7 +280,10 @@ def save_checkpoint(path, model: OpenFrontPolicy, meta: dict | None = None, opti
     }
     if optimizer is not None:
         payload["optimizer"] = optimizer.state_dict()
-    torch.save(payload, str(path))
+    # Through a temp file: a run killed mid-write keeps the old checkpoint.
+    tmp = Path(str(path) + ".tmp")
+    torch.save(payload, str(tmp))
+    os.replace(tmp, path)
 
 
 def load_checkpoint(path, device="cpu") -> tuple[OpenFrontPolicy, dict]:

@@ -236,10 +236,39 @@ def test_trainer_runs_self_play_end_to_end(tmp_path):
     lines = (tmp_path / "runs" / "t" / "metrics.jsonl").read_text().splitlines()
     assert lines and "rollout/survival_rate" in lines[-1]
 
+    # A line from updates the checkpoint never saw (a killed run).
+    metrics = tmp_path / "runs" / "t" / "metrics.jsonl"
+    with open(metrics, "a") as handle:
+        handle.write(json.dumps({"step": result["global_step"] + 999, "update": 99}) + "\n")
     resumed = Trainer(tiny_config(tmp_path, total_steps=150), resume=str(ck / "t_latest.pt"),
                       worker_factory=fake_factory([], game_length=5), log=lambda m: None)
     assert resumed.global_step == result["global_step"]
+    # Recent episodes resume too, so the first stats are not deaths only.
+    assert list(resumed.episodes) == list(trainer.episodes) and resumed.episodes
+    assert list(resumed.head_to_head) == list(trainer.head_to_head)
     assert resumed.train()["global_step"] >= 150
+    steps = [json.loads(line)["step"] for line in metrics.read_text().splitlines()]
+    assert steps == sorted(steps)
+    assert "update\": 99" in (metrics.parent / "metrics.rewound.jsonl").read_text()
+
+
+def test_latest_checkpoint_is_saved_every_update(tmp_path):
+    cfg = tiny_config(tmp_path, total_steps=10_000)
+    cfg["run"]["checkpoint_every"] = 1000
+    trainer = Trainer(cfg, worker_factory=fake_factory([], game_length=5), log=lambda m: None)
+    original = trainer._update
+    seen = []
+
+    def update_then_stop(*args, **kwargs):
+        if trainer.update == 1:
+            latest = tmp_path / "ck" / "t" / "t_latest.pt"
+            seen.append(torch.load(latest, weights_only=False)["meta"]["update"])
+            (tmp_path / "ck" / "t" / "STOP").touch()
+        return original(*args, **kwargs)
+
+    trainer._update = update_then_stop
+    trainer.train()
+    assert seen == [1]
 
 
 def test_trainer_stops_on_request(tmp_path):

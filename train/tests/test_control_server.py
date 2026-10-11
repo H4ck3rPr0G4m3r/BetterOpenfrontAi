@@ -8,6 +8,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 import pytest
 
@@ -19,8 +20,8 @@ from control_server import TRAIN_DIR, JobManager
 def base_url(monkeypatch):
     launched = []
 
-    def fake_start(kind, title, argv, result_path=""):
-        launched.append({"kind": kind, "title": title, "argv": argv})
+    def fake_start(kind, title, argv, result_path="", stop_file=""):
+        launched.append({"kind": kind, "title": title, "argv": argv, "stop_file": stop_file})
         return control_server.Job(f"{kind}-x", kind, title, argv, "missing.log")
 
     monkeypatch.setattr(control_server.JOBS, "start", fake_start)
@@ -158,6 +159,7 @@ def test_train_job_defaults_to_100k_steps(base_url):
     argv = launched[-1]["argv"]
     assert argv[:3] == ["train.py", "--config", "configs\\smoke.yaml"] or argv[:3] == ["train.py", "--config", "configs/smoke.yaml"]
     assert "run.total_steps=100000" in argv and "run.name=ui_test" in argv
+    assert Path(launched[-1]["stop_file"]).parts[-3:] == ("checkpoints", "ui_test", "STOP")
     status, _, _ = _request("POST", f"{url}/api/jobs/train", {"config": "../train.py"})
     assert status == 400
 
@@ -199,3 +201,18 @@ def test_job_manager_runs_and_reaps_a_process(tmp_path):
     assert "hello from the job" in described["log_tail"]
     jobs.remove(job.id)
     assert jobs.get(job.id) is None
+
+
+def test_stopping_a_training_job_asks_it_to_save_first(tmp_path):
+    jobs = JobManager(tmp_path)
+    stop = tmp_path / "ck" / "STOP"
+    # Stands in for the trainer: exits cleanly once its STOP file appears.
+    code = f"import pathlib, time\nwhile not pathlib.Path(r'{stop}').exists(): time.sleep(0.05)\nprint('saved')"
+    job = jobs.start("train", "fake run", ["-c", code], stop_file=str(stop))
+    assert jobs.stop(job.id).status == "stopping"
+    deadline = time.monotonic() + 30
+    while jobs.get(job.id).status == "stopping" and time.monotonic() < deadline:
+        time.sleep(0.1)
+    described = jobs.describe(jobs.get(job.id))
+    assert described["status"] == "stopped" and described["returncode"] == 0
+    assert "saved" in described["log_tail"]
