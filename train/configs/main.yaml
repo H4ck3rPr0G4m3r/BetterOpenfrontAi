@@ -17,14 +17,15 @@
 # stage after that MIXES nation difficulties (split over the workers with
 # nations), so the AI keeps winning games it knows while it meets harder
 # nations, instead of jumping from all-Easy to all-Medium at once. A stage is
-# promoted when the AI survives often enough in the scenarios WITH nations
+# promoted, no sooner than min_steps training steps into it, when the AI
+# survives often enough in the scenarios WITH nations
 # (the easy scenario cannot carry a promotion), judged on the hardest
 # difficulty of the mix. Promotion restarts the games with the next stage's
 # difficulty mix and worker split.
 #
-#   learn    Easy nations, easy-heavy mix         -> 50% survival with nations
-#   harden   1/3 Easy, 2/3 Medium, balanced mix   -> 35% survival vs Medium
-#   toughen  1/4 Easy, 3/4 Medium                 -> 40% survival vs Medium
+#   learn    Easy nations, easy-heavy mix         -> 65% survival with nations, 300k steps min
+#   harden   1/3 Easy, 2/3 Medium, balanced mix   -> 35% survival vs Medium, 300k steps min
+#   toughen  1/4 Easy, 3/4 Medium                 -> 40% survival vs Medium, 300k steps min
 #   full     1/5 Easy, 4/5 Medium, nation-heavy   (final)
 #
 # Per-scenario survival, return and land are logged as scenario/<name>/...
@@ -60,15 +61,15 @@ curriculum:
   - name: learn
     difficulty: Easy
     weights: {easy: 3, vs_bots: 3, selfplay_ffa: 2, close_rivals: 1, crowded: 1}
-    promote: {survival: 0.5, min_episodes: 100, scenarios: [vs_bots, selfplay_ffa, close_rivals, crowded]}
+    promote: {survival: 0.65, min_episodes: 200, min_steps: 300000, scenarios: [vs_bots, selfplay_ffa, close_rivals, crowded]}
   - name: harden
     difficulty: {Easy: 1, Medium: 2}
     weights: {easy: 2, vs_bots: 3, selfplay_ffa: 3, close_rivals: 1, crowded: 1}
-    promote: {survival: 0.35, min_episodes: 100, scenarios: [vs_bots, selfplay_ffa, close_rivals, crowded], difficulty: Medium}
+    promote: {survival: 0.35, min_episodes: 100, min_steps: 300000, scenarios: [vs_bots, selfplay_ffa, close_rivals, crowded], difficulty: Medium}
   - name: toughen
     difficulty: {Easy: 1, Medium: 3}
     weights: {easy: 2, vs_bots: 3, selfplay_ffa: 3, close_rivals: 1, crowded: 1}
-    promote: {survival: 0.4, min_episodes: 100, scenarios: [vs_bots, selfplay_ffa, close_rivals, crowded], difficulty: Medium}
+    promote: {survival: 0.4, min_episodes: 100, min_steps: 300000, scenarios: [vs_bots, selfplay_ffa, close_rivals, crowded], difficulty: Medium}
   - name: full
     difficulty: {Easy: 1, Medium: 4}
     weights: {easy: 1, vs_bots: 3, selfplay_ffa: 3, close_rivals: 2, crowded: 1}

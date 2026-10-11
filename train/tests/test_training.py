@@ -369,6 +369,24 @@ def test_promotion_can_be_judged_on_the_hard_games_only(tmp_path):
     assert trainer._maybe_promote() and trainer.stage == 1
 
 
+def test_promotion_waits_for_min_steps_in_the_stage(tmp_path):
+    cfg = tiny_config(tmp_path)
+    cfg["curriculum"] = [{"promote": {"survival": 0.5, "min_episodes": 4, "min_steps": 1000}},
+                         {"promote": {"survival": 0.5, "min_episodes": 4, "min_steps": 1000}}, {}]
+    trainer = Trainer(cfg, worker_factory=fake_factory([], game_length=5), log=lambda m: None)
+    won = [{"terminal": "tick_cap", "scenario": "default"}] * 4
+    trainer.stage_episodes.extend(won)
+    trainer.global_step = 999
+    assert not trainer._maybe_promote()  # surviving, but too early
+    trainer.global_step = 1000
+    assert trainer._maybe_promote() and trainer.stage == 1 and trainer.stage_start_step == 1000
+    trainer.stage_episodes.extend(won)
+    trainer.global_step = 1500
+    assert not trainer._maybe_promote()  # counted from the stage's own start
+    trainer.global_step = 2000
+    assert trainer._maybe_promote() and trainer.stage == 2
+
+
 def test_promotion_is_judged_on_the_listed_scenarios(tmp_path):
     cfg = tiny_config(tmp_path)
     cfg["scenarios"] = [{"name": "easy", "seats": 1}, {"name": "hard", "seats": 1}]

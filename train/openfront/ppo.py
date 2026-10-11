@@ -125,6 +125,8 @@ class Trainer:
         self.episodes.extend(meta.get("episodes", []))
         self.stage_episodes.extend(meta.get("stage_episodes", []))
         self.head_to_head.extend(meta.get("head_to_head", []))
+        # Global step at which the current stage began (promote.min_steps).
+        self.stage_start_step = int(meta.get("stage_start_step", 0))
 
     # ----- environment ---------------------------------------------------
 
@@ -382,6 +384,9 @@ class Trainer:
         if self.stage >= len(stages) - 1:
             return False
         rule = stages[self.stage].get("promote") or {}
+        # A stage lasts at least min_steps training steps, however well it goes.
+        if self.global_step - self.stage_start_step < int(rule.get("min_steps", 0)):
+            return False
         need = int(rule.get("min_episodes", 200))
         if len(self.stage_episodes) < need:
             return False
@@ -400,6 +405,7 @@ class Trainer:
         if survival < float(rule.get("survival", 0.6)):
             return False
         self.stage += 1
+        self.stage_start_step = self.global_step
         self.stage_episodes.clear()
         where = f" in {sorted(judged)}" if judged else ""
         where += f" at {'/'.join(sorted(levels))}" if levels else ""
@@ -527,7 +533,7 @@ class Trainer:
 
     def save(self, filename: str | None) -> Path:
         """Write ``filename`` (when given) and ``<name>_latest.pt``."""
-        meta = {"global_step": self.global_step, "update": self.update, "stage": self.stage,
+        meta = {"global_step": self.global_step, "update": self.update, "stage": self.stage, "stage_start_step": self.stage_start_step,
                 "config": self.cfg, "name": self.name, "episodes": list(self.episodes),
                 "stage_episodes": list(self.stage_episodes), "head_to_head": list(self.head_to_head)}
         latest = self.ckpt_dir / f"{self.name}_latest.pt"

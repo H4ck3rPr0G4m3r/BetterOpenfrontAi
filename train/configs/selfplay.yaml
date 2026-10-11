@@ -2,7 +2,7 @@
 # Every game seats 4 agents: seat 0 is the learner, each other seat is the
 # live learner (50%) or a frozen snapshot from the opponent pool. Only
 # learner seats are trained on. Curriculum: start without nations and with
-# fewer bots, promote once 60% of learner episodes survive to the tick cap;
+# fewer bots, promote once 70% of learner episodes survive to the tick cap (and 200k steps in);
 # then nations come in as a mix, already mostly Medium, more so at the
 # end, so there is no single jump to all-Medium nations.
 # Reward v3 and the v3 action rules (no donations, troop reserve, typed build
@@ -31,7 +31,7 @@ selfplay:
   active_opponents: 4
 
 curriculum:
-  - {name: warmup, bots: 10, nations: disabled, promote: {survival: 0.6, min_episodes: 300}}
+  - {name: warmup, bots: 10, nations: disabled, promote: {survival: 0.7, min_episodes: 300, min_steps: 200000}}
   - {name: nations, bots: 20, nations: default, difficulty: {Easy: 1, Medium: 2},
-     promote: {survival: 0.4, min_episodes: 100, difficulty: Medium}}
+     promote: {survival: 0.4, min_episodes: 100, min_steps: 300000, difficulty: Medium}}
   - {name: full, bots: 20, nations: default, difficulty: {Easy: 1, Medium: 3}}
