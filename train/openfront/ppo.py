@@ -2,11 +2,10 @@
 
 Rollout: every step, rows that act next are split by controller — the
 live learner (batched through the current policy, stored for training) or
-a frozen pool snapshot (batched per snapshot, never stored). A game runs
-until every seat in it is out, snapshots included: a snapshot that is still
-doing well finishes its game, so head-to-head scores and replays show the
-whole game. GAE runs per row and simply skips steps a row did not act in
-(dead seats wait for their game to end; their rows carry nothing).
+a frozen pool snapshot (batched per snapshot, never stored). Games where
+no learner seat is still playing are aborted so compute goes to learner
+data. GAE runs per row and simply skips steps a row did not act in (dead
+seats wait for their game to end; their rows carry nothing).
 
 Time limits: the tick cap is a true terminal of the time-aware MDP (the
 observation carries the time fraction, the reward pays placement there),
@@ -212,7 +211,10 @@ class Trainer:
                         idx = np.flatnonzero(acting & (ctrl == k))
                         if len(idx):
                             actions[idx] = self._act(opp, batch, idx)["actions"]
-                    batch = vec.step(actions)
+                    # Spend no compute on games with no learner left in them.
+                    abort = {g for g in range(vec.num_games)
+                             if acting[vec.rows_of_game(g)].any() and not (acting & (ctrl == LEARNER))[vec.rows_of_game(g)].any()}
+                    batch = vec.step(actions, abort)
                     rows_stepped += int(acting.sum())
                     flags = batch["flags"]
                     valid = (flags & L.FLAG_VALID) != 0
