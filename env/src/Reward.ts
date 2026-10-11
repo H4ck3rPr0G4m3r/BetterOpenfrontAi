@@ -3,6 +3,7 @@ import { Structures, UnitType } from "../../OpenFrontIO/src/core/game/Game";
 import type { TileRef } from "../../OpenFrontIO/src/core/game/GameMap";
 import { GOLD_INDEX_WORK } from "../../OpenFrontIO/src/core/StatsSchemas";
 import { DEFAULT_REWARD_WEIGHTS, RewardWeights } from "./BehaviorConfig";
+import { borderingSmallIDs } from "./TargetSlots";
 import type { TerminalReason } from "./types";
 
 /** Tile count at which the land potential reaches log(2). Early growth from a
@@ -29,6 +30,9 @@ export const NUKE_FRIENDLY_FACTOR = 2;
 /** Bound on the nuke term per step: a MIRV's warheads can wipe a whole
  *  empire, and one step must not outweigh winning the game. */
 export const NUKE_REWARD_CAP = 3;
+/** Army ratio (ours / strongest hostile neighbour's) at which the army
+ *  potential tops out: being twice as strong is enough. */
+export const ARMY_RATIO_CAP = 2;
 
 /** Paid by the structures potential. Defense posts are left out: they are
  *  priced per build (defensePost, crowdedPost) instead. */
@@ -64,6 +68,8 @@ export interface SeatEvents {
   boatsLanded: number;
   /** Damage of own nukes that detonated this step (nukeDamage units). */
   nukeDamage: number;
+  /** Current armyShare() of the seat: a state reading, not an event. */
+  armyShare: number;
 }
 
 export const NO_EVENTS: SeatEvents = {
@@ -78,6 +84,7 @@ export const NO_EVENTS: SeatEvents = {
   boatsLaunched: 0,
   boatsLanded: 0,
   nukeDamage: 0,
+  armyShare: 0,
 };
 
 /**
@@ -94,6 +101,7 @@ export const NO_EVENTS: SeatEvents = {
  *          + cities · log(1 + city levels) + popCap · log(1 + max troops / POP_REF)
  *          + income · log(1 + income per minute / INCOME_REF)
  *          + rail · log(1 + own cities and ports on the rail network)
+ *          + army · armyShare (own army vs the strongest hostile neighbour's, 0..1)
  *
  * v3 (from watching v2 replays): seats expanded themselves to zero troops,
  * farmed alliance request/break cycles, spammed embargo toggles, and never
@@ -120,6 +128,11 @@ export const NO_EVENTS: SeatEvents = {
  * (not shot down): hostile structure levels in the blast plus hostile land,
  * own and allied losses counted NUKE_FRIENDLY_FACTOR times against it.
  *
+ * v10: army strength. Against Medium nations the AI died out-scaled, not
+ * emptied: at its peak the strongest nation next door had 2-12x its troops
+ * (death reports, 2026-10-11). The army potential pays for keeping its army
+ * up against the biggest hostile neighbour and charges for falling behind.
+ *
  * Why this shape (2026-10 diagnosis): the v1 reward paid `kill` for every
  * elimination anywhere on the map (~70 per World game, nearly all bots dying
  * to nations), which made a passive agent that died at step 171 score +16
@@ -141,14 +154,17 @@ export class Reward {
   private prevPotential = 0;
   /** Smoothed gold earned per step. */
   private incomeRate = 0;
+  /** Latest armyShare() reading (set by init and step). */
+  private armyShare = 0;
 
   constructor(weights: Partial<RewardWeights> = {}) {
     this.weights = { ...DEFAULT_REWARD_WEIGHTS, ...weights };
   }
 
   /** Seed the potential from the post-spawn state. */
-  init(game: Game, playerID: PlayerID): void {
+  init(game: Game, playerID: PlayerID, armyShare = 0): void {
     this.incomeRate = 0;
+    this.armyShare = armyShare;
     this.prevPotential = this.potential(game.player(playerID), game);
     for (const k of Object.keys(this.terms)) delete this.terms[k];
   }
@@ -162,6 +178,7 @@ export class Reward {
     const w = this.weights;
     const player = game.player(playerID);
     this.incomeRate += (events.earned - this.incomeRate) / STEPS_PER_MINUTE;
+    this.armyShare = events.armyShare;
     const potential = this.potential(player, game);
     let r = this.add("potential", potential - this.prevPotential);
     this.prevPotential = potential;
@@ -202,8 +219,29 @@ export class Reward {
     const cap = game === undefined || w.popCap === 0 ? 0 : w.popCap * Math.log1p(game.config().maxTroops(player) / POP_REF);
     const income = w.income * Math.log1p((this.incomeRate * STEPS_PER_MINUTE) / INCOME_REF);
     const rail = game === undefined || w.rail === 0 ? 0 : w.rail * Math.log1p(railStations(game, player));
-    return w.land * land + w.structures * Math.log1p(structureLevels(player)) + w.cities * Math.log1p(cityLevels(player)) + cap + income + rail;
+    const army = w.army * this.armyShare;
+    return w.land * land + w.structures * Math.log1p(structureLevels(player)) + w.cities * Math.log1p(cityLevels(player)) + cap + income + rail + army;
   }
+}
+
+/**
+ * Own army against the strongest hostile neighbour's, in [0, 1]:
+ * min(ours / theirs, ARMY_RATIO_CAP) / ARMY_RATIO_CAP. An army is troops at
+ * home plus troops out in attacks, so launching an attack costs nothing
+ * here; the troops it loses do. Allies and teammates are no threat; with
+ * no hostile neighbour the seat counts as fully strong.
+ */
+export function armyShare(game: Game, player: Player): number {
+  if (!player.isAlive()) return 0;
+  const army = (p: Player): number => p.troops() + p.outgoingAttacks().reduce((sum, a) => sum + a.troops(), 0);
+  const bordering = borderingSmallIDs(game, player);
+  let strongest = 0;
+  for (const p of game.players()) {
+    if (p === player || !bordering.has(p.smallID()) || player.isFriendly(p)) continue;
+    strongest = Math.max(strongest, army(p));
+  }
+  if (strongest <= 0) return 1;
+  return Math.min(army(player) / strongest, ARMY_RATIO_CAP) / ARMY_RATIO_CAP;
 }
 
 /** Own cities and ports that are train stations, i.e. connected by rail. */

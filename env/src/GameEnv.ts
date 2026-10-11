@@ -31,7 +31,7 @@ import { RewardWeights } from "./BehaviorConfig";
 import { createMasks, Masks } from "./Layout";
 import { createSeatObservation, ObservationEncoder, SeatObservation, MAX_SEATS } from "./ObservationEncoder";
 import { buildGameRecord, replayGameID, seatClientID, shouldRecordReplay, writeReplayFile } from "./Replay";
-import { boatEvents, BoatTrack, earnedGold, newDefensePosts, nukeEvents, NukeTrack, placementScore, Reward, SeatEvents } from "./Reward";
+import { armyShare, boatEvents, BoatTrack, earnedGold, newDefensePosts, nukeEvents, NukeTrack, placementScore, Reward, SeatEvents } from "./Reward";
 import { loadFreshTerrainMap } from "./Terrain";
 import { TurnFeeder } from "./TurnFeeder";
 import type { Action, EnvConfig, TerminalReason } from "./types";
@@ -229,7 +229,7 @@ export class GameEnv {
     if (this.fatalError !== undefined) throw new Error(`sim error during reset(): ${this.fatalError}`);
     this.ticksAtSpawnEnd = game.ticks();
     for (const seat of this.seats) {
-      seat.reward.init(game, seat.id);
+      seat.reward.init(game, seat.id, armyShare(game, game.player(seat.id)));
       seat.earned = earnedGold(game, game.player(seat.id));
     }
     this.over = false;
@@ -271,6 +271,7 @@ export class GameEnv {
           boatsLaunched: boats.launched,
           boatsLanded: boats.landed,
           nukeDamage: nukeEvents(game, player, seat.nukes),
+          armyShare: armyShare(game, player),
           kills: seat.pendingKills,
           betrayals: seat.pendingBetrayals,
           diplomacy: diplomacy[i],

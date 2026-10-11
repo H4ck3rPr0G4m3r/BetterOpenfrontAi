@@ -105,6 +105,7 @@ Potentials (paid as they change, all given back on death):
 | cities | `0.5 * log(1 + city levels)` | the economy core |
 | population cap | `0.3 * log(1 + max troops/100k)` | land and cities raise it |
 | income | `1.0 * log(1 + gold per minute/100k)` | trade, trains, conquest (smoothed over a minute) |
+| army | `1.0 * min(own army / strongest hostile neighbour's, 2) / 2` | stay strong enough that the nation next door does not see easy prey (armies: troops at home and in attacks) |
 
 Events and terminals:
 

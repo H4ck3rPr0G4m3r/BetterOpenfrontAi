@@ -70,6 +70,10 @@ export interface RewardWeights {
    *  levels + hostile tiles / 1000, own and allied losses counted double
    *  against it (Reward.ts nukeDamage). Shot-down nukes pay nothing. */
   nuke: number;
+  /** Coefficient on armyShare: own army (troops at home and in attacks)
+   *  against the strongest hostile neighbour's, min(ratio, 2) / 2. A
+   *  potential: keeping up pays, being out-scaled costs, death gives it back. */
+  army: number;
 }
 
 export const DEFAULT_REWARD_WEIGHTS: RewardWeights = {
@@ -95,6 +99,7 @@ export const DEFAULT_REWARD_WEIGHTS: RewardWeights = {
   boatLaunch: 0.05,
   boatLanding: 0.2,
   nuke: 0.05,
+  army: 1.0,
 };
 
 /**

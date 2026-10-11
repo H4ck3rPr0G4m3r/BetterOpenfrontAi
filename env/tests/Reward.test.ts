@@ -195,6 +195,19 @@ describe("Reward v3", () => {
   });
 });
 
+describe("army strength", () => {
+  it("pays the change in army share and gives it back on death", () => {
+    const players: FakePlayer[] = [{ id: "a", tiles: 100, alive: true, structures: [] }];
+    const g = fakeGame(players);
+    const r = new Reward({ survive: 0, lowTroops: 0, income: 0, land: 0, popCap: 0, army: 1 });
+    r.init(g, "a", 0.2);
+    expect(r.step(g, "a", null, { ...NO_EVENTS, armyShare: 0.5 })).toBeCloseTo(0.3);
+    expect(r.step(g, "a", null, { ...NO_EVENTS, armyShare: 0.4 })).toBeCloseTo(-0.1);
+    players[0].alive = false;
+    expect(r.step(g, "a", "death", { ...NO_EVENTS, armyShare: 0 })).toBeCloseTo(-0.4 + r.weights.death);
+  });
+});
+
 describe("defense posts", () => {
   // Tiles on a line: distance is the index difference.
   const game = { euclideanDistSquared: (a: number, b: number) => (a - b) ** 2 } as never;
