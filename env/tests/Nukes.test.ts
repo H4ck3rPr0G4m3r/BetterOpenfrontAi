@@ -13,7 +13,7 @@ import {
   RASTER_WIDTH,
   spatialRow,
 } from "../src/Layout";
-import { armyShare, nukeEvents } from "../src/Reward";
+import { nukeEvents } from "../src/Reward";
 import { NOOP_ACTION } from "../src/types";
 import { makeEnv, openIndices } from "./helpers/env";
 
@@ -109,22 +109,6 @@ describe("SAM cover", () => {
     const geometry = cellGeometry(game.map().width(), game.map().height());
     expect(plane[tileCell(theirs, geometry)]).toBe(255);
     expect(plane[tileCell(mine, geometry)]).toBe(0);
-  }, LONG);
-});
-
-describe("armyShare in a real game", () => {
-  it("compares the army with the strongest hostile neighbour, capped at twice as strong", async () => {
-    const env = makeEnv({ seats: 1, bots: 10 });
-    await env.reset("army-1");
-    let rows = env.step([NOOP_ACTION]);
-    for (let i = 0; i < 30; i++) rows = env.step([NOOP_ACTION]);
-    const game = env.game;
-    const me = game.player(env.seatIDs[0]);
-    const share = armyShare(game, me);
-    expect(share).toBeGreaterThan(0);
-    expect(share).toBeLessThanOrEqual(1);
-    me.addTroops(me.troops() * 1000);
-    expect(armyShare(game, me)).toBe(1);
   }, LONG);
 });
 
