@@ -71,6 +71,46 @@ export function scanOwnership(view: any, mySmallID: number): OwnershipScan {
   return { tileOf, myTiles };
 }
 
+const componentsByView = new WeakMap<object, Int32Array>();
+
+/**
+ * 4-connected water components of the view's map, labelled from 1 (0 is
+ * land). Computed once per game view; ViewGame is rebuilt every decision.
+ */
+export function waterComponents(view: any): Int32Array {
+  const cached = componentsByView.get(view);
+  if (cached !== undefined) return cached;
+  const w: number = view.width();
+  const h: number = view.height();
+  const label = new Int32Array(w * h);
+  const queue = new Int32Array(w * h);
+  let next = 0;
+  for (let start = 0; start < label.length; start++) {
+    if (label[start] !== 0 || !view.isWater(start)) continue;
+    const id = ++next;
+    label[start] = id;
+    let head = 0;
+    let tail = 0;
+    queue[tail++] = start;
+    while (head < tail) {
+      const t = queue[head++];
+      const x = t % w;
+      const visit = (n: number) => {
+        if (label[n] === 0 && view.isWater(n)) {
+          label[n] = id;
+          queue[tail++] = n;
+        }
+      };
+      if (x > 0) visit(t - 1);
+      if (x < w - 1) visit(t + 1);
+      if (t >= w) visit(t - w);
+      if (t < w * (h - 1)) visit(t + w);
+    }
+  }
+  componentsByView.set(view, label);
+  return label;
+}
+
 export class ViewGame {
   private readonly wrappers = new Map<number, ViewPlayer>();
 
@@ -123,8 +163,10 @@ export class ViewGame {
   player(id: string): ViewPlayer {
     return this.wrap(this.view.player(id));
   }
+  // GameView.hasPlayer() is a stub that always answers false; ask the
+  // player list instead.
   hasPlayer(id: string): boolean {
-    return this.view.hasPlayer(id);
+    return this.view.players().some((p: any) => p.id() === id);
   }
   units(types: any, ...rest: any[]): any[] {
     const list = Array.isArray(types) ? types : [types, ...rest];
@@ -150,13 +192,14 @@ export class ViewGame {
   isShore(tile: number): boolean {
     return this.view.isShore(tile);
   }
-  // The view does not expose water components; let the server sort out
-  // which warships can reach the destination.
-  getWaterComponent(): number {
-    return 0;
+  // The view does not expose water components; label them from its map so
+  // a move only goes to warships that can actually sail there.
+  getWaterComponent(tile: number): number | null {
+    const c = waterComponents(this.view)[tile];
+    return c === 0 ? null : c;
   }
-  hasWaterComponent(): boolean {
-    return true;
+  hasWaterComponent(tile: number, component: number): boolean {
+    return waterComponents(this.view)[tile] === component;
   }
 
   wrapUnit(u: any): any {

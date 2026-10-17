@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { normalizeRewardWeights } from "../src/BehaviorConfig";
-import { boatEvents, LAND_REF, NO_EVENTS, newDefensePosts, placementScore, POST_SPACING, Reward } from "../src/Reward";
+import { boatEvents, LAND_REF, NO_EVENTS, newDefensePosts, nukeDamage, placementScore, POST_SPACING, Reward } from "../src/Reward";
+import { UnitType } from "../../OpenFrontIO/src/core/game/Game";
 
 interface FakePlayer {
   id: string;
@@ -293,5 +294,21 @@ describe("boats", () => {
     const r = new Reward({ survive: 0, lowTroops: 0, income: 0 });
     r.init(g, "a");
     expect(r.step(g, "a", null, { ...NO_EVENTS, boatsLaunched: 1, boatsLanded: 1 })).toBeCloseTo(0.25);
+  });
+});
+
+describe("nukeDamage", () => {
+  it("counts a dangling ownerID as hostile instead of throwing", () => {
+    // 3x3 land map, all owned by smallID 7, which has no registered player.
+    const me = { smallID: () => 1, isFriendly: () => false };
+    const game = {
+      config: () => ({ nukeMagnitudes: () => ({ inner: 1, outer: 1 }) }),
+      map: () => ({ width: () => 3, height: () => 3, isLand: () => true, ownerID: () => 7 }),
+      playerBySmallID: () => undefined,
+      nearbyUnits: () => [],
+    };
+    const d = nukeDamage(game as any, me as any, 4, UnitType.AtomBomb);
+    expect(d.friendly).toBe(0);
+    expect(d.hostile).toBeGreaterThan(0);
   });
 });
