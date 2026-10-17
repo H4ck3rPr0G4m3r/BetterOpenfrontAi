@@ -1,131 +1,174 @@
-/**
- * Side-quest behavior controls for the AI control UI.
- *
- * Two enforcement points, both config-only with zero bridge schema change:
- *
- * - Capability limits (disabled intent types, disabled build types) are
- *   enforced inside `ActionCodecImpl`: disabled intents are forced shut in
- *   `masks()` and dropped to `[]` in `decode()`, and disabled build types
- *   are filtered out of the bounded candidate list in both places so slot
- *   indices stay aligned. A policy trained under these limits never sees
- *   the disabled actions as open, so it learns within them.
- * - Reward shaping weights override the phase-1 default (spec section 5.5)
- *   without changing the reward's shape. `Reward` reads them via
- *   `RewardConfig.weights`.
- *
- * Noop (intent 0) can never be disabled: it is the guaranteed-legal
- * fallback every mask keeps open.
- */
+import { BUILD_TYPES, IntentType, NUM_INTENTS } from "./Layout";
 
+/**
+ * Reward weights, by name. Every term is either potential-based (a change
+ * in a state value, so idling never mints return) or an event the seat
+ * caused. See Reward.ts for the exact formula.
+ */
 export interface RewardWeights {
+  /** Coefficient on Δ log(1 + tiles / LAND_REF). */
   land: number;
-  troop: number;
-  gold: number;
-  win: number;
-  death: number;
-  /** Bonus per eliminated opponent, counted in Reward between steps. */
+  /** Coefficient on Δ log(1 + own structure levels). */
+  structures: number;
+  /** Coefficient on Δ log(1 + own city levels), on top of `structures`.
+   *  Cities are the economy: +250k max troops per level and train stations. */
+  cities: number;
+  /** Coefficient on Δ log(1 + own cities and ports connected to rail).
+   *  Trains between connected stations are the main gold source. */
+  rail: number;
+  /** Coefficient on Δ log(1 + max troops / POP_REF): the population cap,
+   *  which land and city levels raise. */
+  popCap: number;
+  /** Coefficient on Δ log(1 + income per minute / INCOME_REF), income being
+   *  gold earned beyond the flat worker rate (trade ships, trains, conquest),
+   *  smoothed over about a minute. A potential like land: a strong economy
+   *  pays while it lasts and is given back on death. */
+  income: number;
+  /** Per opponent this seat eliminated (engine ConquestEvent attribution). */
   kill: number;
-  /** Land-delta coefficient during the early phase (instead of land). */
-  landEarly: number;
-  /** Extra multiplier on land LOSSES during the early phase. 1.0 keeps
-   *  gains and losses symmetric. */
-  landLoss: number;
-  /** Per structure built/lost (signed delta) during the mid phase. */
-  city: number;
-  factory: number;
-  /** Delta of the troop-hold fraction (troops vs 30% of peak) in mid. */
-  troopHold: number;
-  /** Per-step bonus while alive during the late phase. The only
-   *  length-variant term: keep it tiny, winning must pay more. */
+  /** Terminal bonus for winning the game. */
+  win: number;
+  /** Terminal value for being eliminated (negative). */
+  death: number;
+  /** Tick-cap bonus scaled by land rank among living players (1 best, 0 worst). */
+  placement: number;
+  /** Per-step bonus while alive. Off by default: land already prices survival. */
   survive: number;
-  /** Delta of min(gold / live MIRV price, 1) during the late phase. */
-  rich: number;
+  /** Per-step penalty at zero troops, scaled linearly up to `lowTroopsBelow`
+   *  of max troops (negative). Replays showed seats expanding themselves
+   *  empty and then folding to the first attack. */
+  lowTroops: number;
+  /** Troop share of max troops below which `lowTroops` applies. */
+  lowTroopsBelow: number;
+  /** Per alliance this seat broke (negative). Breaking costs traitor status
+   *  in game; without a price the policy farmed request/break cycles. */
+  betrayal: number;
+  /** Per diplomatic intent sent: alliance request, break, embargo, target
+   *  (negative). Prices spam, not diplomacy: a few per game cost ~nothing. */
+  diplomacy: number;
+  /** Extra land value for tiles taken from tribes (bots) or from a player
+   *  with fewer troops than us: worth (1 + advantage) times normal land.
+   *  Clear the easy land before fighting real opponents. */
+  advantage: number;
+  /** Per real attack repelled (a force of at least 20% of our troops that
+   *  ended having taken under 5% of our land). */
+  defend: number;
+  /** Per defense post this seat starts building (negative). Posts earn
+   *  nothing in the structures potential; this makes each one a cost that
+   *  only fights won near it can repay. */
+  defensePost: number;
+  /** Extra, per new defense post within POST_SPACING tiles of another of
+   *  this seat's posts (negative): spread them along the front. */
+  crowdedPost: number;
+  /** Per boat launched with at least BOAT_MIN_SHARE of max troops while a
+   *  boat slot stays free; the launch that fills the last slot pays nothing,
+   *  so keeping every boat out is never the goal. */
+  boatLaunch: number;
+  /** Per boat that lands and takes its landing tile. */
+  boatLanding: number;
+  /** Per unit of hostile damage an own nuke did when it landed: structure
+   *  levels + tiles / 1000 (Reward.ts nukeDamage). Shot-down nukes pay nothing. */
+  nuke: number;
+  /** Per unit of own or allied damage an own nuke did (negative). Its own
+   *  term, so hitting the enemy in the same blast cannot offset it. */
+  nukeSelf: number;
 }
 
-/** Phase-1 default shaping, unchanged unless explicitly overridden. Every
- *  phase-7 weight defaults to neutral (0, or the matching base weight), so
- *  old 5- and 6-value configs behave exactly as before. */
 export const DEFAULT_REWARD_WEIGHTS: RewardWeights = {
   land: 1.0,
-  troop: 0.1,
-  gold: 0.1,
-  win: 1,
-  death: -1,
-  kill: 0,
-  landEarly: 1.0,
-  landLoss: 1.0,
-  city: 0,
-  factory: 0,
-  troopHold: 0,
-  survive: 0,
-  rich: 0,
+  structures: 0.2,
+  cities: 0.5,
+  rail: 0.5,
+  popCap: 0.3,
+  income: 1.0,
+  kill: 0.5,
+  win: 5.0,
+  death: -2.0,
+  placement: 1.0,
+  survive: 0.0,
+  lowTroops: -0.05,
+  lowTroopsBelow: 0.3,
+  betrayal: -1.0,
+  diplomacy: -0.005,
+  advantage: 0.5,
+  defend: 0.3,
+  defensePost: -0.1,
+  crowdedPost: -0.5,
+  boatLaunch: 0.05,
+  boatLanding: 0.2,
+  nuke: 0.05,
+  nukeSelf: -0.2,
 };
 
+/**
+ * Capability limits for the AI control UI. Disabled intents and build types
+ * are shut in masks() and dropped in decode(), so a policy trained under
+ * them never sees them open. Noop can never be disabled.
+ */
 export interface BehaviorConfig {
-  /** IntentType values to close. 0 (Noop) is rejected. */
   disabledIntents?: number[];
-  /** Buildable unit type names to exclude, e.g. "Factory". Exact match. */
+  /** Build type names from Layout.BUILD_TYPES, e.g. "Factory". */
   disabledBuilds?: string[];
-  /** Partial override; missing fields keep phase-1 defaults. */
-  rewardWeights?: Partial<RewardWeights>;
-  /** Scale applied to NEGATIVE troop deltas only (0..1, default 1.0).
-   *  Attacks spend troops, so the symmetric troop delta punishes the very
-   *  action that wins games. 0.0 ignores troop losses entirely while still
-   *  rewarding troop gains; 1.0 keeps the old symmetric behavior. */
-  troopLossScale?: number;
+  /** Gold and troop donations are off unless this is set. Real games rarely
+   *  need them, and the v2 run gave away more troops to allied nations than
+   *  it spent on every attack combined. */
+  allowDonations?: boolean;
+  /** Breaking alliances is off unless this is set. A penalty only taught
+   *  it away slowly: a fresh policy starts uniform over legal actions, so it
+   *  broke alliances on 14% of steps and still on ~1% after 100k. */
+  allowBetrayal?: boolean;
+  /** Embargoes are off unless this is set: the policy toggled them on 12-30%
+   *  of its actions, and they rarely matter in the games it plays. */
+  allowEmbargo?: boolean;
+  /** Attack and boat ratios that would leave less than this share of max
+   *  troops at home are masked (the smallest ratio always stays open). */
+  troopReserve?: number;
 }
 
 export interface NormalizedBehavior {
   disabledIntents: Set<number>;
   disabledBuilds: Set<string>;
-  rewardWeights: RewardWeights;
-  troopLossScale: number;
+  troopReserve: number;
 }
 
-/** Valid build-type names: the string values of BUILD_CANDIDATE_TYPES
- *  in ActionCodec (the UnitType enum uses spaced names like
- *  "Defense Post"). A test pins the two lists together. */
-export const KNOWN_BUILD_TYPES = [
-  "City",
-  "Defense Post",
-  "Port",
-  "SAM Launcher",
-  "Missile Silo",
-  "Factory",
-  "Warship",
-] as const;
+export const DEFAULT_TROOP_RESERVE = 0.1;
 
 export function normalizeBehavior(config?: BehaviorConfig): NormalizedBehavior {
   const disabledIntents = new Set<number>();
   for (const raw of config?.disabledIntents ?? []) {
-    if (!Number.isInteger(raw) || raw < 0 || raw > 13) {
-      throw new Error(`disabled intent must be an integer 0..13, got ${raw}`);
+    if (!Number.isInteger(raw) || raw < 1 || raw >= NUM_INTENTS) {
+      throw new Error(`disabled intent must be an integer 1..${NUM_INTENTS - 1}, got ${raw}`);
     }
-    if (raw === 0) throw new Error("intent 0 (Noop) cannot be disabled");
     disabledIntents.add(raw);
   }
+  if (disabledIntents.has(IntentType.Noop)) throw new Error("noop cannot be disabled");
+  if (config?.allowDonations !== true) {
+    disabledIntents.add(IntentType.DonateGold);
+    disabledIntents.add(IntentType.DonateTroops);
+  }
+  if (config?.allowBetrayal !== true) disabledIntents.add(IntentType.BreakAlliance);
+  if (config?.allowEmbargo !== true) disabledIntents.add(IntentType.Embargo);
+  const troopReserve = config?.troopReserve ?? DEFAULT_TROOP_RESERVE;
+  if (!(troopReserve >= 0 && troopReserve < 1)) throw new Error(`troopReserve must be in [0, 1), got ${troopReserve}`);
   const disabledBuilds = new Set<string>();
   for (const name of config?.disabledBuilds ?? []) {
-    if (!(KNOWN_BUILD_TYPES as readonly string[]).includes(name)) {
+    if (!(BUILD_TYPES as readonly string[]).includes(name)) {
       throw new Error(`unknown build type ${name}`);
     }
     disabledBuilds.add(name);
   }
-  const partial = config?.rewardWeights ?? {};
-  const rewardWeights: RewardWeights = { ...DEFAULT_REWARD_WEIGHTS };
-  for (const [key, value] of Object.entries(partial)) {
-    if (!(key in rewardWeights)) throw new Error(`unknown reward weight ${key}`);
+  return { disabledIntents, disabledBuilds, troopReserve };
+}
+
+/** Merge a partial override onto the defaults, rejecting unknown or non-finite values. */
+export function normalizeRewardWeights(partial?: Partial<Record<string, unknown>>): RewardWeights {
+  const out: RewardWeights = { ...DEFAULT_REWARD_WEIGHTS };
+  for (const [key, value] of Object.entries(partial ?? {})) {
+    if (!(key in out)) throw new Error(`unknown reward weight ${key}`);
     if (typeof value !== "number" || !Number.isFinite(value)) {
-      throw new Error(`reward weight ${key} must be a finite number, got ${value}`);
+      throw new Error(`reward weight ${key} must be a finite number, got ${String(value)}`);
     }
-    rewardWeights[key as keyof RewardWeights] = value;
+    out[key as keyof RewardWeights] = value;
   }
-  const troopLossScale = config?.troopLossScale ?? 1.0;
-  if (typeof troopLossScale !== "number" || !Number.isFinite(troopLossScale)) {
-    throw new Error(`troopLossScale must be a finite number, got ${config?.troopLossScale}`);
-  }
-  if (troopLossScale < 0 || troopLossScale > 1) {
-    throw new Error(`troopLossScale must be 0..1, got ${troopLossScale}`);
-  }
-  return { disabledIntents, disabledBuilds, rewardWeights, troopLossScale };
+  return out;
 }

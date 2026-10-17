@@ -1,450 +1,473 @@
-import { Structures } from "../../OpenFrontIO/src/core/game/Game";
 import type { Game, Player, PlayerID } from "../../OpenFrontIO/src/core/game/Game";
-import { GOLD_SCALE, TROOP_SCALE } from "./Reward";
-import { assignTargetSlots } from "./TargetSlots";
-import type { ObservationEncoder as ObservationEncoderInterface } from "./types";
+import { PlayerType, Structures, UnitType } from "../../OpenFrontIO/src/core/game/Game";
+import type { TileRef } from "../../OpenFrontIO/src/core/game/GameMap";
+import { buildCandidates } from "./BuildSites";
+import { cellGeometry, CellGeometry, tileCell } from "./Geometry";
+import {
+  FEATURE_SIZE,
+  GLOBAL_OFFSET,
+  GlobalField,
+  MAX_BUILD_SITES,
+  NUM_PLANES,
+  NUM_SLOTS,
+  Plane,
+  RASTER_CELLS,
+  RASTER_SIZE,
+  RASTER_WIDTH,
+  SITE_FIELDS,
+  SITE_OFFSET,
+  SiteField,
+  SLOT_FIELDS,
+  SLOT_OFFSET,
+  SlotField,
+} from "./Layout";
+import { assignTargetSlots, borderingSmallIDs } from "./TargetSlots";
 
-export const RASTER_WIDTH = 128;
-export const RASTER_HEIGHT = 64;
-export const RASTER_CELLS = RASTER_WIDTH * RASTER_HEIGHT;
-
-/** Raster plane order — spec §5.3's 8 planes, in the order they're packed. */
-export enum Plane {
-  Land = 0,
-  SelfOwnership = 1,
-  AllyOwnership = 2,
-  EnemyOwnership = 3,
-  UnownedOwnership = 4,
-  SelfTroopDensity = 5,
-  EnemyTroopDensity = 6,
-  StructurePresence = 7,
-}
-export const NUM_PLANES = 8;
-export const RASTER_SIZE = RASTER_CELLS * NUM_PLANES;
-
-/** One player slot's fields, in the order they're packed. Slot 0 is always
- *  terra nullius; slots 1-16 are real players. */
-export enum SlotField {
-  Troops = 0,
-  Gold = 1,
-  Tiles = 2,
-  Allied = 3,
-  EmbargoedAgainstUs = 4,
-  Traitor = 5,
-  SharedBorder = 6,
-  Valid = 7,
-}
-export const NUM_SLOT_FIELDS = 8;
-export const NUM_SLOTS = 17; // slot 0 = terra nullius, 1-16 = real players
-export const PLAYER_TABLE_SIZE = NUM_SLOTS * NUM_SLOT_FIELDS;
-
-/** Global scalars packed after the player table. A real, justified set —
- *  not padded out to the spec's "~32" estimate with placeholder zeros.
- *  `size` is authoritative; this list can grow later without breaking
- *  anything that reads it by field name. */
-export enum GlobalField {
-  TickFraction = 0, // game.ticks() / TICK_CAP_REFERENCE
-  InSpawnPhase = 1,
-  AlivePlayerFraction = 2, // alive players / total players
-  SelfRank = 3, // 0 = most land among alive players, 1 = least
-  SelfTroopFraction = 4,
-  SelfGoldFraction = 5,
-  SelfTileFraction = 6,
-  SelfAlive = 7,
-  SelfTraitor = 8,
-  SelfDoomsdayClock = 9,
-  SelfAllyFraction = 10, // allies / (NUM_SLOTS - 1)
-  SelfEmbargoedFraction = 11, // players embargoing us / (NUM_SLOTS - 1)
-}
-export const NUM_GLOBALS = 12;
-// Reference tick count for TickFraction — the spec's default tick cap
-// (§5.1). Not read from EnvConfig: the encoder must stay a pure function of
-// (game, agentPlayerID) with no episode-config dependency, since it's also
-// meant to run against a live-lobby shadow sim (§10.7) that has no EnvConfig.
-const TICK_CAP_REFERENCE = 6000;
-
-export const OBSERVATION_SIZE = RASTER_SIZE + PLAYER_TABLE_SIZE + NUM_GLOBALS;
-
-/**
- * Letterbox mapping shared with the action codec's spatial head (spec §5.4):
- * one scale factor `s = max(width/128, height/64)` on both axes, map centred
- * in the 128x64 grid. A single source of truth so encoder cells and codec
- * cells always mean the same tiles.
- */
-export function letterboxTransform(
-  mapWidth: number,
-  mapHeight: number,
-): { scale: number; offsetX: number; offsetY: number } {
-  const scale = Math.max(mapWidth / RASTER_WIDTH, mapHeight / RASTER_HEIGHT);
-  const scaledW = mapWidth / scale;
-  const scaledH = mapHeight / scale;
-  return {
-    scale,
-    offsetX: Math.floor((RASTER_WIDTH - scaledW) / 2),
-    offsetY: Math.floor((RASTER_HEIGHT - scaledH) / 2),
-  };
+export interface SeatObservation {
+  /** NUM_PLANES x 64 x 128, values 0..255 (fraction * 255). */
+  raster: Uint8Array;
+  /** Slot table, build-site table, globals (see Layout.ts). */
+  features: Float32Array;
 }
 
-/**
- * Static per-map terrain data, built once per GameMap and reused across
- * steps. Base terrain never changes within a game, but nukes convert land
- * to water through `setWater` / `updateTile`, which advance
- * `waterVersion()`. Geometry (letterbox, per-cell tile totals) is truly
- * static; land membership is cached against that version and rebuilt when
- * it moves. Only ownership and troops are dynamic and stay in the
- * per-step loop.
- *
- * Layout is axis-separated on purpose: `cxForX` (w ints) plus row bases for
- * y (h ints) replace the per-tile `Math.floor(x / scale)` float math with
- * two array reads. A full per-tile cell LUT would cost 4 bytes per tile
- * (~8 MB on World); the engine deliberately avoids such tables for the
- * same reason (`GameMap.ts` yToRef comment). The hot loop stays sequential
- * and prefetcher-friendly.
- */
-interface StaticTerrain {
-  w: number;
-  h: number;
-  scale: number;
-  offsetX: number;
-  offsetY: number;
+export function createSeatObservation(): SeatObservation {
+  return { raster: new Uint8Array(RASTER_SIZE), features: new Float32Array(FEATURE_SIZE) };
+}
+
+const OWNER_ID_MASK = 0xfff;
+const ROLE_SELF = 0;
+const ROLE_ALLY = 1;
+const ROLE_THREAT = 2;
+const ROLE_TARGET = 3;
+const ROLES = 4;
+export const MAX_SEATS = 8; // 4 role bits per seat in a u32
+
+/** Squash a count into ~[0, 1] on a log scale: log1p(x / ref) / span. */
+function logScale(x: number, ref: number, span: number): number {
+  return Math.min(1, Math.log1p(Math.max(0, x) / ref) / span);
+}
+const clamp01 = (x: number): number => (x < 0 ? 0 : x > 1 ? 1 : x);
+
+interface LandCache {
   waterVersion: number;
   isLand: Uint8Array;
-  cxForX: Int32Array;
-  rowBaseForY: Int32Array;
-  totalTilesInCell: Float64Array;
-  landTilesInCell: Float64Array;
+  landInCell: Float32Array;
+  totalInCell: Float32Array;
 }
-export class ObservationEncoder implements ObservationEncoderInterface {
-  readonly size = OBSERVATION_SIZE;
 
-  /**
-   * Full recompute every call, but only of dynamic state — no dependency
-   * on `drainPackedTileUpdates()`. That queue is destructive (whoever reads
-   * it consumes it), so incremental maintenance would need per-episode
-   * state this interface doesn't have. Static terrain comes from the
-   * per-GameMap cache below; ownership is re-read from `tileStateBuffer()`
-   * each call. See spec §11 for the record of that decision.
-   */
-  private staticByMap = new WeakMap<object, StaticTerrain>();
-  // Scratch accumulators, reused across calls to avoid ~500 KB of
-  // Float64Array garbage per encode. Fixed at RASTER_CELLS so sharing is
-  // safe; every encode fills them from zero.
-  private readonly scratchLandByCode = [
-    new Float64Array(RASTER_CELLS),
-    new Float64Array(RASTER_CELLS),
-    new Float64Array(RASTER_CELLS),
-  ];
-  private readonly scratchTroopByCode = [
-    new Float64Array(RASTER_CELLS),
-    new Float64Array(RASTER_CELLS),
-  ];
-  private readonly scratchUnowned = new Float64Array(RASTER_CELLS);
-  private readonly scratchStructures = new Float64Array(RASTER_CELLS);
-  private readonly scratchSelfTiles: number[] = [];
-  private readonly scratchBordering = new Set<number>();
+/**
+ * Observation encoder, schema v2 (layout in Layout.ts).
+ *
+ * Every value is scaled to roughly [0, 1] by construction. The v1 encoder
+ * put troop densities at 1e-4..1e-3 next to [0, 1] ownership planes (the
+ * network could not see armies), had no notion of incoming or outgoing
+ * attacks anywhere, and no troops-vs-max signal, so a policy could not
+ * perceive the thing that kills it. v2 adds threat/target planes, per-player
+ * attack and strength fields, troop ratio and growth, and the build-site
+ * table the site head points into.
+ *
+ * Multi-seat: one tile pass serves all seats. Each owner smallID carries a
+ * bitmask of (seat, role) pairs — self, ally, attacking-this-seat,
+ * attacked-by-this-seat — so the 2M-tile World scan runs once per game step
+ * instead of once per seat.
+ */
+export class ObservationEncoder {
+  private landByMap = new WeakMap<object, LandCache>();
+  private unowned = new Float32Array(RASTER_CELLS);
+  private ownedAll = new Float32Array(RASTER_CELLS);
+  private troopAll = new Float32Array(RASTER_CELLS);
+  private roleCount = new Float32Array(0);
+  private allyTroop = new Float32Array(0);
+  private ownStructures = new Float32Array(0);
+  private enemyStructures = new Float32Array(0);
+  private samCover = new Uint8Array(0);
+  private nukesIn = new Uint8Array(0);
+  private nukesOwn = new Uint8Array(0);
+  private incomingNukes: number[] = [];
 
-  private getStatic(map: {
-    width(): number;
-    height(): number;
-    isLand(ref: number): boolean;
-    waterVersion(): number;
-  }): StaticTerrain {
-    const cached = this.staticByMap.get(map);
-    if (cached !== undefined) {
-      // Nukes flip land to water mid-episode (`setWater` / `updateTile`
-      // advance waterVersion). Geometry never changes, so only the land
-      // arrays need a rebuild when the version moves.
-      if (map.waterVersion() === cached.waterVersion) return cached;
-      this.refreshLand(map, cached);
-      return cached;
+  /** @param horizonTicks post-spawn ticks that map to TimeFraction = 1 (the env's tick cap). */
+  constructor(private readonly horizonTicks: number = 6000) {}
+
+  encode(game: Game, seatIDs: PlayerID[], out: SeatObservation[]): void {
+    const S = seatIDs.length;
+    if (S < 1 || S > MAX_SEATS) throw new Error(`seats must be 1..${MAX_SEATS}, got ${S}`);
+    if (out.length !== S) throw new Error(`need ${S} outputs, got ${out.length}`);
+    this.ensureScratch(S);
+
+    const map = game.map();
+    const geometry = cellGeometry(map.width(), map.height());
+    const land = this.landCache(map, geometry);
+    const seats = seatIDs.map((id) => game.player(id));
+    const players = game.players();
+
+    let maxSmallID = 0;
+    for (const p of players) maxSmallID = Math.max(maxSmallID, p.smallID());
+    const density = new Float32Array(maxSmallID + 1);
+    for (const p of players) {
+      density[p.smallID()] = logScale(p.troops() / Math.max(1, p.numTilesOwned()), 1, 8);
     }
-    const w = map.width();
-    const h = map.height();
-    const { scale, offsetX, offsetY } = letterboxTransform(w, h);
-    const isLand = new Uint8Array(w * h);
-    const cxForX = new Int32Array(w);
-    for (let x = 0; x < w; x++) {
-      cxForX[x] = Math.min(RASTER_WIDTH - 1, Math.max(0, offsetX + Math.floor(x / scale)));
+    const roleBits = new Uint32Array(maxSmallID + 1);
+    const setRole = (smallID: number, seat: number, role: number) => {
+      if (smallID > 0 && smallID <= maxSmallID) roleBits[smallID] |= 1 << (seat * ROLES + role);
+    };
+    for (let s = 0; s < S; s++) {
+      const seat = seats[s];
+      setRole(seat.smallID(), s, ROLE_SELF);
+      for (const p of players) {
+        if (p !== seat && seat.isFriendly(p)) setRole(p.smallID(), s, ROLE_ALLY);
+      }
+      for (const a of seat.incomingAttacks()) setRole(a.attacker().smallID(), s, ROLE_THREAT);
+      for (const a of seat.outgoingAttacks()) {
+        const target = a.target();
+        if (target.isPlayer()) setRole(target.smallID(), s, ROLE_TARGET);
+      }
     }
-    const rowBaseForY = new Int32Array(h);
+
+    // One pass over every tile, shared by all seats.
+    this.unowned.fill(0);
+    this.ownedAll.fill(0);
+    this.troopAll.fill(0);
+    this.roleCount.fill(0);
+    this.allyTroop.fill(0);
+    const { unowned, ownedAll, troopAll, roleCount, allyTroop } = this;
+    const stateBuf = map.tileStateBuffer();
+    const { cxForX, rowBaseForY, w, h } = geometry;
+    const isLand = land.isLand;
+    let t = 0;
     for (let y = 0; y < h; y++) {
-      const cy = Math.min(RASTER_HEIGHT - 1, Math.max(0, offsetY + Math.floor(y / scale)));
-      rowBaseForY[y] = cy * RASTER_WIDTH;
+      const rowBase = rowBaseForY[y];
+      for (let x = 0; x < w; x++, t++) {
+        if (isLand[t] === 0) continue;
+        const cell = rowBase + cxForX[x];
+        const owner = stateBuf[t] & OWNER_ID_MASK;
+        if (owner === 0) {
+          unowned[cell]++;
+          continue;
+        }
+        // Dangling ownerIDs (engine bug, see docs) have no player: skip.
+        if (owner > maxSmallID) continue;
+        ownedAll[cell]++;
+        const d = density[owner];
+        troopAll[cell] += d;
+        let bits = roleBits[owner];
+        while (bits !== 0) {
+          const b = 31 - Math.clz32(bits & -bits);
+          bits &= bits - 1;
+          roleCount[b * RASTER_CELLS + cell]++;
+          if ((b & 3) === ROLE_ALLY) allyTroop[(b >> 2) * RASTER_CELLS + cell] += d;
+        }
+      }
     }
-    const totalTilesInCell = new Float64Array(RASTER_CELLS);
-    const landTilesInCell = new Float64Array(RASTER_CELLS);
+
+    // Structures: own vs hostile per seat.
+    this.ownStructures.fill(0);
+    this.enemyStructures.fill(0);
+    for (const unit of game.units(Structures.types)) {
+      const ownerSmall = unit.owner().smallID();
+      const cell = tileCell(unit.tile(), geometry);
+      const bits = ownerSmall <= maxSmallID ? roleBits[ownerSmall] : 0;
+      for (let s = 0; s < S; s++) {
+        if (ownerSmall === seats[s].smallID()) this.ownStructures[s * RASTER_CELLS + cell]++;
+        else if ((bits & (1 << (s * ROLES + ROLE_ALLY))) === 0) this.enemyStructures[s * RASTER_CELLS + cell]++;
+      }
+    }
+
+    // Nukes and SAMs: hostile SAM cover, hostile and own blast zones in flight.
+    this.samCover.fill(0);
+    this.nukesIn.fill(0);
+    this.nukesOwn.fill(0);
+    this.incomingNukes = new Array(S).fill(0);
+    const config = game.config();
+    const hostileTo = (s: number, ownerSmall: number): boolean =>
+      ownerSmall !== seats[s].smallID() &&
+      (ownerSmall > maxSmallID || (roleBits[ownerSmall] & (1 << (s * ROLES + ROLE_ALLY))) === 0);
+    for (const sam of game.units(UnitType.SAMLauncher)) {
+      if (sam.isUnderConstruction()) continue;
+      const ownerSmall = sam.owner().smallID();
+      const range = config.samRange(sam.level());
+      for (let s = 0; s < S; s++) {
+        if (hostileTo(s, ownerSmall)) markDisk(this.samCover, s * RASTER_CELLS, geometry, sam.tile(), range);
+      }
+    }
+    for (const nuke of game.units(UnitType.AtomBomb, UnitType.HydrogenBomb, UnitType.MIRVWarhead)) {
+      const target = nuke.targetTile();
+      if (target === undefined) continue;
+      const ownerSmall = nuke.owner().smallID();
+      const radius = config.nukeMagnitudes(nuke.type()).outer;
+      const targetOwner = map.ownerID(target);
+      for (let s = 0; s < S; s++) {
+        if (ownerSmall === seats[s].smallID()) {
+          markDisk(this.nukesOwn, s * RASTER_CELLS, geometry, target, radius);
+        } else if (hostileTo(s, ownerSmall)) {
+          markDisk(this.nukesIn, s * RASTER_CELLS, geometry, target, radius);
+          if (targetOwner === seats[s].smallID()) this.incomingNukes[s]++;
+        }
+      }
+    }
+
+    for (let s = 0; s < S; s++) {
+      this.writeRaster(s, seats[s], density, land, out[s].raster);
+      this.writeFeatures(game, seats[s], players, out[s].features, geometry, this.incomingNukes[s]);
+    }
+  }
+
+  /** Single-seat convenience (live play, tests). */
+  encodeOne(game: Game, playerID: PlayerID, out: SeatObservation): void {
+    this.encode(game, [playerID], [out]);
+  }
+
+  private writeRaster(
+    s: number,
+    seat: Player,
+    density: Float32Array,
+    land: LandCache,
+    raster: Uint8Array,
+  ): void {
+    const base = (role: number) => (s * ROLES + role) * RASTER_CELLS;
+    const selfBase = base(ROLE_SELF);
+    const allyBase = base(ROLE_ALLY);
+    const threatBase = base(ROLE_THREAT);
+    const targetBase = base(ROLE_TARGET);
+    const seatDensity = seat.smallID() < density.length ? density[seat.smallID()] : 0;
+    const q = (plane: number, cell: number, v: number) => {
+      raster[plane * RASTER_CELLS + cell] = Math.round(clamp01(v) * 255);
+    };
+    for (let cell = 0; cell < RASTER_CELLS; cell++) {
+      const landT = land.landInCell[cell];
+      const totalT = land.totalInCell[cell];
+      q(Plane.Land, cell, totalT > 0 ? landT / totalT : 0);
+      const own = this.ownStructures[s * RASTER_CELLS + cell];
+      const hostile = this.enemyStructures[s * RASTER_CELLS + cell];
+      q(Plane.OwnStructures, cell, own / 3);
+      q(Plane.EnemyStructures, cell, hostile / 3);
+      const at = s * RASTER_CELLS + cell;
+      raster[Plane.EnemySAMCover * RASTER_CELLS + cell] = this.samCover[at] ? 255 : 0;
+      raster[Plane.IncomingNukes * RASTER_CELLS + cell] = this.nukesIn[at] ? 255 : 0;
+      raster[Plane.OwnNukes * RASTER_CELLS + cell] = this.nukesOwn[at] ? 255 : 0;
+      if (landT <= 0) {
+        for (const p of [Plane.Self, Plane.Ally, Plane.Enemy, Plane.Unowned, Plane.SelfTroops, Plane.EnemyTroops, Plane.Threat, Plane.Targets]) {
+          raster[p * RASTER_CELLS + cell] = 0;
+        }
+        continue;
+      }
+      const self = this.roleCount[selfBase + cell];
+      const ally = this.roleCount[allyBase + cell];
+      const enemy = Math.max(0, this.ownedAll[cell] - self - ally);
+      q(Plane.Self, cell, self / landT);
+      q(Plane.Ally, cell, ally / landT);
+      q(Plane.Enemy, cell, enemy / landT);
+      q(Plane.Unowned, cell, this.unowned[cell] / landT);
+      q(Plane.SelfTroops, cell, (self * seatDensity) / landT);
+      const enemyTroops = this.troopAll[cell] - self * seatDensity - this.allyTroop[s * RASTER_CELLS + cell];
+      q(Plane.EnemyTroops, cell, enemyTroops / landT);
+      q(Plane.Threat, cell, this.roleCount[threatBase + cell] / landT);
+      q(Plane.Targets, cell, this.roleCount[targetBase + cell] / landT);
+    }
+  }
+
+  private writeFeatures(
+    game: Game,
+    seat: Player,
+    players: Player[],
+    out: Float32Array,
+    geometry: CellGeometry,
+    incomingNukes: number,
+  ): void {
+    out.fill(0);
+    const config = game.config();
+    const alive = seat.isAlive();
+    const ourTroops = seat.troops();
+    const ourTiles = seat.numTilesOwned();
+    const totalLand = Math.max(1, game.map().numLandTiles());
+
+    const incomingBy = new Map<number, number>();
+    let incomingTroops = 0;
+    for (const a of seat.incomingAttacks()) {
+      const id = a.attacker().smallID();
+      incomingBy.set(id, (incomingBy.get(id) ?? 0) + a.troops());
+      incomingTroops += a.troops();
+    }
+    const outgoingBy = new Map<number, number>();
+    let outgoingTroops = 0;
+    for (const a of seat.outgoingAttacks()) {
+      const target = a.target();
+      const id = target.isPlayer() ? target.smallID() : 0;
+      outgoingBy.set(id, (outgoingBy.get(id) ?? 0) + a.troops());
+      outgoingTroops += a.troops();
+    }
+    const vsUs = (troops: number) => clamp01(troops / Math.max(1, ourTroops) / 2);
+
+    // Slot table. Slot 0 is terra nullius (expansion target).
+    const bordering = borderingSmallIDs(game, seat);
+    const slots = assignTargetSlots(game, seat, bordering);
+    const owned = players.reduce((sum, p) => sum + p.numTilesOwned(), 0);
+    const unownedTiles = Math.max(0, game.map().numLandTiles() - owned);
+    const slot0 = SLOT_OFFSET;
+    out[slot0 + SlotField.Valid] = unownedTiles > 0 ? 1 : 0;
+    out[slot0 + SlotField.Tiles] = logScale(unownedTiles, 100, 10);
+    out[slot0 + SlotField.TileShareVsUs] = unownedTiles / Math.max(1, unownedTiles + ourTiles);
+    out[slot0 + SlotField.SharesBorder] = bordering.has(0) ? 1 : 0;
+    out[slot0 + SlotField.WeAttack] = vsUs(outgoingBy.get(0) ?? 0);
+    const requesting = new Set(seat.incomingAllianceRequests().map((r) => r.requestor().smallID()));
+    for (let i = 1; i < NUM_SLOTS; i++) {
+      const p = slots[i];
+      if (p === null) continue;
+      const base = SLOT_OFFSET + i * SLOT_FIELDS;
+      const tiles = p.numTilesOwned();
+      const troops = p.troops();
+      const type = p.type();
+      out[base + SlotField.Valid] = 1;
+      out[base + SlotField.Tiles] = logScale(tiles, 100, 10);
+      out[base + SlotField.TileShareVsUs] = tiles / Math.max(1, tiles + ourTiles);
+      out[base + SlotField.Troops] = logScale(troops, 1000, 7);
+      out[base + SlotField.StrengthVsUs] = troops / Math.max(1, troops + ourTroops);
+      out[base + SlotField.Density] = logScale(troops / Math.max(1, tiles), 1, 8);
+      out[base + SlotField.Allied] = seat.isAlliedWith(p) ? 1 : 0;
+      out[base + SlotField.SharesBorder] = bordering.has(p.smallID()) ? 1 : 0;
+      out[base + SlotField.AttackingUs] = vsUs(incomingBy.get(p.smallID()) ?? 0);
+      out[base + SlotField.WeAttack] = vsUs(outgoingBy.get(p.smallID()) ?? 0);
+      out[base + SlotField.IsBot] = type === PlayerType.Bot ? 1 : 0;
+      out[base + SlotField.IsNation] = type === PlayerType.Nation ? 1 : 0;
+      out[base + SlotField.IsHuman] = type === PlayerType.Human ? 1 : 0;
+      out[base + SlotField.Traitor] = p.isTraitor() ? 1 : 0;
+      out[base + SlotField.EmbargoAgainstUs] = p.hasEmbargoAgainst(seat) ? 1 : 0;
+      out[base + SlotField.RequestsAlliance] = requesting.has(p.smallID()) ? 1 : 0;
+    }
+
+    // Build-site table, same list the codec's site head indexes.
+    if (alive) {
+      const candidates = buildCandidates(game, seat);
+      for (let i = 0; i < candidates.length && i < MAX_BUILD_SITES; i++) {
+        const c = candidates[i];
+        const base = SITE_OFFSET + i * SITE_FIELDS;
+        out[base + SiteField.Valid] = 1;
+        out[base + SiteField.TypeStart + c.typeIndex] = 1;
+        out[base + SiteField.X] = (c.tile % geometry.w) / geometry.w;
+        out[base + SiteField.Y] = Math.floor(c.tile / geometry.w) / geometry.h;
+        out[base + SiteField.Border] = c.border ? 1 : 0;
+        out[base + SiteField.RailLink] = c.rail ? 1 : 0;
+      }
+    }
+
+    // Globals.
+    const g = GLOBAL_OFFSET;
+    const spawnTicks = config.numSpawnPhaseTurns();
+    out[g + GlobalField.TimeFraction] = clamp01((game.ticks() - spawnTicks) / this.horizonTicks);
+    // game.players() is living players only; allPlayers() includes the dead.
+    const living = players;
+    const everyone = Math.max(1, game.allPlayers().length);
+    out[g + GlobalField.AliveFraction] = living.length / everyone;
+    const larger = living.filter((p) => p.numTilesOwned() > ourTiles).length;
+    out[g + GlobalField.Rank] = living.length > 1 ? larger / (living.length - 1) : 0;
+    out[g + GlobalField.Tiles] = logScale(ourTiles, 100, 10);
+    out[g + GlobalField.LandShare] = clamp01((ourTiles / totalLand) * 10);
+    out[g + GlobalField.Troops] = logScale(ourTroops, 1000, 7);
+    if (alive) {
+      const maxTroops = Math.max(1, config.maxTroops(seat));
+      out[g + GlobalField.TroopRatio] = clamp01(ourTroops / maxTroops);
+      out[g + GlobalField.GrowthRate] = clamp01((config.troopIncreaseRate(seat) / maxTroops) * 100);
+      const gold = Number(seat.gold());
+      const affordable = (type: UnitType): number => {
+        const cost = Number(game.unitInfo(type).cost(game, seat));
+        return cost > 0 ? clamp01(gold / cost) : 0;
+      };
+      out[g + GlobalField.CityAffordable] = affordable(UnitType.City);
+      out[g + GlobalField.AtomAffordable] = affordable(UnitType.AtomBomb);
+      out[g + GlobalField.HydrogenAffordable] = affordable(UnitType.HydrogenBomb);
+      out[g + GlobalField.MIRVAffordable] = affordable(UnitType.MIRV);
+      const ready = seat.units(UnitType.MissileSilo).filter((u) => u.isActive() && !u.isUnderConstruction() && !u.isInCooldown());
+      out[g + GlobalField.SilosReady] = clamp01(ready.length / 3);
+    }
+    out[g + GlobalField.OutgoingTroops] = clamp01(outgoingTroops / Math.max(1, ourTroops + outgoingTroops));
+    out[g + GlobalField.IncomingTroops] = vsUs(incomingTroops);
+    out[g + GlobalField.IncomingCount] = clamp01(seat.incomingAttacks().length / 4);
+    out[g + GlobalField.OutgoingCount] = clamp01(seat.outgoingAttacks().length / 4);
+    out[g + GlobalField.Gold] = logScale(Number(seat.gold()), 1000, 10);
+    out[g + GlobalField.Cities] = clamp01(seat.unitCount(UnitType.City) / 10);
+    out[g + GlobalField.Ports] = clamp01(seat.unitCount(UnitType.Port) / 5);
+    out[g + GlobalField.Factories] = clamp01(seat.unitCount(UnitType.Factory) / 5);
+    out[g + GlobalField.DefensePosts] = clamp01(seat.unitCount(UnitType.DefensePost) / 10);
+    out[g + GlobalField.SAMs] = clamp01(seat.unitCount(UnitType.SAMLauncher) / 5);
+    out[g + GlobalField.Silos] = clamp01(seat.unitCount(UnitType.MissileSilo) / 5);
+    out[g + GlobalField.Warships] = clamp01(seat.unitCount(UnitType.Warship) / 5);
+    out[g + GlobalField.BoatsAtSea] = clamp01(seat.unitCount(UnitType.TransportShip) / 3);
+    out[g + GlobalField.Alive] = alive ? 1 : 0;
+    out[g + GlobalField.Traitor] = seat.isTraitor() ? 1 : 0;
+    const others = players.filter((p) => p !== seat);
+    out[g + GlobalField.Allies] = clamp01(others.filter((p) => seat.isAlliedWith(p)).length / 16);
+    out[g + GlobalField.Embargoed] = clamp01(others.filter((p) => p.hasEmbargoAgainst(seat)).length / 16);
+    out[g + GlobalField.InSpawnPhase] = game.inSpawnPhase() ? 1 : 0;
+    out[g + GlobalField.AllianceRequests] = clamp01(requesting.size / 4);
+    out[g + GlobalField.IncomingNukes] = clamp01(incomingNukes / 3);
+  }
+
+  private ensureScratch(S: number): void {
+    if (this.roleCount.length === S * ROLES * RASTER_CELLS) return;
+    this.roleCount = new Float32Array(S * ROLES * RASTER_CELLS);
+    this.allyTroop = new Float32Array(S * RASTER_CELLS);
+    this.ownStructures = new Float32Array(S * RASTER_CELLS);
+    this.enemyStructures = new Float32Array(S * RASTER_CELLS);
+    this.samCover = new Uint8Array(S * RASTER_CELLS);
+    this.nukesIn = new Uint8Array(S * RASTER_CELLS);
+    this.nukesOwn = new Uint8Array(S * RASTER_CELLS);
+  }
+
+  /** Land membership per tile and land/total tile counts per cell, cached per
+   *  GameMap and rebuilt when nukes bump waterVersion. */
+  private landCache(
+    map: { isLand(ref: number): boolean; waterVersion(): number },
+    geometry: CellGeometry,
+  ): LandCache {
+    let cache = this.landByMap.get(map);
+    if (cache !== undefined && cache.waterVersion === map.waterVersion()) return cache;
+    const { w, h, cxForX, rowBaseForY } = geometry;
+    cache ??= {
+      waterVersion: -1,
+      isLand: new Uint8Array(w * h),
+      landInCell: new Float32Array(RASTER_CELLS),
+      totalInCell: new Float32Array(RASTER_CELLS),
+    };
+    cache.landInCell.fill(0);
+    cache.totalInCell.fill(0);
     let t = 0;
     for (let y = 0; y < h; y++) {
       const rowBase = rowBaseForY[y];
       for (let x = 0; x < w; x++, t++) {
         const cell = rowBase + cxForX[x];
-        totalTilesInCell[cell]++;
+        cache.totalInCell[cell]++;
+        const isLand = map.isLand(t) ? 1 : 0;
+        cache.isLand[t] = isLand;
+        cache.landInCell[cell] += isLand;
       }
     }
-    const built: StaticTerrain = {
-      w,
-      h,
-      scale,
-      offsetX,
-      offsetY,
-      waterVersion: -1,
-      isLand,
-      cxForX,
-      rowBaseForY,
-      totalTilesInCell,
-      landTilesInCell,
-    };
-    this.staticByMap.set(map, built);
-    this.refreshLand(map, built);
-    return built;
-  }
-
-  /** (Re)build land membership from the live map. Runs once per GameMap
-   *  plus once per waterVersion bump (nukes). One `isLand` call per tile
-   *  here, zero in the per-step loop. */
-  private refreshLand(
-    map: { isLand(ref: number): boolean; waterVersion(): number },
-    terrain: StaticTerrain,
-  ): void {
-    const { w, h, cxForX, rowBaseForY, isLand, landTilesInCell } = terrain;
-    isLand.fill(0);
-    landTilesInCell.fill(0);
-    let t = 0;
-    for (let y = 0; y < h; y++) {
-      const rowBase = rowBaseForY[y];
-      for (let x = 0; x < w; x++, t++) {
-        if (map.isLand(t)) {
-          isLand[t] = 1;
-          landTilesInCell[rowBase + cxForX[x]]++;
-        }
-      }
-    }
-    terrain.waterVersion = map.waterVersion();
-  }
-
-  encode(game: Game, agentPlayerID: PlayerID, out: Float32Array): void {
-    if (out.length !== this.size) {
-      throw new Error(`out must have length ${this.size}, got ${out.length}`);
-    }
-    out.fill(0);
-
-    const agent = game.player(agentPlayerID);
-    const map = game.map();
-    const terrain = this.getStatic(map);
-    const { w, h } = terrain;
-
-    // Per-player lookups, computed once (O(numPlayers), not O(tiles)) as
-    // flat typed arrays indexed directly by smallID — a dense small integer
-    // (packed into 12 bits of tile state, see GameImpl.tileStateBuffer) — so
-    // the 2M-tile hot loop below never pays JS Map's hashing cost per tile.
-    // Swapping the two Maps this replaced for these arrays cut
-    // encode()'s measured cost roughly 3x (see ObservationEncoder.test.ts's
-    // throughput check and spec §11.1's resolution).
-    const players = game.players();
-    const agentSmallID = agent.smallID();
-    let maxSmallID = agentSmallID;
-    for (const p of players) maxSmallID = Math.max(maxSmallID, p.smallID());
-    // 0 = self, 1 = ally, 2 = enemy, 255 = no player at this smallID.
-    const relationCodeBySmallID = new Uint8Array(maxSmallID + 1).fill(255);
-    // Troops-per-owned-tile, not total troops — the engine has no per-tile
-    // troop data, so "density" has to be built from what it does have
-    // (a player-level total and a tile count). Storing the player's raw
-    // troop fraction here would make every tile that player owns report
-    // that same total-troops value verbatim: not a density, just their
-    // global troop count broadcast onto an ownership mask that's already
-    // captured by planes 1/3 and GlobalField.SelfTroopFraction. Dividing by
-    // their own tile count makes it "how thin are this player's troops
-    // spread", which is genuinely per-player spatial information and
-    // — because it's summed across owners per cell before normalizing by
-    // that cell's land-tile count below — varies with which of possibly
-    // several enemy owners hold a given cell, not just uniform per player.
-    const troopPerTileBySmallID = new Float32Array(maxSmallID + 1);
-    for (const p of players) {
-      const code = p.smallID() === agentSmallID ? 0 : p.isFriendly(agent) ? 1 : 2;
-      relationCodeBySmallID[p.smallID()] = code;
-      troopPerTileBySmallID[p.smallID()] =
-        p.troops() / TROOP_SCALE / Math.max(1, p.numTilesOwned());
-    }
-    // Reused scratch, zeroed per call. Same arrays every encode so the
-    // ~500 KB of Float64 accumulators never hits the allocator.
-    const landByCode = this.scratchLandByCode;
-    const troopDensityByCode = this.scratchTroopByCode;
-    const unownedLandInCell = this.scratchUnowned;
-    const structureCountInCell = this.scratchStructures;
-    for (let i = 0; i < landByCode.length; i++) landByCode[i].fill(0);
-    for (let i = 0; i < troopDensityByCode.length; i++) troopDensityByCode[i].fill(0);
-    unownedLandInCell.fill(0);
-    structureCountInCell.fill(0);
-    const selfOwnedTiles = this.scratchSelfTiles;
-    selfOwnedTiles.length = 0;
-    const borderingSmallIDs = this.scratchBordering;
-    borderingSmallIDs.clear();
-
-    const cellIndexOf = (x: number, y: number): number =>
-      terrain.rowBaseForY[y] + terrain.cxForX[x];
-
-    // Read ownerID straight out of the packed state plane instead of
-    // through map.hasOwner(t)/map.ownerID(t)'s virtual dispatch — this loop
-    // runs per tile (up to ~2M for World) and those two calls were a
-    // measurable fraction of encode()'s cost. 0xfff mirrors
-    // GameMap.tileStateBuffer()'s documented low-12-bits-are-ownerID layout
-    // (relied on elsewhere per spec §2.6). Land comes from the static cache
-    // built once per GameMap, so the loop pays no isLand() dispatch and no
-    // float-division geometry per tile — just sequential array reads.
-    const OWNER_ID_MASK = 0xfff;
-    const stateBuf = map.tileStateBuffer();
-    const { isLand, cxForX, rowBaseForY } = terrain;
-
-    let t = 0;
-    for (let y = 0; y < h; y++) {
-      const cellRowBase = rowBaseForY[y];
-      for (let x = 0; x < w; x++, t++) {
-        if (isLand[t] === 0) continue;
-        const cell = cellRowBase + cxForX[x];
-
-        const ownerSmallID = stateBuf[t] & OWNER_ID_MASK;
-        if (ownerSmallID === 0) {
-          unownedLandInCell[cell]++;
-          continue;
-        }
-        // Out-of-bounds (undefined) or the 255 sentinel both mean "no
-        // tracked player at this smallID" — defensive against a dangling
-        // ownerID (see buildWorldGame's doc comment on the engine crash
-        // this same failure mode causes elsewhere in the engine).
-        const code = relationCodeBySmallID[ownerSmallID];
-        if (code === undefined || code === 255) continue;
-        landByCode[code][cell]++;
-        if (code === 0 || code === 2) {
-          troopDensityByCode[code === 0 ? 0 : 1][cell] += troopPerTileBySmallID[ownerSmallID];
-        }
-        if (code === 0) selfOwnedTiles.push(t);
-      }
-    }
-
-    // Bordering-opponent detection is bounded by the agent's own tile count,
-    // not the whole map — cheap even late-game, and kept out of the O(tiles)
-    // loop above so it doesn't pay map.neighbors()'s per-call allocation for
-    // every one of 2M tiles.
-    for (const tile of selfOwnedTiles) {
-      for (const n of map.neighbors(tile)) {
-        if (!map.hasOwner(n)) continue;
-        const nSmallID = map.ownerID(n);
-        if (nSmallID !== agentSmallID) borderingSmallIDs.add(nSmallID);
-      }
-    }
-
-    // Structure presence: real unit positions, not a per-tile ownership proxy.
-    // Uses the scratch buffer zeroed above; structure counts are sparse.
-    for (const unit of game.units(Structures.types)) {
-      const tile = unit.tile();
-      const ux = map.x(tile);
-      const uy = map.y(tile);
-      if (ux < 0 || ux >= w || uy < 0 || uy >= h) continue;
-      structureCountInCell[cellIndexOf(ux, uy)]++;
-    }
-
-    const { totalTilesInCell, landTilesInCell } = terrain;
-    const raster = out.subarray(0, RASTER_SIZE);
-    for (let cell = 0; cell < RASTER_CELLS; cell++) {
-      const totalT = totalTilesInCell[cell];
-      const landT = landTilesInCell[cell];
-      raster[Plane.Land * RASTER_CELLS + cell] = totalT > 0 ? landT / totalT : 0;
-      if (landT > 0) {
-        raster[Plane.SelfOwnership * RASTER_CELLS + cell] = landByCode[0][cell] / landT;
-        raster[Plane.AllyOwnership * RASTER_CELLS + cell] = landByCode[1][cell] / landT;
-        raster[Plane.EnemyOwnership * RASTER_CELLS + cell] = landByCode[2][cell] / landT;
-        raster[Plane.UnownedOwnership * RASTER_CELLS + cell] = unownedLandInCell[cell] / landT;
-        raster[Plane.SelfTroopDensity * RASTER_CELLS + cell] = troopDensityByCode[0][cell] / landT;
-        raster[Plane.EnemyTroopDensity * RASTER_CELLS + cell] = troopDensityByCode[1][cell] / landT;
-      }
-      // Structures are sparse; a handful in one cell already means "built
-      // up" for the policy's purposes, so clip rather than let a rare
-      // Factory-heavy cell dominate the plane's scale.
-      raster[Plane.StructurePresence * RASTER_CELLS + cell] =
-        Math.min(1, structureCountInCell[cell] / 4);
-    }
-
-    this.encodePlayerTable(
-      out.subarray(RASTER_SIZE, RASTER_SIZE + PLAYER_TABLE_SIZE),
-      game,
-      agent,
-      borderingSmallIDs,
-    );
-    this.encodeGlobals(out.subarray(RASTER_SIZE + PLAYER_TABLE_SIZE), game, agent);
-  }
-
-  private encodePlayerTable(
-    out: Float32Array,
-    game: Game,
-    agent: Player,
-    borderingSmallIDs: Set<number>,
-  ): void {
-    const totalLandTiles = game.map().numLandTiles();
-    const unownedTiles =
-      totalLandTiles -
-      game.players().reduce((sum, p) => sum + p.numTilesOwned(), 0);
-
-    // Slot 0: terra nullius.
-    out[0 * NUM_SLOT_FIELDS + SlotField.Tiles] =
-      totalLandTiles > 0 ? Math.max(0, unownedTiles) / totalLandTiles : 0;
-    out[0 * NUM_SLOT_FIELDS + SlotField.Valid] = unownedTiles > 0 ? 1 : 0;
-
-    // Slot order shared with the action codec's target head: assign once,
-    // read here and there, so the policy's slot i is the codec's slot i.
-    const slots = assignTargetSlots(game, agent, borderingSmallIDs);
-    const maxOtherSlots = NUM_SLOTS - 1;
-    for (let i = 0; i < maxOtherSlots; i++) {
-      const p = slots[i + 1];
-      const slot = i + 1;
-      const base = slot * NUM_SLOT_FIELDS;
-      if (p === null) {
-        out[base + SlotField.Valid] = 0;
-        continue;
-      }
-      out[base + SlotField.Troops] = p.troops() / TROOP_SCALE;
-      out[base + SlotField.Gold] = Number(p.gold()) / GOLD_SCALE;
-      out[base + SlotField.Tiles] =
-        totalLandTiles > 0 ? p.numTilesOwned() / totalLandTiles : 0;
-      out[base + SlotField.Allied] = agent.isAlliedWith(p) ? 1 : 0;
-      out[base + SlotField.EmbargoedAgainstUs] = p.hasEmbargoAgainst(agent) ? 1 : 0;
-      out[base + SlotField.Traitor] = p.isTraitor() ? 1 : 0;
-      out[base + SlotField.SharedBorder] = borderingSmallIDs.has(p.smallID()) ? 1 : 0;
-      out[base + SlotField.Valid] = 1;
-    }
-  }
-
-  private encodeGlobals(out: Float32Array, game: Game, agent: Player): void {
-    const players = game.players();
-    const alive = players.filter((p) => p.isAlive());
-    const totalLandTiles = game.map().numLandTiles();
-
-    out[GlobalField.TickFraction] = Math.min(1, game.ticks() / TICK_CAP_REFERENCE);
-    out[GlobalField.InSpawnPhase] = game.inSpawnPhase() ? 1 : 0;
-    out[GlobalField.AlivePlayerFraction] =
-      players.length > 0 ? alive.length / players.length : 0;
-
-    const rankPool = alive.length > 0 ? alive : players;
-    const sortedByTiles = [...rankPool].sort((a, b) => b.numTilesOwned() - a.numTilesOwned());
-    const rankIndex = sortedByTiles.findIndex((p) => p.smallID() === agent.smallID());
-    out[GlobalField.SelfRank] =
-      sortedByTiles.length > 1 && rankIndex >= 0 ? rankIndex / (sortedByTiles.length - 1) : 0;
-
-    out[GlobalField.SelfTroopFraction] = agent.troops() / TROOP_SCALE;
-    out[GlobalField.SelfGoldFraction] = Number(agent.gold()) / GOLD_SCALE;
-    out[GlobalField.SelfTileFraction] =
-      totalLandTiles > 0 ? agent.numTilesOwned() / totalLandTiles : 0;
-    out[GlobalField.SelfAlive] = agent.isAlive() ? 1 : 0;
-    out[GlobalField.SelfTraitor] = agent.isTraitor() ? 1 : 0;
-    out[GlobalField.SelfDoomsdayClock] = agent.inDoomsdayClock() ? 1 : 0;
-
-    const maxOtherSlots = NUM_SLOTS - 1;
-    const allyCount = players.filter(
-      (p) => p.smallID() !== agent.smallID() && agent.isAlliedWith(p),
-    ).length;
-    const embargoedCount = players.filter(
-      (p) => p.smallID() !== agent.smallID() && p.hasEmbargoAgainst(agent),
-    ).length;
-    out[GlobalField.SelfAllyFraction] = allyCount / maxOtherSlots;
-    out[GlobalField.SelfEmbargoedFraction] = embargoedCount / maxOtherSlots;
+    cache.waterVersion = map.waterVersion();
+    this.landByMap.set(map, cache);
+    return cache;
   }
 }
+
+/** Mark the cells whose centre tile lies within `radius` tiles of `tile`. */
+function markDisk(buf: Uint8Array, base: number, geometry: CellGeometry, tile: TileRef, radius: number): void {
+  const { w, h, cxForX, rowBaseForY, centerTile } = geometry;
+  const x = tile % w;
+  const y = Math.floor(tile / w);
+  const cx0 = cxForX[Math.max(0, Math.floor(x - radius))];
+  const cx1 = cxForX[Math.min(w - 1, Math.ceil(x + radius))];
+  const row0 = rowBaseForY[Math.max(0, Math.floor(y - radius))];
+  const row1 = rowBaseForY[Math.min(h - 1, Math.ceil(y + radius))];
+  const r2 = radius * radius;
+  // The cell holding the tile is always marked, even when the radius is
+  // smaller than a cell.
+  buf[base + tileCell(tile, geometry)] = 1;
+  for (let row = row0; row <= row1; row += RASTER_WIDTH) {
+    for (let cx = cx0; cx <= cx1; cx++) {
+      const center = centerTile[row + cx];
+      if (center < 0) continue;
+      const dx = (center % w) - x;
+      const dy = Math.floor(center / w) - y;
+      if (dx * dx + dy * dy <= r2) buf[base + row + cx] = 1;
+    }
+  }
+}
+
+export { NUM_PLANES, RASTER_SIZE };

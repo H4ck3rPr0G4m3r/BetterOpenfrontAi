@@ -1,16 +1,8 @@
 "use strict";
 
-const INTENT_NAMES = [
-  "noop", "attack", "boat", "build_unit", "upgrade_structure",
-  "move_warship", "target_player", "alliance_request", "alliance_reject",
-  "break_alliance", "embargo", "donate_gold", "donate_troops", "cancel_attack",
-];
-const BUILD_TYPES = [
-  "City", "Defense Post", "Port", "SAM Launcher",
-  "Missile Silo", "Factory", "Warship",
-];
-
 const $ = (id) => document.getElementById(id);
+const NONE = "";
+const ACCENT = "#6fc287";
 
 async function api(method, path, body) {
   const opts = { method, headers: {} };
@@ -20,537 +12,596 @@ async function api(method, path, body) {
   }
   const res = await fetch(path, opts);
   const data = await res.json();
+  if (res.status === 404 && /^unknown: '\/api\//.test(data.error || "")) {
+    throw new Error("The dashboard server is running older code. Close its window and run start.bat dashboard.");
+  }
   if (!res.ok) throw new Error(data.error || res.statusText);
   return data;
 }
 
-/* ---------------- behavior form ---------------- */
-
-function aggressionLabel(v) {
-  return v <= 33 ? "turtle" : v <= 66 ? "balanced" : "berserker";
-}
-
-function ratioFloorFor(v) {
-  return v <= 33 ? 0 : v <= 66 ? 2 : 4;
-}
-
-function readBehavior() {
-  const disabledIntents = [];
-  document.querySelectorAll("#intent-toggles input").forEach((box) => {
-    if (!box.checked) disabledIntents.push(Number(box.value));
-  });
-  const disabledBuilds = [];
-  document.querySelectorAll("#build-toggles input").forEach((box) => {
-    if (!box.checked) disabledBuilds.push(box.value);
-  });
-  const rawWeights = $("reward-weights").value.trim();
-  return {
-    name: $("preset-name").value.trim() || "custom",
-    aggression: Number($("aggression").value),
-    min_attack_ratio: Number($("min-ratio").value),
-    disabled_intents: disabledIntents,
-    disabled_builds: disabledBuilds,
-    reward_weights: rawWeights ? rawWeights.split(",").map(Number) : null,
-    env_overrides: {},
-    ppo_overrides: {},
-  };
-}
-
-function writeBehavior(b) {
-  $("aggression").value = b.aggression ?? 50;
-  $("min-ratio").value = b.min_attack_ratio ?? ratioFloorFor(b.aggression ?? 50);
-  $("reward-weights").value = b.reward_weights ? b.reward_weights.join(",") : "";
-  const offIntents = new Set(b.disabled_intents || []);
-  document.querySelectorAll("#intent-toggles input").forEach((box) => {
-    box.checked = !offIntents.has(Number(box.value));
-    box.closest("label").classList.toggle("off", !box.checked);
-  });
-  const offBuilds = new Set(b.disabled_builds || b.disabled_build_names || []);
-  document.querySelectorAll("#build-toggles input").forEach((box) => {
-    box.checked = !offBuilds.has(box.value);
-    box.closest("label").classList.toggle("off", !box.checked);
-  });
-  refreshAggression();
-}
-
-function refreshAggression() {
-  const v = Number($("aggression").value);
-  $("aggro-label").textContent = aggressionLabel(v);
-  const floor = ratioFloorFor(v);
-  $("aggro-map").textContent =
-    `attack ratio floor ${[5, 10, 20, 30, 50, 70, 90, 100][floor]}% (bucket ${floor})`;
-}
-
-function buildToggles() {
-  const intentBox = $("intent-toggles");
-  INTENT_NAMES.forEach((name, i) => {
-    if (i === 0) return;
-    const label = document.createElement("label");
-    const box = document.createElement("input");
-    box.type = "checkbox";
-    box.checked = true;
-    box.value = String(i);
-    box.addEventListener("change", () => label.classList.toggle("off", !box.checked));
-    label.append(box, document.createTextNode(name));
-    intentBox.append(label);
-  });
-  const buildBox = $("build-toggles");
-  BUILD_TYPES.forEach((name) => {
-    const label = document.createElement("label");
-    const box = document.createElement("input");
-    box.type = "checkbox";
-    box.checked = true;
-    box.value = name;
-    box.addEventListener("change", () => label.classList.toggle("off", !box.checked));
-    label.append(box, document.createTextNode(name));
-    buildBox.append(label);
-  });
-}
-
-/* ---------------- presets ---------------- */
-
-let presets = [];
-let presetsInitialized = false;
-
-function renderPresets() {
-  const sel = $("preset-select");
-  const previous = sel.value;
-  sel.innerHTML = "";
-  presets.forEach((p) => {
-    const opt = document.createElement("option");
-    opt.value = p.name || p.file;
-    opt.textContent = p.error ? `${p.file} (invalid)` : p.name;
-    sel.append(opt);
-  });
-  // Polls refresh the list but must never touch the form: keep the
-  // user's selection when it still exists, otherwise fall back to first.
-  if (previous && [...sel.options].some((o) => o.value === previous)) {
-    sel.value = previous;
+function el(tag, attrs = {}, ...children) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") node.className = v;
+    else if (k.startsWith("on")) node.addEventListener(k.slice(2), v);
+    else node.setAttribute(k, v);
   }
-  showPresetDesc();
-  if (!presetsInitialized) {
-    presetsInitialized = true;
-    const current = presets.find((p) => !p.error);
-    if (current) {
-      sel.value = current.name || current.file;
-      writeBehavior(current);
-      showPresetDesc();
+  for (const child of children) node.append(child);
+  return node;
+}
+
+function ago(iso) {
+  if (!iso) return "";
+  const s = Math.max(0, (Date.now() - Date.parse(iso)) / 1000);
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.round(s / 60)} min ago`;
+  if (s < 86400) return `${Math.round(s / 3600)} h ago`;
+  return new Date(iso).toLocaleDateString();
+}
+
+function fmt(v) {
+  if (v === undefined || v === null || Number.isNaN(v)) return "-";
+  if (Math.abs(v) >= 1000) return Math.round(v).toLocaleString();
+  if (Math.abs(v) >= 100 || Number.isInteger(v)) return v.toFixed(0);
+  return v.toFixed(2);
+}
+const pct = (v) => (v === undefined ? "-" : `${Math.round(v * 100)}%`);
+const NAMES = { vs_bots: "Vs bots", selfplay_ffa: "Self-play FFA", close_rivals: "Close rivals", crowded: "Crowded", easy: "Easy" };
+const pretty = (name) => NAMES[name] || name.replace(/_/g, " ");
+
+function showError(box, err) {
+  box.textContent = err ? String(err.message || err) : "";
+  box.hidden = !err;
+}
+
+/* ---------------- tabs ---------------- */
+
+const TABS = ["play", "training", "eval", "replays"];
+
+function showTab(name) {
+  const tab = TABS.includes(name) ? name : "play";
+  for (const t of TABS) $(t).hidden = t !== tab;
+  document.querySelectorAll(".tabs a").forEach((a) => a.setAttribute("aria-selected", String(a.dataset.tab === tab)));
+  if (tab === "training") loadMetrics();
+  if (tab === "replays") loadReplays().catch(() => {});
+}
+
+/* ---------------- catalog: models, recipes, runs ---------------- */
+
+let catalog = { checkpoints: [], agents: [], configs: [], runs: [] };
+
+function fillModelSelect(select) {
+  const keep = select.value;
+  select.innerHTML = "";
+  if (select.dataset.optional) select.append(el("option", { value: NONE }, "Empty seat"));
+  if (catalog.checkpoints.length) {
+    const group = el("optgroup", { label: "Trained models" });
+    for (const c of catalog.checkpoints) {
+      group.append(el("option", { value: c.path }, c.path.replace(/^checkpoints\//, "").replace(/\.pt$/, "")));
     }
+    select.append(group);
   }
+  const builtin = el("optgroup", { label: "Built-in" });
+  for (const a of catalog.agents) builtin.append(el("option", { value: a }, a));
+  select.append(builtin);
+  if ([...select.options].some((o) => o.value === keep)) select.value = keep;
 }
 
-function showPresetDesc() {
-  const p = presets.find((x) => (x.name || x.file) === $("preset-select").value);
-  $("preset-desc").textContent = p && !p.error ? p.description || "" : "";
+async function loadCatalog() {
+  catalog = await api("GET", "/api/catalog");
+  document.querySelectorAll(".model-select").forEach(fillModelSelect);
+  const cfg = $("train-config");
+  const keep = cfg.value || "main.yaml";
+  cfg.innerHTML = "";
+  catalog.configs.forEach((c) => cfg.append(el("option", { value: c }, c.replace(/\.yaml$/, ""))));
+  cfg.value = catalog.configs.includes(keep) ? keep : catalog.configs[0] || "";
+  const run = $("metrics-run");
+  const keepRun = run.value;
+  run.innerHTML = "";
+  catalog.runs.forEach((r) => run.append(el("option", { value: r.name }, `${r.name}  (${ago(r.modified)})`)));
+  if (catalog.runs.some((r) => r.name === keepRun)) run.value = keepRun;
 }
 
 /* ---------------- jobs ---------------- */
 
-let jobs = [];
-let logSource = null;
+const STATUS_TEXT = { running: "Running", stopping: "Stopping", done: "Finished", error: "Failed", stopped: "Stopped" };
+const openLogs = new Set();
 
-function renderJobs() {
-  const body = $("jobs").querySelector("tbody");
-  body.innerHTML = "";
-  jobs.forEach((job) => {
-    const tr = document.createElement("tr");
-    const cells = [job.id, job.kind, job.status, job.started || ""];
-    cells.forEach((text) => {
-      const td = document.createElement("td");
-      td.textContent = text;
-      tr.append(td);
-    });
-    const watchTd = document.createElement("td");
-    const watch = document.createElement("button");
-    watch.textContent = "Watch";
-    watch.addEventListener("click", () => watchJob(job.id));
-    watchTd.append(watch);
-    tr.append(watchTd);
-    const stopTd = document.createElement("td");
-    if (job.status === "running") {
-      const stop = document.createElement("button");
-      stop.textContent = "Stop";
-      stop.addEventListener("click", async () => {
-        await api("DELETE", `/api/jobs/${job.id}`);
-        await refreshState();
-      });
-      stopTd.append(stop);
+function jobCard(job) {
+  const action = job.status === "running"
+    ? el("button", { type: "button", class: "small", onclick: () => stopJob(job.id) }, job.kind === "lobby" ? "Leave" : "Stop")
+    : job.status === "stopping"
+      ? el("button", { type: "button", class: "small", title: "Kill it now; updates since its last save are lost", onclick: () => stopJob(job.id) }, "Force stop")
+      : el("button", { type: "button", class: "small ghost", onclick: () => stopJob(job.id) }, "Dismiss");
+  const head = el("div", { class: "job-head" },
+    el("strong", {}, job.title),
+    el("span", { class: `pill ${job.status}` }, STATUS_TEXT[job.status] || job.status),
+    el("span", { class: "hint" }, ago(job.started)),
+    action);
+  const card = el("div", { class: `job-card ${job.status}` }, head);
+  if (job.status === "stopping") card.append(el("div", { class: "hint" }, "Finishing the current update, then it saves and stops"));
+  if (job.result) card.append(evalTable(job.result));
+  const lines = job.log_tail || [];
+  if (lines.length) {
+    const more = el("details", {}, el("summary", {}, "Output"), el("pre", { class: "log", "data-job": job.id }, lines.join("\n")));
+    if (openLogs.has(job.id)) more.open = true;
+    more.addEventListener("toggle", () => (more.open ? openLogs.add(job.id) : openLogs.delete(job.id)));
+    card.append(more);
+  } else if (job.status === "running") {
+    card.append(el("div", { class: "hint" }, "Starting up"));
+  }
+  return card;
+}
+
+function evalTable(result) {
+  const table = el("table", { class: "compact" });
+  table.append(el("thead", {}, el("tr", {}, ...["AI", "Games", "Survived", "Won", "Land", "Placement", "Kills"]
+    .map((h) => el("th", {}, h)))));
+  const body = el("tbody");
+  for (const [spec, s] of Object.entries(result.predictors || {})) {
+    body.append(el("tr", {},
+      el("td", {}, spec.split(/[\\/]/).pop().replace(/\.pt$/, "")),
+      el("td", { class: "num" }, String(s.episodes)),
+      el("td", { class: "num" }, pct(s.survival_rate)),
+      el("td", { class: "num" }, pct(s.win_rate)),
+      el("td", { class: "num" }, Math.round(s.mean_tiles).toLocaleString()),
+      el("td", { class: "num" }, s.mean_placement.toFixed(2)),
+      el("td", { class: "num" }, s.mean_kills.toFixed(2))));
+  }
+  table.append(body);
+  const wrap = el("div", {}, table);
+  const pairs = Object.entries(result.head_to_head || {});
+  if (pairs.length) {
+    wrap.append(el("div", { class: "hint" }, pairs.map(([p, r]) => `${p}: ${pct(r)}`).join("   ")));
+  }
+  return wrap;
+}
+
+function renderJobs(jobs) {
+  // Logs are rebuilt on every poll: keep each one where it was scrolled, and
+  // keep following the end when it was at the bottom.
+  const scroll = new Map();
+  document.querySelectorAll("pre.log[data-job]").forEach((pre) => {
+    scroll.set(pre.dataset.job, { top: pre.scrollTop, end: pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 4 });
+  });
+  const boxes = { lobby: $("lobby-jobs"), train: $("train-jobs"), eval: $("eval-jobs"), match: $("match-jobs") };
+  for (const [kind, box] of Object.entries(boxes)) {
+    box.replaceChildren(...jobs.filter((j) => j.kind === kind).map(jobCard));
+  }
+  document.querySelectorAll("pre.log[data-job]").forEach((pre) => {
+    const was = scroll.get(pre.dataset.job);
+    pre.scrollTop = !was || was.end ? pre.scrollHeight : was.top;
+  });
+  // A finished quick match has a new replay to show.
+  const done = jobs.filter((j) => j.kind === "match" && j.status === "done").map((j) => j.id).join();
+  if (done !== lastMatchesDone) {
+    if (lastMatchesDone !== null) loadReplays().catch(() => {});
+    lastMatchesDone = done;
+  }
+}
+let lastMatchesDone = null;
+
+async function stopJob(id) {
+  try {
+    await api("DELETE", `/api/jobs/${id}`);
+  } finally {
+    refreshState();
+  }
+}
+
+async function refreshState() {
+  const status = $("server-status");
+  try {
+    const st = await api("GET", "/api/state");
+    renderJobs(st.jobs);
+    const running = st.jobs.filter((j) => j.status === "running" || j.status === "stopping").length;
+    if (st.stale !== false) { // servers from before this check do not send it
+      // The page is new but the server process is not: new buttons would fail.
+      status.textContent = "Server outdated, restart it";
+      status.title = "The server's code changed since it started. Close its window and run start.bat dashboard.";
+      status.className = "status bad";
+    } else {
+      status.textContent = running ? `${running} running` : "Idle";
+      status.title = "";
+      status.className = "status ok";
     }
-    tr.append(stopTd);
-    body.append(tr);
+  } catch {
+    status.textContent = "Server offline";
+    status.className = "status bad";
+  }
+}
+
+function submitter(formId, errorBox, build) {
+  $(formId).addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const button = ev.target.querySelector("button[type=submit]");
+    button.disabled = true;
+    try {
+      const [path, body] = build();
+      await api("POST", path, body);
+      showError(errorBox, null);
+      await refreshState();
+    } catch (err) {
+      showError(errorBox, err);
+    } finally {
+      button.disabled = false;
+    }
   });
 }
 
-function watchJob(id) {
-  if (logSource) logSource.close();
-  $("log-job").textContent = id;
-  const view = $("log-view");
-  view.textContent = "";
-  const push = (line) => {
-    view.textContent += line + "\n";
-    const lines = view.textContent.split("\n");
-    if (lines.length > 600) view.textContent = lines.slice(-600).join("\n");
-    view.scrollTop = view.scrollHeight;
-  };
-  logSource = new EventSource(`/api/jobs/${id}/logs?follow=1`);
-  logSource.onmessage = (ev) => {
-    const msg = JSON.parse(ev.data);
-    if (msg.line !== undefined) push(msg.line);
-    if (msg.done) {
-      push(`--- job ${msg.status} ---`);
-      logSource.close();
-      refreshState();
-    }
-  };
-  logSource.onerror = () => logSource.close();
+/* ---------------- public openfront.io lobbies ---------------- */
+
+const KINDS = { ffa: "Free for all", team: "Teams", special: "Special", hosted: "Player hosted" };
+let publicList = { rows: [], at: 0 };
+let publicTimer = null;
+
+function lobbyBody(extra) {
+  return { model: $("lobby-model").value, name: $("lobby-name").value, ...extra };
 }
 
-/* ---------------- metrics ---------------- */
+async function joinPublic(body, button) {
+  button.disabled = true;
+  try {
+    await api("POST", "/api/jobs/lobby", lobbyBody(body));
+    showError($("public-error"), null);
+    await refreshState();
+  } catch (err) {
+    showError($("public-error"), err);
+  } finally {
+    button.disabled = false;
+  }
+}
 
-function drawLineChart(container, title, points) {
-  const head = document.createElement("div");
-  head.className = "chart-title";
+function renderPublic() {
+  const body = $("public-table").querySelector("tbody");
+  const elapsed = (Date.now() - publicList.at) / 1000;
+  const rows = publicList.rows.filter((r) => r.kind !== "hosted");
+  $("public-wrap").hidden = false;
+  if (!rows.length) {
+    body.replaceChildren(el("tr", { class: "empty-row" }, el("td", { colspan: "5" }, "No public lobbies are open right now.")));
+    return;
+  }
+  body.replaceChildren(...rows.map((r) => {
+    const left = r.starts_in === null ? null : Math.round(r.starts_in - elapsed);
+    const started = left !== null && left <= 0;
+    const full = r.max && r.players >= r.max;
+    const join = el("button", { type: "button", class: "small", onclick: (ev) => joinPublic({ lobby: r.id, host: "openfront" }, ev.currentTarget) }, "Join");
+    if (started || full) join.disabled = true;
+    return el("tr", {},
+      el("td", {}, r.map || "?"),
+      el("td", {}, KINDS[r.kind] || r.kind),
+      el("td", { class: "num" }, r.max ? `${r.players} / ${r.max}` : String(r.players)),
+      el("td", { class: "num" }, left === null ? "waiting" : started ? "started" : `${left}s`),
+      el("td", {}, join));
+  }));
+}
+
+async function findPublic() {
+  const button = $("public-find");
+  button.disabled = true;
+  $("public-note").textContent = "Opening openfront.io in a browser window. Click the Cloudflare check there if it asks.";
+  try {
+    const data = await api("POST", "/api/public-lobbies");
+    publicList = { rows: data.lobbies || [], at: Date.now() };
+    showError($("public-error"), null);
+    $("public-note").textContent = `Listed ${new Date().toLocaleTimeString()}.`;
+    renderPublic();
+    clearInterval(publicTimer);
+    publicTimer = setInterval(renderPublic, 1000);
+  } catch (err) {
+    showError($("public-error"), err);
+    $("public-note").textContent = "";
+  } finally {
+    button.disabled = false;
+  }
+}
+
+/* ---------------- charts ---------------- */
+
+const CHARTS = [
+  ["rollout/survival_rate", "Survival rate", pct],
+  ["rollout/ep_rew_mean", "Episode return", fmt],
+  ["rollout/final_tiles", "Land at the end", fmt],
+  ["selfplay/learner_beats_pool", "Beats past selves", pct],
+  ["train/explained_variance", "Value fit", fmt],
+  ["time/steps_per_second", "Steps per second", fmt],
+];
+
+/** A crisp line chart sized to its box, with min/max shown under it. */
+function drawChart(container, title, points, format = fmt, mini = false) {
   const values = points.map((p) => p.value);
   const min = Math.min(...values);
   const max = Math.max(...values);
-  head.textContent = `${title} (min ${min.toFixed(3)}, max ${max.toFixed(3)}, n ${points.length})`;
-  const canvas = document.createElement("canvas");
-  canvas.className = "chart";
-  canvas.width = 900;
-  canvas.height = 160;
-  container.append(head, canvas);
+  const canvas = el("canvas", { class: "chart" });
+  const box = el("div", { class: "chart-box" },
+    el("div", { class: "chart-title" }, el("span", {}, title), el("span", { class: "chart-last" }, format(values[values.length - 1]))),
+    canvas);
+  if (!mini) box.append(el("div", { class: "chart-range" }, el("span", {}, `low ${format(min)}`), el("span", {}, `high ${format(max)}`)));
+  container.append(box);
+
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth;
+  const h = canvas.clientHeight;
+  canvas.width = Math.round(w * dpr);
+  canvas.height = Math.round(h * dpr);
   const ctx = canvas.getContext("2d");
+  ctx.scale(dpr, dpr);
+  const pad = 3;
   const span = max - min || 1;
-  ctx.strokeStyle = "#7fd08a";
-  ctx.lineWidth = 1.5;
+  const x = (i) => pad + (i / Math.max(1, points.length - 1)) * (w - 2 * pad);
+  const y = (v) => h - pad - ((v - min) / span) * (h - 2 * pad);
+
+  ctx.strokeStyle = "rgba(141, 155, 171, 0.12)";
+  ctx.lineWidth = 1;
+  for (const f of [0.25, 0.5, 0.75]) {
+    ctx.beginPath();
+    ctx.moveTo(0, Math.round(h * f) + 0.5);
+    ctx.lineTo(w, Math.round(h * f) + 0.5);
+    ctx.stroke();
+  }
+  const grad = ctx.createLinearGradient(0, 0, 0, h);
+  grad.addColorStop(0, "rgba(111, 194, 135, 0.22)");
+  grad.addColorStop(1, "rgba(111, 194, 135, 0)");
+  ctx.fillStyle = grad;
   ctx.beginPath();
-  points.forEach((p, i) => {
-    const x = (i / Math.max(1, points.length - 1)) * (canvas.width - 8) + 4;
-    const y = canvas.height - 8 - ((p.value - min) / span) * (canvas.height - 16);
-    if (i === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
-  });
+  ctx.moveTo(x(0), h);
+  points.forEach((p, i) => ctx.lineTo(x(i), y(p.value)));
+  ctx.lineTo(x(points.length - 1), h);
+  ctx.fill();
+  ctx.strokeStyle = ACCENT;
+  ctx.lineWidth = 1.75;
+  ctx.lineJoin = "round";
+  ctx.beginPath();
+  points.forEach((p, i) => (i ? ctx.lineTo(x(i), y(p.value)) : ctx.moveTo(x(i), y(p.value))));
   ctx.stroke();
+  ctx.fillStyle = ACCENT;
+  ctx.beginPath();
+  ctx.arc(x(points.length - 1), y(values[values.length - 1]), 2.5, 0, Math.PI * 2);
+  ctx.fill();
 }
 
-function drawBars(container, title, entries) {
-  const head = document.createElement("div");
-  head.className = "chart-title";
-  head.textContent = title;
-  container.append(head);
-  const total = entries.reduce((s, [, v]) => s + v, 0) || 1;
-  entries.forEach(([name, value]) => {
-    const row = document.createElement("div");
-    row.className = "bar";
-    const label = document.createElement("span");
-    label.className = "name";
-    label.textContent = name;
-    const fill = document.createElement("span");
-    fill.className = "fill";
-    fill.style.width = `${Math.max(2, (value / total) * 300)}px`;
-    const n = document.createElement("span");
-    n.className = "n";
-    n.textContent = value.toFixed(3);
-    row.append(label, fill, n);
-    container.append(row);
-  });
+function renderStats(data) {
+  const last = data.last || {};
+  const stage = last["curriculum/stage"];
+  const stats = [
+    ["Steps trained", fmt(data.last_step), `${data.updates} updates`],
+    ["Survival", pct(last["rollout/survival_rate"]), "recent games"],
+    ["Episode return", fmt(last["rollout/ep_rew_mean"]), "recent games"],
+    ["Land at the end", fmt(last["rollout/final_tiles"]), "tiles"],
+    ["Curriculum stage", stage === undefined ? "-" : String(stage + 1), "of the recipe's stages"],
+  ];
+  $("run-stats").replaceChildren(...stats.map(([label, value, sub]) =>
+    el("div", { class: "stat" }, el("div", { class: "label" }, label), el("div", { class: "value" }, value), el("div", { class: "sub" }, sub))));
+}
+
+function renderIntents(intents) {
+  const entries = Object.entries(intents).filter(([, v]) => v > 0.001).sort((a, b) => b[1] - a[1]);
+  $("intent-block").hidden = !entries.length;
+  const top = entries.length ? entries[0][1] : 1;
+  $("intent-bars").replaceChildren(...entries.map(([name, value]) => {
+    const label = name === "noop" ? "wait" : pretty(name);
+    return el("div", { class: "bar" },
+      el("span", { class: "name" }, label.charAt(0).toUpperCase() + label.slice(1)),
+      el("span", { class: "track" }, el("span", { class: "fill", style: `display:block;width:${Math.max(1, (value / top) * 100)}%` })),
+      el("span", { class: "n" }, `${(value * 100).toFixed(1)}%`));
+  }));
 }
 
 async function loadMetrics() {
-  const box = $("charts");
-  box.innerHTML = "";
-  const data = await api(
-    "GET",
-    `/api/metrics?tb_dir=${encodeURIComponent($("metrics-dir").value)}` +
-      `&run=${encodeURIComponent($("metrics-run").value)}`
-  );
-  if (data.note) {
-    box.textContent = data.note;
+  const run = $("metrics-run").value;
+  const charts = $("charts");
+  if (!run) {
+    $("metrics-note").textContent = "No runs yet. Start one above.";
+    for (const id of ["charts", "run-stats", "scenario-charts", "intent-bars"]) $(id).replaceChildren();
+    $("scenario-block").hidden = $("intent-block").hidden = true;
     return;
   }
-  const scalars = data.scalars || {};
-  const watched = [
-    "rollout/ep_rew_mean",
-    "rollout/ep_len_mean",
-    "train/value_loss",
-    "train/policy_gradient_loss",
-    "train/entropy_loss",
-    "time/steps_per_second",
-  ];
-  watched.forEach((tag) => {
-    if (scalars[tag]) drawLineChart(box, tag, scalars[tag]);
-  });
-  Object.keys(scalars)
-    .filter((t) => !watched.includes(t) && !t.startsWith("terminals/"))
-    .slice(0, 6)
-    .forEach((tag) => drawLineChart(box, tag, scalars[tag]));
-  const terms = Object.keys(scalars)
-    .filter((t) => t.startsWith("terminals/"))
-    .map((t) => [t.replace("terminals/", ""), scalars[t][scalars[t].length - 1].value]);
-  if (terms.length) drawBars(box, "terminal mix (latest)", terms);
-}
-
-/* ---------------- eval ---------------- */
-
-async function refreshCheckpoints() {
-  const data = await api(
-    "GET",
-    `/api/checkpoints?dir=${encodeURIComponent($("ckpt-dir").value)}`
-  );
-  const sel = $("eval-model");
-  sel.innerHTML = "";
-  data.checkpoints.forEach((c) => {
-    const opt = document.createElement("option");
-    opt.value = c.path;
-    opt.textContent = `${c.path} (${(c.size / 1e6).toFixed(1)}MB)`;
-    sel.append(opt);
-  });
-  const liveModel = $("live-model");
-  if (!liveModel.value && data.checkpoints.length) {
-    liveModel.placeholder = data.checkpoints[data.checkpoints.length - 1].path;
-  }
-}
-
-function parseEvalResult(lines) {
-  const rows = [];
-  lines.forEach((line) => {
-    const m = line.match(/^(policy|baseline): return ([^,]+), length ([^,]+), win rate ([^,]+), terminals (.*)$/);
-    if (m) rows.push({ name: m[1], ret: m[2], len: m[3], win: m[4], terms: m[5] });
-  });
-  return rows;
-}
-
-/* ---------------- live ---------------- */
-
-let liveSource = null;
-
-function renderLiveStep(step) {
-  $("live-action").textContent = step.action_text;
-  $("live-meta").textContent =
-    `step ${step.n} · ep ${step.episode} · reward ${step.reward.toFixed(3)} · ` +
-    `total ${step.total_reward.toFixed(3)} · ticks ${step.ticks}` +
-    (step.terminal ? ` · ended: ${step.terminal}` : "");
-  const known = window._liveCounts || (window._liveCounts = {});
-  known[step.action_name] = (known[step.action_name] || 0) + 1;
-  renderLiveCounts(known);
-  const masks = step.masks || {};
-  $("live-masks").innerHTML = Object.entries(masks)
-    .map(([k, v]) => `${k}: ${v.open}/${v.total}`)
-    .join("<br>");
-  const tbody = $("live-steps").querySelector("tbody");
-  const tr = document.createElement("tr");
-  [step.n, step.action_text, step.reward.toFixed(3), step.total_reward.toFixed(2),
-   step.ticks, step.terminal || ""].forEach((text) => {
-    const td = document.createElement("td");
-    td.textContent = text;
-    tr.append(td);
-  });
-  tbody.prepend(tr);
-  while (tbody.rows.length > 30) tbody.deleteRow(-1);
-}
-
-function renderLiveCounts(counts) {
-  const box = $("live-intents");
-  box.innerHTML = "";
-  drawBars(box, "", Object.entries(counts).sort((a, b) => b[1] - a[1]));
-}
-
-function renderLiveHello(msg) {
-  window._liveCounts = {};
-  (msg.recent || []).forEach((s) => {
-    window._liveCounts[s.action_name] = (window._liveCounts[s.action_name] || 0) + 1;
-  });
-  renderLiveCounts(window._liveCounts);
-  const tbody = $("live-steps").querySelector("tbody");
-  tbody.innerHTML = "";
-  (msg.recent || []).slice().reverse().forEach((s) => {
-    const tr = document.createElement("tr");
-    [s.n, s.action_text, s.reward.toFixed(3), s.total_reward.toFixed(2),
-     s.ticks, s.terminal || ""].forEach((text) => {
-      const td = document.createElement("td");
-      td.textContent = text;
-      tr.append(td);
-    });
-    tbody.append(tr);
-  });
-  if (msg.latest) {
-    $("live-action").textContent = msg.latest.action_text;
-    $("live-meta").textContent =
-      `step ${msg.latest.n} · ep ${msg.latest.episode} · ticks ${msg.latest.ticks}`;
-  }
-  if (msg.error) {
-    const err = $("live-error");
-    err.hidden = false;
-    err.textContent = msg.error;
-  }
-}
-
-function connectLiveStream() {
-  if (liveSource) liveSource.close();
-  if (!window._phasePoll) window._phasePoll = setInterval(refreshLivePhase, 3000);
-  liveSource = new EventSource("/api/live/stream");
-  liveSource.onmessage = (ev) => {
-    const msg = JSON.parse(ev.data);
-    if (msg.hello) {
-      renderLiveHello(msg);
-    }
-    if (msg.step) {
-      $("live-error").hidden = true;
-      renderLiveStep(msg.step);
-    }
-  };
-  liveSource.onerror = () => {
-    liveSource.close();
-    setTimeout(connectLiveStream, 3000);
-  };
-}
-
-async function refreshLivePhase() {
+  $("metrics-note").textContent = "Loading";
   try {
-    const st = await api("GET", "/api/live/state");
-    const phase = $("live-phase");
-    if (st.running || st.phase === "booting" || st.phase === "failed") {
-      phase.textContent =
-        `phase: ${st.phase}${st.phase_detail ? " — " + st.phase_detail : ""}` +
-        ` · steps: ${st.step_count} · episodes: ${st.episodes}`;
-    } else if (!st.latest) {
-      phase.textContent = "idle";
+    const data = await api("GET", `/api/runstats?run=${encodeURIComponent(run)}`);
+    renderStats(data);
+    charts.replaceChildren();
+    for (const [key, title, format] of CHARTS) {
+      if (data.series[key]?.length > 1) drawChart(charts, title, data.series[key], format);
     }
-    if (st.error) {
-      const box = $("live-error");
-      box.hidden = false;
-      box.textContent = st.error + (st.error_detail ? "\n" + st.error_detail : "");
+    const minis = $("scenario-charts");
+    minis.replaceChildren();
+    for (const [key, points] of Object.entries(data.series)) {
+      const m = key.match(/^scenario\/(.+)\/survival_rate$/);
+      if (m && points.length > 1) drawChart(minis, pretty(m[1]), points, pct, true);
     }
+    // Stages that mix nation difficulties: survival against each one.
+    for (const [key, points] of Object.entries(data.series)) {
+      const m = key.match(/^difficulty\/(.+)\/survival_rate$/);
+      if (m && points.length > 1) drawChart(minis, `${m[1]} nations`, points, pct, true);
+    }
+    $("scenario-block").hidden = !minis.children.length;
+    renderIntents(data.intents || {});
+    $("metrics-note").textContent = data.note || "";
   } catch (err) {
-    /* server polling is best effort; the stream carries the steps */
+    $("metrics-note").textContent = String(err.message || err);
   }
+}
+
+/* ---------------- replays ---------------- */
+
+let replays = [];
+const picked = new Set();
+let shownPaths = [];
+
+/** Phosphor "trash" (regular), MIT, from @phosphor-icons/core 2.1.1. */
+const TRASH_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true"><path d="M216,48H176V40a24,24,0,0,0-24-24H104A24,24,0,0,0,80,40v8H40a8,8,0,0,0,0,16h8V208a16,16,0,0,0,16,16H192a16,16,0,0,0,16-16V64h8a8,8,0,0,0,0-16ZM96,40a8,8,0,0,1,8-8h48a8,8,0,0,1,8,8v8H96Zm96,168H64V64H192ZM112,104v64a8,8,0,0,1-16,0V104a8,8,0,0,1,16,0Zm48,0v64a8,8,0,0,1-16,0V104a8,8,0,0,1,16,0Z"/></svg>';
+
+function trashIcon() {
+  const span = el("span", { class: "icon" });
+  span.innerHTML = TRASH_SVG;
+  return span;
+}
+
+/** Resolves true when the user confirms in the dialog. */
+function confirmDialog(title, text) {
+  const dialog = $("confirm-dialog");
+  $("confirm-title").textContent = title;
+  $("confirm-text").textContent = text;
+  dialog.returnValue = "";
+  dialog.showModal();
+  return new Promise((resolve) => dialog.addEventListener("close", () => resolve(dialog.returnValue === "ok"), { once: true }));
+}
+
+async function deleteReplays(paths) {
+  if (!paths.length) return;
+  if (paths.length > 1) {
+    const ok = await confirmDialog(`Delete ${paths.length} replays?`, "The replay files are removed from disk. This cannot be undone.");
+    if (!ok) return;
+  }
+  try {
+    await api("POST", "/api/replays/delete", { paths });
+    paths.forEach((p) => picked.delete(p));
+    showError($("replay-error"), null);
+  } catch (err) {
+    showError($("replay-error"), err);
+  }
+  await loadReplays().catch(() => {});
+}
+
+function updatePickControls() {
+  const button = $("replay-delete");
+  button.disabled = picked.size === 0;
+  button.lastChild.textContent = picked.size ? `Delete ${picked.size}` : "Delete selected";
+  const all = $("replay-all");
+  const shownPicked = shownPaths.filter((p) => picked.has(p)).length;
+  all.checked = shownPaths.length > 0 && shownPicked === shownPaths.length;
+  all.indeterminate = shownPicked > 0 && shownPicked < shownPaths.length;
+}
+
+function renderReplays() {
+  const filter = $("replay-filter").value.trim().toLowerCase();
+  const body = $("replay-table").querySelector("tbody");
+  const rows = replays.map((r) => {
+    // Named for the best agent seat in the game (older files: seat 0 only).
+    const outcome = /-won\.json$/.test(r.path) ? "Won" : /-alive\.json$/.test(r.path) ? "Survived"
+      : /-dead\.json$/.test(r.path) ? "Eliminated" : "";
+    const parts = r.path.split("/");
+    return { ...r, outcome, run: parts.length > 1 ? parts[0] : "", file: parts[parts.length - 1] };
+  });
+  const shown = rows.filter((r) => !filter || `${r.path} ${r.outcome}`.toLowerCase().includes(filter)).slice(0, 300);
+  $("replay-count").textContent = replays.length ? `${shown.length} of ${replays.length}` : "";
+  const existing = new Set(replays.map((r) => r.path));
+  [...picked].forEach((p) => existing.has(p) || picked.delete(p));
+  shownPaths = shown.map((r) => r.path);
+  updatePickControls();
+  if (!shown.length) {
+    body.replaceChildren(el("tr", { class: "empty-row" }, el("td", { colspan: "6" },
+      replays.length ? "No replay matches the filter." : "No replays yet. Training records one game in 20; evaluation and quick matches record every game.")));
+    return;
+  }
+  body.replaceChildren(...shown.map((r) => {
+    const watch = el("button", { type: "button", class: "small", onclick: async (ev) => {
+      const b = ev.currentTarget;
+      b.disabled = true;
+      try {
+        await api("POST", "/api/jobs/watch", { replay: r.path });
+        b.textContent = "Opening";
+      } catch (err) {
+        b.textContent = "Failed";
+        b.title = String(err.message || err);
+      }
+      setTimeout(() => { b.disabled = false; b.textContent = "Watch"; b.title = ""; }, 4000);
+    } }, "Watch");
+    const pick = el("input", { type: "checkbox", "aria-label": `Select ${r.file}` });
+    pick.checked = picked.has(r.path);
+    pick.addEventListener("change", () => {
+      if (pick.checked) picked.add(r.path); else picked.delete(r.path);
+      row.classList.toggle("picked", pick.checked);
+      updatePickControls();
+    });
+    const remove = el("button", { type: "button", class: "small ghost icon-only danger", title: "Delete replay",
+      "aria-label": `Delete ${r.file}`, onclick: () => deleteReplays([r.path]) }, trashIcon());
+    const row = el("tr", { class: picked.has(r.path) ? "picked" : "" },
+      el("td", { class: "pick" }, pick),
+      el("td", { class: "file" }, r.file.replace(/\.json$/, "")),
+      el("td", {}, r.run),
+      el("td", {}, r.outcome ? el("span", { class: `badge ${r.outcome === "Survived" || r.outcome === "Won" ? "good" : ""}` }, r.outcome) : ""),
+      el("td", { class: "hint" }, ago(r.modified)),
+      el("td", { class: "row-actions" }, watch, remove));
+    return row;
+  }));
+}
+
+async function loadReplays() {
+  replays = (await api("GET", "/api/replays")).replays;
+  renderReplays();
 }
 
 /* ---------------- boot ---------------- */
 
-async function refreshState() {
-  const data = await api("GET", "/api/state");
-  jobs = data.jobs || [];
-  presets = data.presets || [];
-  renderJobs();
-  renderPresets();
-  const status = $("server-status");
-  status.textContent = `server ok · ${jobs.length} jobs · ${presets.length} presets`;
-  status.className = "status ok";
-}
-
 async function boot() {
-  buildToggles();
-  refreshAggression();
-  $("aggression").addEventListener("input", () => {
-    refreshAggression();
-    $("min-ratio").value = String(ratioFloorFor(Number($("aggression").value)));
+  submitter("lobby-form", $("lobby-error"), () => ["/api/jobs/lobby", {
+    lobby: $("lobby-id").value,
+    host: $("lobby-host").value,
+    model: $("lobby-model").value,
+    name: $("lobby-name").value,
+  }]);
+  // A pasted link picks its own server.
+  $("lobby-id").addEventListener("input", (ev) => {
+    if (/openfront\.io/.test(ev.target.value)) $("lobby-host").value = "openfront";
+    else if (/localhost|127\.0\.0\.1/.test(ev.target.value)) $("lobby-host").value = "local";
   });
-  $("preset-select").addEventListener("change", showPresetDesc);
-  $("preset-apply").addEventListener("click", () => {
-    const p = presets.find((x) => (x.name || x.file) === $("preset-select").value);
-    if (p && !p.error) {
-      writeBehavior(p);
-      $("preset-name").value = p.name;
-    }
-  });
-  $("preset-save").addEventListener("click", async () => {
-    const saved = await api("POST", "/api/presets", readBehavior());
-    await refreshState();
-    $("preset-select").value = saved.name;
-  });
-  $("preset-delete").addEventListener("click", async () => {
-    await api("DELETE", `/api/presets/${encodeURIComponent($("preset-select").value)}`);
-    await refreshState();
-  });
-  $("train-start").addEventListener("click", async () => {
-    const job = await api("POST", "/api/jobs/train", {
-      base: $("train-base").value,
-      run_name: $("train-name").value,
-      total_timesteps: Number($("train-steps").value),
-      behavior: readBehavior(),
-      config_override: {
-        env: {
-          bots: Number($("train-bots").value),
-          num_workers: Number($("train-workers").value),
-          envs_per_worker: Number($("train-envs").value),
-        },
-        ppo: {
-          learning_rate: Number($("ppo-lr").value),
-          ent_coef: Number($("ppo-ent").value),
-        },
-        run: { device: $("train-device").value },
-      },
-    });
-    await refreshState();
-    watchJob(job.id);
-  });
+  submitter("match-form", $("match-error"), () => ["/api/jobs/match", {
+    model: $("match-model").value,
+    mode: $("match-mode").value,
+    minutes: $("match-minutes").value === "" ? "" : Number($("match-minutes").value),
+    nations: $("match-nations").value,
+  }]);
+  // The vs-nations match needs nations: it cannot be played with them off.
+  const syncMatchNations = () => {
+    const vsNations = $("match-mode").value === "nations";
+    $("match-nations").querySelector('option[value="off"]').disabled = vsNations;
+    if (vsNations && $("match-nations").value === "off") $("match-nations").value = "Medium";
+  };
+  $("match-mode").addEventListener("change", syncMatchNations);
+  syncMatchNations();
+  $("public-find").addEventListener("click", findPublic);
+  $("public-next").addEventListener("click", (ev) => joinPublic({ public: $("public-kind").value }, ev.currentTarget));
+  const trainError = el("div", { class: "error", hidden: "" });
+  $("train-form").after(trainError);
+  submitter("train-form", trainError, () => ["/api/jobs/train", {
+    config: $("train-config").value,
+    run_name: $("train-name").value,
+    total_steps: Number($("train-steps").value),
+    workers: Number($("train-workers").value),
+    resume: $("train-resume").checked,
+  }]);
+  const evalError = el("div", { class: "error", hidden: "" });
+  $("eval-form").after(evalError);
+  submitter("eval-form", evalError, () => ["/api/jobs/eval", {
+    seats: [...document.querySelectorAll(".eval-seat")].map((s) => s.value).filter(Boolean),
+    games: Number($("eval-games").value),
+    bots: Number($("eval-bots").value),
+    minutes: Number($("eval-minutes").value),
+    record: $("eval-record").checked,
+  }]);
   $("metrics-load").addEventListener("click", loadMetrics);
-  $("ckpt-refresh").addEventListener("click", refreshCheckpoints);
-  $("eval-start").addEventListener("click", async () => {
-    const job = await api("POST", "/api/jobs/eval", {
-      model: $("eval-model").value,
-      base: "default.yaml",
-      episodes: Number($("eval-episodes").value),
-      seed: $("eval-seed").value,
-      baseline: $("eval-baseline").checked,
-      behavior: readBehavior(),
-    });
-    $("eval-result").textContent = `eval started as ${job.id}, watching log…`;
-    await refreshState();
-    watchJob(job.id);
-    const poll = setInterval(async () => {
-      const detail = await api("GET", `/api/jobs/${job.id}`);
-      const rows = parseEvalResult(detail.log_tail || []);
-      const box = $("eval-result");
-      box.innerHTML = "";
-      rows.forEach((r) => {
-        const div = document.createElement("div");
-        div.textContent =
-          `${r.name}: return ${r.ret}, length ${r.len}, win ${r.win}, ${r.terms}`;
-        box.append(div);
-      });
-      if (!rows.length) box.textContent = "no result lines yet";
-      if (detail.status !== "running") clearInterval(poll);
-    }, 3000);
+  $("metrics-run").addEventListener("change", loadMetrics);
+  $("replay-refresh").addEventListener("click", () => loadReplays().catch(() => {}));
+  $("replay-filter").addEventListener("input", renderReplays);
+  $("replay-delete").prepend(trashIcon());
+  $("replay-delete").addEventListener("click", () => deleteReplays([...picked]));
+  $("replay-all").addEventListener("change", (ev) => {
+    for (const p of shownPaths) if (ev.target.checked) picked.add(p); else picked.delete(p);
+    renderReplays();
   });
-  $("live-start").addEventListener("click", async () => {
-    window._liveCounts = {};
-    $("live-steps").querySelector("tbody").innerHTML = "";
-    try {
-      const modelInput = $("live-model").value.trim();
-      await api("POST", "/api/live/start", {
-        predictor: $("live-predictor").value,
-        model: modelInput || $("live-model").placeholder || null,
-        map: $("live-map").value,
-        bots: Number($("live-bots").value),
-        seed: $("live-seed").value,
-        behavior: readBehavior(),
-      });
-      $("live-error").hidden = true;
-    } catch (err) {
-      const box = $("live-error");
-      box.hidden = false;
-      box.textContent = String(err.message || err);
-    }
+  window.addEventListener("hashchange", () => showTab(location.hash.slice(1)));
+  let resizeTimer;
+  window.addEventListener("resize", () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => { if (!$("training").hidden) loadMetrics(); }, 200);
   });
-  $("live-stop").addEventListener("click", async () => {
-    await api("POST", "/api/live/stop", {});
-  });
-  try {
-    await refreshState();
-  } catch (err) {
-    const status = $("server-status");
-    status.textContent = `server unreachable: ${err.message}`;
-    status.className = "status bad";
-  }
-  try {
-    await refreshCheckpoints();
-  } catch (err) {
-    /* checkpoints dir may not exist yet */
-  }
-  connectLiveStream();
-  setInterval(refreshState, 10000);
+
+  await Promise.all([loadCatalog().catch(() => {}), refreshState()]);
+  showTab(location.hash.slice(1));
+  setInterval(refreshState, 2000);
+  setInterval(() => loadCatalog().catch(() => {}), 30000);
 }
 
-document.addEventListener("DOMContentLoaded", boot);
+boot();

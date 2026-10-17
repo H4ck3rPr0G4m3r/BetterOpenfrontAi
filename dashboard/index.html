@@ -5,149 +5,196 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>OpenFront AI control</title>
 <link rel="stylesheet" href="/styles.css">
+<link rel="icon" href="data:,">
 </head>
 <body>
-<header>
-  <h1>AI control</h1>
-  <div id="server-status" class="status">connecting…</div>
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true"></span>
+    <span>OpenFront AI</span>
+  </div>
+  <nav class="tabs" role="tablist" aria-label="Sections">
+    <a href="#play" role="tab" data-tab="play">Play</a>
+    <a href="#training" role="tab" data-tab="training">Training</a>
+    <a href="#eval" role="tab" data-tab="eval">Evaluate</a>
+    <a href="#replays" role="tab" data-tab="replays">Replays</a>
+  </nav>
+  <div id="server-status" class="status">connecting</div>
 </header>
 
 <main>
-  <section id="live">
-    <h2>Live bot</h2>
-    <div class="row">
-      <label>Predictor
-        <select id="live-predictor">
-          <option value="simulated">simulated (instant, no engine)</option>
-          <option value="baseline">scripted baseline (real engine)</option>
-          <option value="checkpoint">checkpoint (real engine)</option>
+  <section id="play" class="view" role="tabpanel">
+    <div class="view-head">
+      <h1>Play in a lobby</h1>
+      <p>Send an AI into an OpenFront lobby: one you host locally, or a real openfront.io game.</p>
+    </div>
+
+    <form id="lobby-form" class="panel form-grid lobby-grid">
+      <label class="span-2">Lobby ID or link
+        <input id="lobby-id" required placeholder="AbCd1234 or https://openfront.io/w2/game/AbCd1234" autocomplete="off">
+      </label>
+      <label>Server
+        <select id="lobby-host">
+          <option value="local">Local (localhost:9000)</option>
+          <option value="openfront">openfront.io</option>
         </select>
       </label>
-      <label>Model <input id="live-model" size="40" placeholder="checkpoints/openfront_ppo/…_final.zip"></label>
-      <label>Map
-        <select id="live-map">
-          <option>World</option>
-          <option>Baltics</option>
-          <option>Europe</option>
+      <label>AI <select id="lobby-model" class="model-select"></select></label>
+      <label>Player name <input id="lobby-name" value="OpenFrontAI" maxlength="24"></label>
+      <div class="form-actions"><button type="submit" class="primary">Join lobby</button></div>
+    </form>
+    <div id="lobby-error" class="error" hidden></div>
+
+    <div class="public-head">
+      <h2>Public openfront.io lobbies</h2>
+      <button id="public-find" type="button" class="ghost">Find lobbies</button>
+      <label class="inline">Kind
+        <select id="public-kind">
+          <option value="ffa">Free for all</option>
+          <option value="team">Teams</option>
+          <option value="special">Special</option>
+          <option value="any">Any</option>
         </select>
       </label>
-      <label>Bots <input id="live-bots" type="number" value="8" min="1" max="200"></label>
-      <label>Seed <input id="live-seed" value="live" size="10"></label>
-      <button id="live-start">Start</button>
-      <button id="live-stop">Stop</button>
+      <button id="public-next" type="button" class="primary">Join next</button>
+      <span id="public-note" class="hint">Uses the AI and name above. A browser window opens; click the Cloudflare check if it asks.</span>
     </div>
-    <p class="hint">Live sessions use the behavior panel settings below. Simulated mode answers
-      instantly without the engine. Real-engine modes boot a node worker first; the first boot
-      compiles the engine and can take minutes, watch the phase line.</p>
-    <div id="live-phase" class="mono"></div>
-    <div id="live-error" class="error" hidden></div>
-    <div class="live-grid">
-      <div class="card">
-        <h3>Now</h3>
-        <div id="live-action" class="big">—</div>
-        <div id="live-meta" class="mono">—</div>
-      </div>
-      <div class="card">
-        <h3>Actions</h3>
-        <div id="live-intents"></div>
-      </div>
-      <div class="card">
-        <h3>Mask openings</h3>
-        <div id="live-masks" class="mono"></div>
-      </div>
+    <div id="public-error" class="error" hidden></div>
+    <div class="table-wrap" id="public-wrap" hidden>
+      <table id="public-table">
+        <thead><tr><th>Map</th><th>Kind</th><th class="num">Players</th><th class="num">Starts in</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
     </div>
-    <h3>Recent steps</h3>
-    <table id="live-steps">
-      <thead><tr><th>#</th><th>action</th><th>reward</th><th>total</th><th>ticks</th><th>terminal</th></tr></thead>
-      <tbody></tbody>
-    </table>
+
+    <div class="split">
+      <div>
+        <h2>Active AIs</h2>
+        <div id="lobby-jobs" class="job-cards" data-empty="No AI is in a lobby right now."></div>
+      </div>
+      <aside class="panel howto">
+        <h2>Play against it yourself</h2>
+        <ol>
+          <li>Start the game locally: <code>npm run dev</code> in <code>OpenFrontIO/</code>.</li>
+          <li>Open <a href="http://localhost:9000" target="_blank" rel="noopener">localhost:9000</a>, create a private lobby and copy its ID.</li>
+          <li>Paste the ID here with Server set to Local and press Join lobby.</li>
+          <li>Start the game once the AI shows up in your player list.</li>
+        </ol>
+        <p>For a real openfront.io lobby, paste the lobby link. The AI joins as a normal, named player in a visible
+          window; answer any check the site shows in that window.</p>
+      </aside>
+    </div>
   </section>
 
-  <section id="behavior">
-    <h2>Behavior</h2>
-    <div class="row">
-      <label>Preset <select id="preset-select"></select></label>
-      <button id="preset-apply">Apply</button>
-      <button id="preset-delete">Delete</button>
-      <label>Save as <input id="preset-name" size="16" placeholder="name"></label>
-      <button id="preset-save">Save</button>
+  <section id="training" class="view" role="tabpanel" hidden>
+    <div class="view-head">
+      <h1>Training</h1>
+      <p>Start a run and watch how the AI improves.</p>
     </div>
-    <div id="preset-desc" class="hint"></div>
-    <div class="row">
-      <label class="grow">Aggression <span id="aggro-label">balanced</span>
-        <input id="aggression" type="range" min="0" max="100" value="50">
-      </label>
-      <span id="aggro-map" class="mono"></span>
+
+    <form id="train-form" class="panel form-grid train-grid">
+      <label>Recipe <select id="train-config"></select></label>
+      <label>Run name <input id="train-name" value="main"></label>
+      <label>Steps <input id="train-steps" type="number" value="100000" min="512" step="10000"></label>
+      <label>Workers <input id="train-workers" type="number" value="10" min="1" max="64"></label>
+      <label class="check"><input id="train-resume" type="checkbox"> Resume this run</label>
+      <div class="form-actions"><button type="submit" class="primary">Start training</button></div>
+    </form>
+    <div id="train-jobs" class="job-cards"></div>
+
+    <div class="run-head">
+      <h2>Run</h2>
+      <select id="metrics-run" aria-label="Run"></select>
+      <button id="metrics-load" type="button" class="ghost">Refresh</button>
+      <span id="metrics-note" class="hint"></span>
     </div>
-    <div class="row">
-      <label>Min attack ratio
-        <select id="min-ratio">
-          <option value="0">5%</option>
-          <option value="1">10%</option>
-          <option value="2" selected>20%</option>
-          <option value="3">30%</option>
-          <option value="4">50%</option>
-          <option value="5">70%</option>
-          <option value="6">90%</option>
-          <option value="7">100%</option>
+    <div id="run-stats" class="stat-strip"></div>
+    <div id="charts" class="charts"></div>
+    <div id="scenario-block" hidden>
+      <h3>Survival by scenario and nation difficulty</h3>
+      <div id="scenario-charts" class="mini-charts"></div>
+    </div>
+    <div id="intent-block" hidden>
+      <h3>What the AI does</h3>
+      <div id="intent-bars" class="intent-bars"></div>
+    </div>
+  </section>
+
+  <section id="eval" class="view" role="tabpanel" hidden>
+    <div class="view-head">
+      <h1>Evaluate</h1>
+      <p>Every seat plays in the same games, next to tribes and nations. Seats rotate between games.</p>
+    </div>
+    <form id="eval-form" class="panel form-grid eval-grid">
+      <label>Seat 1 <select class="model-select eval-seat"></select></label>
+      <label>Seat 2 <select class="model-select eval-seat" data-optional="1"></select></label>
+      <label>Seat 3 <select class="model-select eval-seat" data-optional="1"></select></label>
+      <label>Games <input id="eval-games" type="number" value="8" min="1" max="500"></label>
+      <label>Tribes <input id="eval-bots" type="number" value="20" min="0" max="200"></label>
+      <label>Minutes <input id="eval-minutes" type="number" value="60" min="1" max="240"></label>
+      <label class="check"><input id="eval-record" type="checkbox" checked> Record replays</label>
+      <div class="form-actions"><button type="submit" class="primary">Run evaluation</button></div>
+    </form>
+    <div id="eval-jobs" class="job-cards" data-empty="No evaluations yet. Results appear here as a table when a run finishes."></div>
+  </section>
+
+  <section id="replays" class="view" role="tabpanel" hidden>
+    <div class="view-head">
+      <h1>Replays</h1>
+      <p>Watch opens the local game client with the replay loaded (needs <code>npm run dev</code> in OpenFrontIO/).</p>
+    </div>
+
+    <form id="match-form" class="panel form-grid match-grid">
+      <label>AI <select id="match-model" class="model-select"></select></label>
+      <label>Match
+        <select id="match-mode">
+          <option value="selfplay">Self-play, like its training games</option>
+          <option value="bots">The AI alone vs tribes</option>
+          <option value="nations">The AI alone vs nations</option>
         </select>
       </label>
-      <label>Reward weights (land,troop,gold,win,death)
-        <input id="reward-weights" size="24" placeholder="default 1,0.1,0.1,1,-1">
+      <label>Minutes <input id="match-minutes" type="number" min="1" max="120" placeholder="As trained"></label>
+      <label>Nations
+        <select id="match-nations">
+          <option value="off">Off</option>
+          <option value="Easy">Easy</option>
+          <option value="Medium">Medium</option>
+          <option value="Hard">Hard</option>
+          <option value="Impossible">Impossible</option>
+        </select>
       </label>
-    </div>
-    <h3>Capabilities</h3>
-    <div id="intent-toggles" class="toggles"></div>
-    <h3>Buildings</h3>
-    <div id="build-toggles" class="toggles"></div>
-  </section>
+      <div class="form-actions"><button type="submit" class="primary">Play quick match</button></div>
+    </form>
+    <div id="match-error" class="error" hidden></div>
+    <div id="match-jobs" class="job-cards" data-empty="Self-play copies the AI's own training games: same number of AIs, tribes, map and length. Vs nations seats the AI alone among the tribes and nations at the difficulty you pick. Finished matches show up in the list below."></div>
 
-  <section id="training">
-    <h2>Training</h2>
-    <div class="row">
-      <label>Base <select id="train-base"><option>default.yaml</option><option>smoke.yaml</option></select></label>
-      <label>Run name <input id="train-name" value="ui_run" size="14"></label>
-      <label>Timesteps <input id="train-steps" type="number" value="100000" min="32"></label>
-      <label>Bots <input id="train-bots" type="number" value="20" min="1"></label>
-      <label>Workers <input id="train-workers" type="number" value="2" min="1"></label>
-      <label>Envs/worker <input id="train-envs" type="number" value="1" min="1"></label>
-      <button id="train-start">Start training</button>
+    <div class="replay-tools">
+      <input id="replay-filter" placeholder="Filter by run or outcome" aria-label="Filter replays">
+      <button id="replay-refresh" type="button" class="ghost">Refresh</button>
+      <span id="replay-count" class="hint"></span>
+      <button id="replay-delete" type="button" class="ghost danger with-icon" disabled>Delete selected</button>
     </div>
-    <div class="row">
-      <label>Learning rate <input id="ppo-lr" type="number" step="0.0001" value="0.0003"></label>
-      <label>Entropy coef <input id="ppo-ent" type="number" step="0.001" value="0.01"></label>
-      <label>Device
-        <select id="train-device"><option>auto</option><option>cpu</option><option>cuda</option></select>
-      </label>
+    <div class="table-wrap">
+      <table id="replay-table">
+        <thead><tr>
+          <th class="pick"><input id="replay-all" type="checkbox" aria-label="Select all shown replays"></th>
+          <th>Game</th><th>Run</th><th>Outcome</th><th>Recorded</th><th></th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
     </div>
-    <h3>Jobs</h3>
-    <table id="jobs">
-      <thead><tr><th>id</th><th>kind</th><th>status</th><th>started</th><th></th><th></th></tr></thead>
-      <tbody></tbody>
-    </table>
-    <h3>Log <span id="log-job" class="mono"></span></h3>
-    <pre id="log-view"></pre>
-    <h3>Metrics</h3>
-    <div class="row">
-      <label>TensorBoard dir <input id="metrics-dir" value="runs/openfront_ppo" size="24"></label>
-      <label>Run <input id="metrics-run" value="ppo_default" size="16"></label>
-      <button id="metrics-load">Load</button>
-    </div>
-    <div id="charts"></div>
-  </section>
+    <div id="replay-error" class="error" hidden></div>
 
-  <section id="eval">
-    <h2>Eval</h2>
-    <div class="row">
-      <label>Checkpoint dir <input id="ckpt-dir" value="checkpoints/openfront_ppo" size="28"></label>
-      <button id="ckpt-refresh">Refresh</button>
-      <label>Model <select id="eval-model"></select></label>
-      <label>Episodes <input id="eval-episodes" type="number" value="5" min="1"></label>
-      <label>Seed <input id="eval-seed" value="eval" size="8"></label>
-      <label><input id="eval-baseline" type="checkbox" checked> baseline</label>
-      <button id="eval-start">Start eval</button>
-    </div>
-    <div id="eval-result" class="mono"></div>
+    <dialog id="confirm-dialog" class="confirm" aria-labelledby="confirm-title">
+      <form method="dialog">
+        <h2 id="confirm-title">Delete replays?</h2>
+        <p id="confirm-text"></p>
+        <div class="confirm-actions">
+          <button value="cancel" class="ghost" autofocus>Cancel</button>
+          <button value="ok" class="danger-fill">Delete</button>
+        </div>
+      </form>
+    </dialog>
   </section>
 </main>
 

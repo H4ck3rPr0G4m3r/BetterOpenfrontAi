@@ -11,12 +11,12 @@ import { simpleHash } from "../../OpenFrontIO/src/core/Util";
 import type { ReplayOptions } from "./types";
 
 /**
- * Phase-8 data replays. A recorded episode is a GameRecord-compatible JSON
- * file the upstream dev client plays back visually (see the phase-8 spec):
- * the engine is deterministic and every non-human player acts through
- * internal seeded executions, so the seed plus the agent's turns reproduce
- * the whole game. No protocol or schema change: recording is a local file
- * write on the Node side, enabled through environment variables.
+ * Data replays. A recorded game is a GameRecord-compatible JSON
+ * file the upstream dev client plays back visually: the engine is
+ * deterministic and every non-human player acts through internal seeded
+ * executions, so the seed plus the seats' turns reproduce the whole game.
+ * Recording is a local file write on the Node side, enabled through
+ * environment variables.
  */
 
 /** Engine commit the training sim runs. Stamped on every record so a
@@ -24,30 +24,34 @@ import type { ReplayOptions } from "./types";
 export const TRAINING_ENGINE_COMMIT =
   "f51f165b947a92cc683ade3a72c3800300e86e61";
 
-/** Record IDs must match /^[A-Za-z0-9]{8}$/ (engine ID schema), which our
- *  training IDs ("client0", free-form seeds) do not. Fixed replay identity
- *  for the agent; the game ID derives from the seed below. */
-export const REPLAY_CLIENT_ID = "RLCLIENT";
-
-/** The singleplayer-style player list a record carries. Bots and nations
- *  respawn from the config deterministically, so only the agent is named —
- *  exactly like a singleplayer lobby with one human. */
-export function replayPlayers(
-  clientID: string = REPLAY_CLIENT_ID,
-  username: string = "RLAgent",
-): PlayerRecord[] {
-  return [{ clientID, username, clanTag: null, persistentID: null }];
+/** Seat i's client ID, used both in training and in records. Record IDs
+ *  must match /^[A-Za-z0-9]{8}$/ (engine ID schema), so training uses
+ *  record-valid IDs directly and recorded turns need no remapping. */
+export function seatClientID(seat: number): string {
+  if (!Number.isInteger(seat) || seat < 0 || seat > 99) throw new Error(`bad seat ${seat}`);
+  return `RLSEAT${String(seat).padStart(2, "0")}`;
 }
 
-/** Deterministic 8-char alphanumeric game ID derived from the episode seed.
- *  Informational only; the seed itself rides in the filename. */
+/** The lobby player list a record carries: one human per seat, in seat
+ *  order (the order IDs are drawn in). Bots and nations respawn from the
+ *  config deterministically. */
+export function replayPlayers(seats: number): PlayerRecord[] {
+  return Array.from({ length: seats }, (_, i) => ({
+    clientID: seatClientID(i),
+    username: `RLAgent${i}`,
+    clanTag: null,
+    persistentID: null,
+  }));
+}
+
+/** Deterministic 8-char alphanumeric game ID derived from the seed. The
+ *  whole game (nations, executor, seat IDs) derives from it. */
 export function replayGameID(seed: string): string {
   return (simpleHash(seed) >>> 0).toString(36).padStart(8, "0").slice(-8);
 }
 
-/** Deep clone converting bigints to numbers. Turn intents can carry bigint
- *  gold amounts, which JSON.stringify rejects and the record schema does
- *  not accept. Values stay bit-exact: game amounts fit well under 2^53. */
+/** Deep clone converting bigints to numbers (JSON and the record schema
+ *  reject bigints; game amounts fit well under 2^53). */
 export function toJsonSafe<T>(value: T): T {
   if (typeof value === "bigint") return Number(value) as T;
   if (Array.isArray(value)) return value.map(toJsonSafe) as T;
@@ -62,48 +66,32 @@ export function toJsonSafe<T>(value: T): T {
 export interface BuildRecordArgs {
   seed: string;
   gameConfig: GameConfig;
-  /** All turns fed this episode, spawn phase included. */
+  /** All turns fed this game, spawn phase included. */
   turns: Turn[];
-  agentClientID: string;
-  agentWon: boolean;
+  seats: number;
+  /** Winning seat's client ID, or null. */
+  winnerClientID: string | null;
   startedAt: number;
   endedAt: number;
-  /** State hashes keyed by tick, as collected from HashUpdates. Stamped
-   *  onto the matching turns so the replay harness can verify sync. */
+  /** State hashes keyed by tick, stamped onto turns for sync checks. */
   hashes?: Map<number, number>;
 }
 
-/**
- * Build the record object. Reuses the engine's own createPartialGameRecord
- * (same empty-turn filtering as real archives) and adds the git commit the
- * client checks. Every intent's clientID is remapped to the replay identity
- * so the record validates; the sim resolves turns by content, which is
- * otherwise byte-identical to what training fed.
- */
+/** Build the record with the engine's own createPartialGameRecord. */
 export function buildGameRecord(args: BuildRecordArgs) {
-  const turns: Turn[] = toJsonSafe(
-    args.turns.map((turn) => ({
-      ...turn,
-      intents: turn.intents.map((intent) => ({
-        ...intent,
-        clientID: REPLAY_CLIENT_ID,
-      })),
-    })),
-  );
-  const winner: Winner =
-    args.agentWon ? ["player", REPLAY_CLIENT_ID] : undefined;
+  const turns: Turn[] = toJsonSafe(args.turns.map((turn) => ({ ...turn, intents: [...turn.intents] })));
+  const winner: Winner = args.winnerClientID !== null ? ["player", args.winnerClientID] : undefined;
   if (args.hashes !== undefined) {
     for (const [tick, hash] of args.hashes) {
       const turn = turns[tick];
-      // turnNumber equals position by feeder construction; the guard keeps
-      // a misaligned hash off the wrong turn rather than failing the write.
+      // turnNumber equals position by feeder construction.
       if (turn !== undefined && turn.turnNumber === tick) turn.hash = hash;
     }
   }
   const record = createPartialGameRecord(
     replayGameID(args.seed),
     toJsonSafe(args.gameConfig),
-    replayPlayers(),
+    replayPlayers(args.seats),
     turns,
     args.startedAt,
     args.endedAt,
@@ -112,10 +100,16 @@ export function buildGameRecord(args: BuildRecordArgs) {
   return { ...record, gitCommit: TRAINING_ENGINE_COMMIT };
 }
 
-/** True when this episode index is due for recording. Episode 0 always
- *  records, so `every: 1` means every episode. Pure for tests. */
-export function shouldRecordReplay(episodeIndex: number, every: number): boolean {
-  return every >= 1 && episodeIndex % every === 0;
+/** True when this env's game `index` is due for recording. Each of the
+ *  run's `stride` parallel games records one in `every` of its own games
+ *  (so one in `every` overall), starting at an offset set by its `slot`:
+ *  the recordings are spread through the run instead of all landing on
+ *  game 0. With one game (stride 1) game 0 always records and `every: 1`
+ *  means every game. */
+export function shouldRecordReplay(index: number, every: number, slot = 0, stride = 1): boolean {
+  if (every < 1 || stride < 1) return false;
+  const offset = Math.floor(((slot % stride) * every) / stride);
+  return index >= offset && (index - offset) % every === 0;
 }
 
 function safeFileStem(seed: string): string {
@@ -129,13 +123,13 @@ function safeFileStem(seed: string): string {
 export function writeReplayFile(
   replay: ReplayOptions,
   seed: string,
-  episodeIndex: number,
-  terminal: string,
+  index: number,
+  outcome: string,
   record: unknown,
 ): string | undefined {
   try {
     fs.mkdirSync(replay.dir, { recursive: true });
-    const name = `ep${episodeIndex}-${safeFileStem(seed)}-${terminal}.json`;
+    const name = `game${index}-${safeFileStem(seed)}-${outcome}.json`;
     const file = path.join(replay.dir, name);
     fs.writeFileSync(file, JSON.stringify(record));
     return file;
@@ -157,5 +151,12 @@ export function replayOptionsFromEnv(
       `OPENFRONT_REPLAY_EVERY must be a positive integer, got ${env.OPENFRONT_REPLAY_EVERY}`,
     );
   }
-  return { dir, every };
+  const slot = Number(env.OPENFRONT_REPLAY_SLOT ?? "0");
+  const stride = Number(env.OPENFRONT_REPLAY_STRIDE ?? "1");
+  return {
+    dir,
+    every,
+    slot: Number.isInteger(slot) && slot >= 0 ? slot : 0,
+    stride: Number.isInteger(stride) && stride >= 1 ? stride : 1,
+  };
 }

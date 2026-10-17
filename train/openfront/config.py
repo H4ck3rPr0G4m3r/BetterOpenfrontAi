@@ -1,0 +1,302 @@
+"""Training configuration: defaults, YAML loading, validation.
+
+A config file only needs the keys it changes; everything else comes from
+DEFAULTS. Unknown keys are errors (a typo must not silently train the
+wrong thing).
+"""
+
+from __future__ import annotations
+
+import copy
+from pathlib import Path
+
+import yaml
+
+DEFAULTS: dict = {
+    "run": {
+        "name": "openfront",
+        "total_steps": 10_000_000,  # learner transitions
+        "device": "auto",
+        "seed": 0,
+        "checkpoint_dir": "checkpoints",
+        "log_dir": "runs",
+        "checkpoint_every": 20,  # updates
+        "replay": None,  # {"dir": "replays/<name>", "every": 200}
+    },
+    "env": {
+        "map": "World",
+        "bots": 20,
+        "nations": "default",
+        "difficulty": "Medium",  # nations: Easy | Medium | Hard | Impossible
+        "ticks_per_step": 10,
+        "tick_cap": 6000,
+        "workers": 8,
+        "games_per_worker": 1,
+        "seats": 4,
+        "disabled_intents": [],
+        "disabled_builds": [],
+        # Donations are off: real games rarely need them, and the v2 policy
+        # gave its troops away to allied nations. Re-enable for fine-tuning.
+        "allow_donations": False,
+        "allow_betrayal": False,  # breaking alliances: off, like donations
+        "allow_embargo": False,  # embargoes: off, the policy spammed them
+        "troop_reserve": 0.1,  # attacks must leave this share of max troops home
+        "close_spawn": 0.3,  # share of multi-seat games with seats spawned close
+        "maps_dir": None,
+    },
+    "reward": {
+        "land": 1.0,
+        "structures": 0.2,
+        "cities": 0.5,
+        "rail": 0.5,
+        "popCap": 0.3,
+        "income": 1.0,
+        "kill": 0.5,
+        "win": 5.0,
+        "death": -2.0,
+        "placement": 1.0,
+        "survive": 0.0,
+        "lowTroops": -0.05,
+        "lowTroopsBelow": 0.3,
+        "betrayal": -1.0,
+        "diplomacy": -0.005,
+        "advantage": 0.5,
+        "defend": 0.3,
+        "defensePost": -0.1,
+        "crowdedPost": -0.5,
+        "boatLaunch": 0.05,
+        "boatLanding": 0.2,
+        "nuke": 0.05,
+        "nukeSelf": -0.2,
+    },
+    "ppo": {
+        "n_steps": 256,
+        "epochs": 4,
+        "minibatch": 512,
+        "lr": 3e-4,
+        "lr_final_fraction": 0.2,
+        "gamma": 0.997,
+        "gae_lambda": 0.95,
+        "clip": 0.2,
+        "vf_coef": 0.5,
+        "ent_coef": 0.005,
+        "ent_weights": {"intent": 1.0, "target": 0.5, "ratio": 0.5, "spatial": 0.1, "site": 0.5},
+        "max_grad_norm": 0.5,
+        "target_kl": 0.05,
+        "amp": True,
+    },
+    "selfplay": {
+        # Seat 0 of every game is always the learner. Each other seat is the
+        # live learner with this probability, else a frozen pool snapshot.
+        "learner_seat_prob": 0.5,
+        "snapshot_every": 10,  # updates
+        "pool_size": 24,
+        "active_opponents": 4,
+        "latest_bias": 0.5,  # share of opponents drawn from the 3 newest snapshots
+        "pool_dir": None,  # default: <checkpoint_dir>/<name>/pool
+    },
+    "curriculum": [],
+    # Mixed training: each scenario gets a share of the workers (by weight)
+    # and its own env overrides; see configs/main.yaml. Curriculum stages can
+    # change the weights (stage "weights": {name: w}) and the shared env.
+    "scenarios": [],
+    "model": {"trunk": 256, "slot_dim": 64, "site_dim": 32, "context": 128},
+}
+
+CURRICULUM_ENV_KEYS = {"bots", "nations", "seats", "tick_cap", "map", "difficulty"}
+SCENARIO_ENV_KEYS = {"bots", "nations", "seats", "tick_cap", "map", "close_spawn", "difficulty"}
+DIFFICULTIES = ("Easy", "Medium", "Hard", "Impossible")
+
+
+def _merge(base: dict, override: dict, path: str = "") -> dict:
+    out = copy.deepcopy(base)
+    for key, value in (override or {}).items():
+        if key not in base:
+            raise ValueError(f"unknown config key {path}{key}")
+        if isinstance(base[key], dict) and isinstance(value, dict) and key != "ent_weights":
+            out[key] = _merge(base[key], value, f"{path}{key}.")
+        else:
+            out[key] = copy.deepcopy(value)
+    return out
+
+
+def load_config(path: str | Path | None = None, overrides: dict | None = None) -> dict:
+    raw = {}
+    if path is not None:
+        with open(path, encoding="utf-8") as handle:
+            raw = yaml.safe_load(handle) or {}
+    cfg = _merge(DEFAULTS, raw)
+    if overrides:
+        cfg = _merge(cfg, overrides)
+    validate(cfg)
+    return cfg
+
+
+def validate(cfg: dict) -> None:
+    env, ppo = cfg["env"], cfg["ppo"]
+    if not 1 <= int(env["seats"]) <= 8:
+        raise ValueError("env.seats must be 1..8")
+    if env["nations"] not in ("default", "disabled"):
+        raise ValueError("env.nations must be default or disabled")
+    for key in ("workers", "games_per_worker", "ticks_per_step", "tick_cap"):
+        if int(env[key]) < 1:
+            raise ValueError(f"env.{key} must be >= 1")
+    for key in ("troop_reserve", "close_spawn"):
+        if not 0.0 <= float(env[key]) <= 1.0:
+            raise ValueError(f"env.{key} must be 0..1")
+    if not 0.0 <= float(cfg["selfplay"]["learner_seat_prob"]) <= 1.0:
+        raise ValueError("selfplay.learner_seat_prob must be 0..1")
+    if int(ppo["minibatch"]) < 1 or int(ppo["n_steps"]) < 1 or int(ppo["epochs"]) < 1:
+        raise ValueError("ppo.minibatch, n_steps, epochs must be >= 1")
+    names = {str(sc.get("name")) for sc in cfg["scenarios"]}
+    if env["difficulty"] not in DIFFICULTIES:
+        raise ValueError(f"env.difficulty must be one of {DIFFICULTIES}")
+    for i, sc in enumerate(cfg["scenarios"]):
+        extra = set(sc) - SCENARIO_ENV_KEYS - {"name", "weight"}
+        if extra or "name" not in sc:
+            raise ValueError(f"scenarios[{i}] needs a name and only {sorted(SCENARIO_ENV_KEYS | {'weight'})}")
+        if float(sc.get("weight", 1)) <= 0:
+            raise ValueError(f"scenarios[{i}].weight must be > 0")
+        if not 1 <= int(sc.get("seats", env["seats"])) <= 8:
+            raise ValueError(f"scenarios[{i}].seats must be 1..8")
+        if sc.get("difficulty", env["difficulty"]) not in DIFFICULTIES:
+            raise ValueError(f"scenarios[{i}].difficulty must be one of {DIFFICULTIES}")
+    if cfg["scenarios"] and int(env["workers"]) < len(cfg["scenarios"]):
+        raise ValueError("need at least one worker per scenario")
+    for i, stage in enumerate(cfg["curriculum"]):
+        extra = set(stage) - CURRICULUM_ENV_KEYS - {"promote", "name", "weights"}
+        if extra:
+            raise ValueError(f"curriculum[{i}] has unknown keys {sorted(extra)}")
+        mix = difficulty_mix(stage.get("difficulty", env["difficulty"]))
+        if not mix or set(mix) - set(DIFFICULTIES) or min(mix.values()) <= 0:
+            raise ValueError(f"curriculum[{i}].difficulty must be one of {DIFFICULTIES} "
+                             "or a mix of them with weights > 0 (e.g. {Easy: 1, Medium: 2})")
+        judged = (stage.get("promote") or {}).get("difficulty")
+        if judged is not None and set([judged] if isinstance(judged, str) else judged) - set(DIFFICULTIES):
+            raise ValueError(f"curriculum[{i}].promote.difficulty must name {DIFFICULTIES}")
+        unknown = set(stage.get("weights") or {}) - names
+        if unknown:
+            raise ValueError(f"curriculum[{i}].weights names unknown scenarios {sorted(unknown)}")
+        unknown = set((stage.get("promote") or {}).get("scenarios") or []) - names
+        if unknown:
+            raise ValueError(f"curriculum[{i}].promote.scenarios names unknown scenarios {sorted(unknown)}")
+
+
+def difficulty_mix(value) -> dict:
+    """{difficulty: weight} from a single difficulty or a mix of them."""
+    if isinstance(value, str):
+        return {value: 1.0}
+    return {str(k): float(v) for k, v in (value or {}).items()}
+
+
+def stage_env(cfg: dict, stage: int) -> dict:
+    """The env section with curriculum stage ``stage`` applied. A stage's
+    difficulty mix reads here as its most common difficulty; the per-worker
+    split is scenario_workers'."""
+    env = copy.deepcopy(cfg["env"])
+    if cfg["curriculum"]:
+        stage_cfg = cfg["curriculum"][min(stage, len(cfg["curriculum"]) - 1)]
+        env.update({k: v for k, v in stage_cfg.items() if k in CURRICULUM_ENV_KEYS})
+    mix = difficulty_mix(env.get("difficulty", "Medium"))
+    env["difficulty"] = max(mix, key=mix.get)
+    return env
+
+
+def _split_difficulty(mix: dict, n: int) -> list[str]:
+    """``n`` difficulties in proportion to ``mix``, interleaved (E M E E M ...)
+    so that scenarios with several workers get some of each."""
+    total = sum(mix.values())
+    counts = dict.fromkeys(mix, 0)
+    out = []
+    for i in range(n):
+        pick = max(mix, key=lambda d: mix[d] / total * (i + 1) - counts[d])
+        counts[pick] += 1
+        out.append(pick)
+    return out
+
+
+MATCH_FALLBACK = {"map": "World", "bots": 20, "tick_cap": 12000, "close_spawn": 0.3, "seats": 4}
+
+
+def match_env(cfg: dict | None, stage: int = 0, mode: str = "selfplay") -> dict:
+    """Map, tribes, length, spawns and seats for a quick match that looks
+    like the training games of ``cfg`` (a checkpoint's stored config) at
+    curriculum ``stage``. ``mode`` "selfplay" seats several copies of the
+    AI (the recipe's own seat count, 4 if it trained alone); "bots" seats
+    it alone. Mixed recipes use their matching scenario. Nations are not
+    part of this: the caller decides."""
+    out = dict(MATCH_FALLBACK)
+    if cfg and cfg.get("env"):
+        env = stage_env({"env": cfg["env"], "curriculum": cfg.get("curriculum") or []}, stage)
+        scenarios = cfg.get("scenarios") or []
+        if mode == "selfplay":
+            pool = [s for s in scenarios if s.get("name") == "selfplay_ffa"] or \
+                   sorted((s for s in scenarios if int(s.get("seats", env["seats"])) >= 2),
+                          key=lambda s: -float(s.get("weight", 1)))
+        else:
+            pool = [s for s in scenarios if int(s.get("seats", env["seats"])) == 1]
+        if pool:
+            env.update({k: v for k, v in pool[0].items() if k in SCENARIO_ENV_KEYS})
+        out.update({k: env[k] for k in ("map", "bots", "tick_cap", "close_spawn", "seats") if k in env})
+    if mode == "selfplay":
+        out["seats"] = int(out["seats"]) if int(out["seats"]) >= 2 else 4
+    else:
+        out["seats"], out["close_spawn"] = 1, 0.0
+    return out
+
+
+def scenario_workers(cfg: dict, stage: int = 0) -> list[tuple[str, dict]]:
+    """(scenario name, env) per worker at curriculum ``stage``: workers split
+    by weight (the stage's ``weights`` override the scenarios' own), each
+    scenario getting at least one (largest remainder). Env: base, then the
+    stage's env keys, then the scenario's own keys. A stage difficulty mix
+    ({Easy: 1, Medium: 2}) is split over the workers that have nations and
+    no difficulty of their own."""
+    env = stage_env(cfg, stage)
+    scenarios = cfg["scenarios"]
+    workers = int(env["workers"])
+    stage_cfg = cfg["curriculum"][min(stage, len(cfg["curriculum"]) - 1)] if cfg["curriculum"] else {}
+    mix = difficulty_mix(stage_cfg.get("difficulty", cfg["env"]["difficulty"]))
+    if not scenarios:
+        return [("default", {**copy.deepcopy(env), "difficulty": d})
+                for d in _split_difficulty(mix, workers)]
+    overrides = stage_cfg.get("weights") or {}
+    weights = [float(overrides.get(s["name"], s.get("weight", 1))) for s in scenarios]
+    total = sum(weights)
+    share = [1 + (workers - len(scenarios)) * w / total for w in weights]
+    counts = [int(x) for x in share]
+    for i in sorted(range(len(share)), key=lambda i: share[i] - counts[i], reverse=True)[: workers - sum(counts)]:
+        counts[i] += 1
+    out = []
+    for sc, n in zip(scenarios, counts):
+        merged = {**copy.deepcopy(env), **{k: v for k, v in sc.items() if k in SCENARIO_ENV_KEYS}}
+        out += [(str(sc["name"]), copy.deepcopy(merged)) for _ in range(n)]
+    mixed = [env for name, env in out if env["nations"] != "disabled"
+             and "difficulty" not in next(sc for sc in scenarios if sc["name"] == name)]
+    for env, difficulty in zip(mixed, _split_difficulty(mix, len(mixed))):
+        env["difficulty"] = difficulty
+    return out
+
+
+def worker_config(env: dict, reward: dict):
+    from .worker import WorkerConfig
+
+    return WorkerConfig(
+        games=int(env["games_per_worker"]),
+        seats=int(env["seats"]),
+        map=str(env["map"]),
+        bots=int(env["bots"]),
+        nations=str(env["nations"]),
+        difficulty=str(env.get("difficulty", "Medium")),
+        ticks_per_step=int(env["ticks_per_step"]),
+        tick_cap=int(env["tick_cap"]),
+        maps_dir=env.get("maps_dir"),
+        disabled_intents=tuple(int(v) for v in env.get("disabled_intents", [])),
+        disabled_builds=tuple(str(v) for v in env.get("disabled_builds", [])),
+        allow_donations=bool(env.get("allow_donations", False)),
+        allow_betrayal=bool(env.get("allow_betrayal", False)),
+        allow_embargo=bool(env.get("allow_embargo", False)),
+        troop_reserve=float(env.get("troop_reserve", 0.1)),
+        close_spawn=float(env.get("close_spawn", 0.0)),
+        reward={k: float(v) for k, v in reward.items()},
+    )

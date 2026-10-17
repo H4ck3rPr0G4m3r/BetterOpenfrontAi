@@ -1,328 +1,297 @@
 import { describe, expect, it } from "vitest";
-import type { Game, PlayerID } from "../../OpenFrontIO/src/core/game/Game";
-import { GOLD_SCALE, Reward, TROOP_SCALE } from "../src/Reward";
-import { TurnFeeder } from "../src/TurnFeeder";
-import { AGENT_ID, buildTestRunner } from "./helpers/buildTestRunner";
+import { normalizeRewardWeights } from "../src/BehaviorConfig";
+import { boatEvents, LAND_REF, NO_EVENTS, newDefensePosts, placementScore, POST_SPACING, Reward } from "../src/Reward";
 
-/**
- * Minimal game double: Reward only reads map().numLandTiles() once,
- * player() for the agent's own stats, players() for the kill scan,
- * ticks() for the phase clock, and unitInfo() for the MIRV price.
- * A live engine kill is impractical in unit tests (test games seat no
- * opponents), so the kill bonus is tested here instead of in GameEnv.
- */
-interface StubState {
-  opponents: Record<string, boolean>;
-  ticks?: number;
-  tiles?: number;
+interface FakePlayer {
+  id: string;
+  tiles: number;
+  alive: boolean;
+  structures: { level: number; building?: boolean }[];
+  /** Share of MAX_TROOPS; defaults to full (no low-troop penalty). */
   troops?: number;
-  gold?: bigint;
-  alive?: boolean;
-  cities?: number;
-  factories?: number;
-  mirvCost?: number;
 }
 
-function stubGame(state: StubState) {
-  const s = {
-    ticks: 0,
-    tiles: 0,
-    troops: 0,
-    gold: 0n,
-    alive: true,
-    cities: 0,
-    factories: 0,
-    mirvCost: 25_000_000,
-    ...state,
-  };
-  const agent = {
-    numTilesOwned: () => s.tiles,
-    troops: () => s.troops,
-    gold: () => s.gold,
-    isAlive: () => s.alive,
-    unitsOwned: (type: string) =>
-      type === "City" ? s.cities : type === "Factory" ? s.factories : 0,
-  };
+const MAX_TROOPS = 1000;
+
+function fakeGame(players: FakePlayer[]) {
+  const wrap = (p: FakePlayer) => ({
+    id: () => p.id,
+    isAlive: () => p.alive,
+    numTilesOwned: () => p.tiles,
+    troops: () => (p.troops ?? 1) * MAX_TROOPS,
+    units: () => p.structures.map((s) => ({ level: () => s.level, isUnderConstruction: () => !!s.building })),
+  });
+  return {
+    player: (id: string) => wrap(players.find((p) => p.id === id)!),
+    players: () => players.filter((p) => p.alive).map(wrap),
+    config: () => ({ maxTroops: () => MAX_TROOPS }),
+    railNetwork: () => ({ stationManager: () => ({ findStation: () => null }) }),
+  } as never;
+}
+
+describe("Reward v3", () => {
+  const land = (tiles: number) => Math.log1p(tiles / LAND_REF);
+
+  it("pays the change in land potential, not raw land", () => {
+    const me: FakePlayer = { id: "me", tiles: 50, alive: true, structures: [] };
+    const game = fakeGame([me]);
+    const r = new Reward({ structures: 0, cities: 0, popCap: 0 });
+    r.init(game, "me");
+    me.tiles = 500;
+    expect(r.step(game, "me", null, NO_EVENTS)).toBeCloseTo(land(500) - land(50));
+    // Holding still pays nothing: idling never mints return.
+    expect(r.step(game, "me", null, NO_EVENTS)).toBeCloseTo(0);
+  });
+
+  it("makes dying give back everything built, plus the death penalty", () => {
+    const me: FakePlayer = { id: "me", tiles: 52, alive: true, structures: [{ level: 2 }] };
+    const game = fakeGame([me]);
+    const r = new Reward({ cities: 0, popCap: 0 });
+    r.init(game, "me");
+    let total = 0;
+    me.tiles = 20_000;
+    total += r.step(game, "me", null, NO_EVENTS);
+    expect(total).toBeGreaterThan(4);
+    me.tiles = 0;
+    me.alive = false;
+    total += r.step(game, "me", "death", NO_EVENTS);
+    const spawnPotential = land(52) + 0.2 * Math.log1p(2);
+    expect(total).toBeCloseTo(-spawnPotential - 2);
+  });
+
+  it("credits only the kills it is told about", () => {
+    const me: FakePlayer = { id: "me", tiles: 100, alive: true, structures: [] };
+    const game = fakeGame([me]);
+    const r = new Reward({ kill: 0.5 });
+    r.init(game, "me");
+    expect(r.step(game, "me", null, NO_EVENTS)).toBeCloseTo(0);
+    expect(r.step(game, "me", null, { ...NO_EVENTS, kills: 2 })).toBeCloseTo(1);
+  });
+
+  it("ignores structures under construction and counts levels", () => {
+    const me: FakePlayer = { id: "me", tiles: 100, alive: true, structures: [{ level: 1, building: true }] };
+    const game = fakeGame([me]);
+    const r = new Reward({ land: 0, structures: 1, cities: 0, popCap: 0 });
+    r.init(game, "me");
+    expect(r.step(game, "me", null, NO_EVENTS)).toBeCloseTo(0);
+    me.structures = [{ level: 3 }];
+    expect(r.step(game, "me", null, NO_EVENTS)).toBeCloseTo(Math.log1p(3));
+  });
+
+  it("scores the tick cap by land rank among the living", () => {
+    const me: FakePlayer = { id: "me", tiles: 300, alive: true, structures: [] };
+    const others: FakePlayer[] = [
+      { id: "a", tiles: 1000, alive: true, structures: [] },
+      { id: "b", tiles: 100, alive: true, structures: [] },
+      { id: "c", tiles: 5000, alive: false, structures: [] },
+    ];
+    const game = fakeGame([me, ...others]);
+    expect(placementScore(game, (game as any).player("me"))).toBeCloseTo(0.5);
+    expect(placementScore(game, (game as any).player("a"))).toBeCloseTo(1);
+    const r = new Reward({ placement: 2 });
+    r.init(game, "me");
+    expect(r.step(game, "me", "tick_cap", NO_EVENTS)).toBeCloseTo(1);
+  });
+
+  it("pays win and nothing for sim errors or aborts", () => {
+    const me: FakePlayer = { id: "me", tiles: 100, alive: true, structures: [] };
+    const game = fakeGame([me]);
+    const r = new Reward({ win: 5 });
+    r.init(game, "me");
+    expect(r.step(game, "me", "win", NO_EVENTS)).toBeCloseTo(5);
+    expect(r.step(game, "me", "sim_error", NO_EVENTS)).toBeCloseTo(0);
+    expect(r.step(game, "me", "aborted", NO_EVENTS)).toBeCloseTo(0);
+  });
+
+  it("charges for sitting below the troop floor, more the lower it goes", () => {
+    const me: FakePlayer = { id: "me", tiles: 100, alive: true, structures: [], troops: 0.5 };
+    const game = fakeGame([me]);
+    const r = new Reward({ lowTroops: -0.02, lowTroopsBelow: 0.3 });
+    r.init(game, "me");
+    expect(r.step(game, "me", null, NO_EVENTS)).toBeCloseTo(0);
+    me.troops = 0.15;
+    expect(r.step(game, "me", null, NO_EVENTS)).toBeCloseTo(-0.01);
+    me.troops = 0;
+    expect(r.step(game, "me", null, NO_EVENTS)).toBeCloseTo(-0.02);
+  });
+
+  it("prices betrayal and diplomatic spam", () => {
+    const me: FakePlayer = { id: "me", tiles: 100, alive: true, structures: [] };
+    const game = fakeGame([me]);
+    const r = new Reward({ betrayal: -1, diplomacy: -0.005 });
+    r.init(game, "me");
+    expect(r.step(game, "me", null, { ...NO_EVENTS, betrayals: 1, diplomacy: 2 })).toBeCloseTo(-1.01);
+  });
+
+  it("pays extra for land taken from weaker players and for repelled attacks", () => {
+    const me: FakePlayer = { id: "me", tiles: 100, alive: true, structures: [] };
+    const game = fakeGame([me]);
+    const r = new Reward({ advantage: 0.5, defend: 0.3 });
+    r.init(game, "me");
+    me.tiles = 110;
+    const plain = land(110) - land(100);
+    // 10 tiles from a weaker player: the land gain plus half again (approximately).
+    const step = r.step(game, "me", null, { ...NO_EVENTS, advantageTiles: 10, repelled: 1 });
+    expect(step).toBeCloseTo(plain + (0.5 * 10) / (LAND_REF + 110) + 0.3);
+  });
+
+  it("values the income rate as a potential, given back on death", () => {
+    const me: FakePlayer = { id: "me", tiles: 100, alive: true, structures: [] };
+    const game = fakeGame([me]);
+    const r = new Reward({ land: 0, structures: 0, cities: 0, popCap: 0, income: 1, death: 0 });
+    r.init(game, "me");
+    let total = 0;
+    // 120 steps at 5k gold a step: 300k a minute once the average settles.
+    for (let i = 0; i < 120; i++) total += r.step(game, "me", null, { ...NO_EVENTS, earned: 5_000 });
+    const settled = Math.log1p(300_000 / 100_000);
+    expect(total).toBeGreaterThan(0.8 * settled);
+    expect(total).toBeLessThan(settled);
+    me.alive = false;
+    total += r.step(game, "me", "death", NO_EVENTS);
+    expect(total).toBeCloseTo(0);
+  });
+
+  it("values cities on top of other structures", () => {
+    const me: FakePlayer = { id: "me", tiles: 100, alive: true, structures: [] };
+    const game = fakeGame([me]);
+    const r = new Reward({ land: 0, structures: 0.2, cities: 0.5, popCap: 0 });
+    r.init(game, "me");
+    me.structures = [{ level: 2 }];
+    expect(r.step(game, "me", null, NO_EVENTS)).toBeCloseTo(0.7 * Math.log1p(2));
+  });
+
+  it("pays for a higher population cap and gives it back on death", () => {
+    const me: FakePlayer = { id: "me", tiles: 100, alive: true, structures: [] };
+    let max = 120_000;
+    const game = { ...(fakeGame([me]) as object), config: () => ({ maxTroops: () => max }) } as never;
+    const r = new Reward({ land: 0, structures: 0, cities: 0, popCap: 0.3, lowTroops: 0 });
+    r.init(game, "me");
+    max = 370_000; // one city level
+    expect(r.step(game, "me", null, NO_EVENTS)).toBeCloseTo(0.3 * (Math.log1p(3.7) - Math.log1p(1.2)));
+    me.alive = false;
+    expect(r.step(game, "me", "death", NO_EVENTS)).toBeCloseTo(-0.3 * Math.log1p(3.7) - 2);
+  });
+
+  it("values cities and ports on the rail network", () => {
+    const me: FakePlayer = { id: "me", tiles: 100, alive: true, structures: [] };
+    const units = [1, 2, 3].map((id) => ({ id, level: () => 1, isUnderConstruction: () => false }));
+    const connected = new Set<number>();
+    const base = fakeGame([me]) as unknown as { player: (id: string) => object };
+    const game = {
+      ...base,
+      player: (id: string) => ({ ...base.player(id), units: () => units }),
+      railNetwork: () => ({ stationManager: () => ({ findStation: (u: { id: number }) => (connected.has(u.id) ? {} : null) }) }),
+    } as never;
+    const r = new Reward({ land: 0, structures: 0, cities: 0, popCap: 0, income: 0, rail: 0.5 });
+    r.init(game, "me");
+    connected.add(1).add(2);
+    expect(r.step(game, "me", null, NO_EVENTS)).toBeCloseTo(0.5 * Math.log1p(2));
+  });
+
+  it("validates weight overrides by name", () => {
+    expect(normalizeRewardWeights({ land: 2 }).land).toBe(2);
+    expect(() => normalizeRewardWeights({ lnad: 2 })).toThrow(/unknown reward weight/);
+    expect(() => normalizeRewardWeights({ land: Number.NaN })).toThrow(/finite/);
+  });
+});
+
+describe("nukes", () => {
+  it("charges own and allied blast damage on its own, not netted against hits", () => {
+    const g = fakeGame([{ id: "a", tiles: 100, alive: true, structures: [] }]);
+    const r = new Reward({ survive: 0, lowTroops: 0, income: 0, nuke: 0.05, nukeSelf: -0.2 });
+    r.init(g, "a");
+    expect(r.step(g, "a", null, { ...NO_EVENTS, nukeDamage: 10, nukeSelfDamage: 2 })).toBeCloseTo(0.1);
+    expect(r.terms.nuke).toBeCloseTo(0.5);
+    expect(r.terms.nukeSelf).toBeCloseTo(-0.4);
+    // A nuke that only hit home still costs, however little it destroyed.
+    expect(r.step(g, "a", null, { ...NO_EVENTS, nukeSelfDamage: 0.5 })).toBeCloseTo(-0.1);
+    // Each term is bounded per step.
+    expect(r.step(g, "a", null, { ...NO_EVENTS, nukeSelfDamage: 1000 })).toBeCloseTo(-3);
+  });
+});
+
+describe("defense posts", () => {
+  // Tiles on a line: distance is the index difference.
+  const game = { euclideanDistSquared: (a: number, b: number) => (a - b) ** 2 } as never;
+  const owner = (tiles: number[]) =>
+    ({ isAlive: () => true, units: () => tiles.map((tile, i) => ({ id: () => i + 1, tile: () => tile })) }) as never;
+
+  it("counts new posts and the crowded ones once", () => {
+    const known = new Set<number>();
+    expect(newDefensePosts(game, owner([0]), known)).toEqual({ built: 1, crowded: 0 });
+    expect(newDefensePosts(game, owner([0, POST_SPACING + 5]), known)).toEqual({ built: 1, crowded: 0 });
+    expect(newDefensePosts(game, owner([0, POST_SPACING + 5, 3]), known)).toEqual({ built: 1, crowded: 1 });
+    expect(newDefensePosts(game, owner([0, POST_SPACING + 5, 3]), known)).toEqual({ built: 0, crowded: 0 });
+  });
+
+  it("prices each post, and crowded ones more", () => {
+    const g = fakeGame([{ id: "a", tiles: 100, alive: true, structures: [] }]);
+    const r = new Reward({ survive: 0, lowTroops: 0, income: 0 });
+    r.init(g, "a");
+    const spread = r.step(g, "a", null, { ...NO_EVENTS, postsBuilt: 1 });
+    const crowded = r.step(g, "a", null, { ...NO_EVENTS, postsBuilt: 1, postsCrowded: 1 });
+    expect(spread).toBeCloseTo(-0.1);
+    expect(crowded).toBeCloseTo(-0.6);
+  });
+});
+
+describe("boats", () => {
+  // Tiles are numbers; `owners` maps a tile to its owner's id.
+  const owners = new Map<number, string>();
   const game = {
-    map: () => ({ numLandTiles: () => 1000 }),
-    ticks: () => s.ticks,
-    player: (_id: string) => agent,
-    players: () =>
-      Object.entries(s.opponents).map(([id, alive]) => ({
-        id: () => id,
-        isAlive: () => alive,
-      })),
-    unitInfo: (_type: string) => ({ cost: () => BigInt(s.mirvCost) }),
-  } as unknown as Game;
-  return { game, agentId: AGENT_ID as PlayerID, state: s };
-}
+    owner: (t: number) => ({ id: () => owners.get(t) ?? "nobody" }),
+    config: () => ({ maxTroops: () => 1000, boatMaxNumber: () => 3 }),
+  } as never;
+  type Boat = { id: number; troops: number; target: number; retreating?: boolean };
+  const me = (boats: Boat[]) =>
+    ({
+      id: () => "me",
+      isAlive: () => true,
+      units: () =>
+        boats.map((b) => ({
+          id: () => b.id,
+          troops: () => b.troops,
+          targetTile: () => b.target,
+          transportShipState: () => ({ isRetreating: !!b.retreating }),
+        })),
+    }) as never;
 
-describe("Reward", () => {
-  it("is zero when nothing changed between init() and step()", async () => {
-    const { runner } = await buildTestRunner("reward-flat");
-    const reward = new Reward();
-    reward.init(runner.game, AGENT_ID);
-
-    expect(reward.step(runner.game, AGENT_ID, null)).toBe(0);
+  it("pays launches with a real force while a slot stays free", () => {
+    const known = new Map();
+    expect(boatEvents(game, me([{ id: 1, troops: 200, target: 10 }]), known).launched).toBe(1);
+    expect(boatEvents(game, me([{ id: 1, troops: 200, target: 10 }, { id: 2, troops: 50, target: 11 }]), known).launched).toBe(0);
+    // The third boat fills the last slot: not paid.
+    const full = [{ id: 1, troops: 200, target: 10 }, { id: 2, troops: 50, target: 11 }, { id: 3, troops: 300, target: 12 }];
+    expect(boatEvents(game, me(full), known).launched).toBe(0);
   });
 
-  it("rewards gaining land relative to the previous snapshot", async () => {
-    const { runner } = await buildTestRunner("reward-land");
-    const reward = new Reward();
-    reward.init(runner.game, AGENT_ID); // pre-spawn: 0 tiles owned
-
-    const feeder = new TurnFeeder(runner);
-    const map = runner.game.map();
-    let spawnTile = -1;
-    for (let i = 0; i < map.width() * map.height(); i++) {
-      if (map.isLand(i) && !map.hasOwner(i)) {
-        spawnTile = i;
-        break;
-      }
-    }
-    feeder.step(1, [
-      { clientID: "client0", playerID: AGENT_ID, type: "spawn", tile: spawnTile },
-    ] as any);
-    while (runner.game.inSpawnPhase()) feeder.step(1, []);
-
-    const r = reward.step(runner.game, AGENT_ID, null);
-    expect(r).toBeGreaterThan(0);
+  it("counts landings that took their tile, not sunk, retreating, tiny or pointless ones", () => {
+    owners.clear();
+    owners.set(23, "me"); // boat 4's target was already ours
+    const known = new Map();
+    boatEvents(game, me([
+      { id: 1, troops: 200, target: 20 },
+      { id: 2, troops: 200, target: 21 },
+      { id: 3, troops: 200, target: 22, retreating: true },
+    ]), known);
+    boatEvents(game, me([
+      { id: 1, troops: 200, target: 20 },
+      { id: 2, troops: 200, target: 21 },
+      { id: 3, troops: 200, target: 22, retreating: true },
+      { id: 4, troops: 200, target: 23 },
+      { id: 5, troops: 30, target: 24 }, // tiny boat
+    ]), known);
+    owners.set(20, "me"); // boat 1 landed and conquered its tile
+    owners.set(22, "me");
+    owners.set(24, "me"); // the tiny boat landed too, but pays nothing
+    // All are gone; boat 2's tile is still someone else's (sunk).
+    expect(boatEvents(game, me([]), known)).toEqual({ launched: 0, landed: 1 });
   });
 
-  it("adds the terminal bonus on top of shaping", async () => {
-    const { runner } = await buildTestRunner("reward-terminal");
-    const flat = new Reward();
-    flat.init(runner.game, AGENT_ID);
-    expect(flat.step(runner.game, AGENT_ID, "win")).toBeCloseTo(1, 10);
-
-    const flat2 = new Reward();
-    flat2.init(runner.game, AGENT_ID);
-    expect(flat2.step(runner.game, AGENT_ID, "death")).toBeCloseTo(-1, 10);
-
-    const flat3 = new Reward();
-    flat3.init(runner.game, AGENT_ID);
-    expect(flat3.step(runner.game, AGENT_ID, "tick_cap")).toBeCloseTo(0, 10);
-  });
-
-  it("matches a hand-computed shaping value using the fixed scale constants", async () => {
-    // Regression guard for the reward-normalization defect caught in review:
-    // troop/gold deltas must divide by fixed constants, not a per-step
-    // maximum over living players (which would make this value depend on
-    // opponents' state, not just the agent's own transition).
-    const { runner } = await buildTestRunner("reward-fixed-scale");
-    const reward = new Reward();
-    reward.init(runner.game, AGENT_ID);
-    const preTroops = runner.game.player(AGENT_ID).troops();
-    const preGold = Number(runner.game.player(AGENT_ID).gold());
-
-    const feeder = new TurnFeeder(runner);
-    const map = runner.game.map();
-    let spawnTile = -1;
-    for (let i = 0; i < map.width() * map.height(); i++) {
-      if (map.isLand(i) && !map.hasOwner(i)) {
-        spawnTile = i;
-        break;
-      }
-    }
-    feeder.step(1, [
-      { clientID: "client0", playerID: AGENT_ID, type: "spawn", tile: spawnTile },
-    ] as any);
-    while (runner.game.inSpawnPhase()) feeder.step(1, []);
-
-    const agent = runner.game.player(AGENT_ID);
-    const expected =
-      1.0 * (agent.numTilesOwned() / map.numLandTiles() - 0) +
-      0.1 * ((agent.troops() - preTroops) / TROOP_SCALE) +
-      0.1 * ((Number(agent.gold()) - preGold) / GOLD_SCALE);
-
-    expect(reward.step(runner.game, AGENT_ID, null)).toBeCloseTo(expected, 6);
-  });
-
-  it("pays the kill bonus once per eliminated opponent", () => {
-    const alive: Record<string, boolean> = { bot1: true, bot2: true };
-    const { game, agentId } = stubGame({ opponents: alive });
-    const reward = new Reward({
-      weights: { land: 0, troop: 0, gold: 0, win: 0, death: 0, kill: 2 },
-    });
-    reward.init(game, agentId);
-
-    alive.bot1 = false;
-    expect(reward.step(game, agentId, null)).toBeCloseTo(2, 10);
-
-    // Same state again: the elimination was already counted.
-    expect(reward.step(game, agentId, null)).toBeCloseTo(0, 10);
-
-    alive.bot2 = false;
-    expect(reward.step(game, agentId, null)).toBeCloseTo(2, 10);
-  });
-
-  it("never counts the agent's own death as a kill", () => {
-    const alive: Record<string, boolean> = { bot1: true };
-    const { game, agentId } = stubGame({ opponents: alive });
-    const reward = new Reward({
-      weights: { land: 0, troop: 0, gold: 0, win: 0, death: -3, kill: 2 },
-    });
-    reward.init(game, agentId);
-
-    expect(reward.step(game, agentId, "death")).toBeCloseTo(-3, 10);
-  });
-
-  it("pays nothing for kills under default weights", () => {
-    const alive: Record<string, boolean> = { bot1: true };
-    const { game, agentId } = stubGame({ opponents: alive });
-    const reward = new Reward();
-    reward.init(game, agentId);
-
-    // Old 5-value configs behave exactly as before: eliminations pass
-    // through silently until a sweep opts into the bonus.
-    alive.bot1 = false;
-    expect(reward.step(game, agentId, null)).toBeCloseTo(0, 10);
-  });
-
-  it("lets land follow into landEarly unless overridden", () => {
-    // Backward compat: pre-phase configs price land without naming the
-    // early price, and the early game must honor it.
-    const stub = stubGame({ opponents: {}, tiles: 0 });
-    const reward = new Reward({ weights: { land: 2 } });
-    reward.init(stub.game, stub.agentId);
-    stub.state.tiles = 10;
-    expect(reward.step(stub.game, stub.agentId, null)).toBeCloseTo(0.02, 10);
-  });
-
-  it("prices early land with landEarly and late land with land", () => {
-    const weights = {
-      land: 1, troop: 0, gold: 0, win: 0, death: 0, kill: 0,
-      landEarly: 3, landLoss: 1, city: 0, factory: 0,
-      troopHold: 0, survive: 0, rich: 0,
-    };
-    const early = stubGame({ opponents: {}, tiles: 0 });
-    const reward = new Reward({ weights });
-    reward.init(early.game, early.agentId);
-    early.state.tiles = 10;
-    expect(reward.step(early.game, early.agentId, null)).toBeCloseTo(3 * 0.01, 10);
-
-    const late = stubGame({ opponents: {}, tiles: 0, ticks: 5000 });
-    const rewardLate = new Reward({ weights });
-    // Phase counts from init: fast-forward past it, then gain land late.
-    late.state.ticks = 0;
-    rewardLate.init(late.game, late.agentId);
-    late.state.ticks = 5000;
-    late.state.tiles = 10;
-    expect(rewardLate.step(late.game, late.agentId, null)).toBeCloseTo(0.01, 10);
-  });
-
-  it("penalizes early land losses extra through landLoss", () => {
-    const stub = stubGame({ opponents: {}, tiles: 10 });
-    const reward = new Reward({
-      weights: {
-        land: 1, troop: 0, gold: 0, win: 0, death: 0, kill: 0,
-        landEarly: 2, landLoss: 2, city: 0, factory: 0,
-        troopHold: 0, survive: 0, rich: 0,
-      },
-    });
-    reward.init(stub.game, stub.agentId);
-    stub.state.tiles = 4;
-    expect(reward.step(stub.game, stub.agentId, null)).toBeCloseTo(-0.012, 10);
-  });
-
-  it("mutes negative troop deltas with troopLossScale but keeps gains", () => {
-    const weights = {
-      land: 0, troop: 0.1, gold: 0, win: 0, death: 0, kill: 0,
-      landEarly: 0, landLoss: 1, city: 0, factory: 0,
-      troopHold: 0, survive: 0, rich: 0,
-    };
-    // Symmetric default: spending 5000 of 10000 troops costs 0.005.
-    const sym = stubGame({ opponents: {}, troops: 10000 });
-    const symReward = new Reward({ weights });
-    symReward.init(sym.game, sym.agentId);
-    sym.state.troops = 5000;
-    expect(symReward.step(sym.game, sym.agentId, null)).toBeCloseTo(-0.005, 10);
-
-    // Muted: the same attack-like loss is free.
-    const muted = stubGame({ opponents: {}, troops: 10000 });
-    const mutedReward = new Reward({ weights, troopLossScale: 0 });
-    mutedReward.init(muted.game, muted.agentId);
-    muted.state.troops = 5000;
-    expect(mutedReward.step(muted.game, muted.agentId, null)).toBeCloseTo(0, 10);
-
-    // Gains still count in full under the mute.
-    const gain = stubGame({ opponents: {}, troops: 10000 });
-    const gainReward = new Reward({ weights, troopLossScale: 0 });
-    gainReward.init(gain.game, gain.agentId);
-    gain.state.troops = 20000;
-    expect(gainReward.step(gain.game, gain.agentId, null)).toBeCloseTo(0.01, 10);
-
-    expect(() => new Reward({ troopLossScale: 1.5 })).toThrow();
-  });
-
-  it("pays city and factory deltas only mid game", () => {
-    const weights = {
-      land: 0, troop: 0, gold: 0, win: 0, death: 0, kill: 0,
-      landEarly: 0, landLoss: 1, city: 0.5, factory: 0.5,
-      troopHold: 0, survive: 0, rich: 0,
-    };
-    const mid = stubGame({ opponents: {} });
-    const reward = new Reward({ weights });
-    reward.init(mid.game, mid.agentId);
-    mid.state.ticks = 1000;
-    mid.state.cities = 1;
-    mid.state.factories = 1;
-    expect(reward.step(mid.game, mid.agentId, null)).toBeCloseTo(1.0, 10);
-
-    const early = stubGame({ opponents: {} });
-    const rewardEarly = new Reward({ weights });
-    rewardEarly.init(early.game, early.agentId);
-    early.state.cities = 2;
-    expect(rewardEarly.step(early.game, early.agentId, null)).toBeCloseTo(0, 10);
-  });
-
-  it("pays holding troops above 30 percent of peak mid game", () => {
-    const weights = {
-      land: 0, troop: 0, gold: 0, win: 0, death: 0, kill: 0,
-      landEarly: 0, landLoss: 1, city: 0, factory: 0,
-      troopHold: 0.3, survive: 0, rich: 0,
-    };
-    const stub = stubGame({ opponents: {}, troops: 10000 });
-    const reward = new Reward({ weights });
-    reward.init(stub.game, stub.agentId);
-    stub.state.ticks = 1000;
-    stub.state.troops = 2000;
-    // Floor is 3000; hold falls 1 -> 2/3.
-    expect(reward.step(stub.game, stub.agentId, null)).toBeCloseTo(
-      0.3 * (2000 / 3000 - 1), 10,
-    );
-  });
-
-  it("pays the survival trickle only late while alive", () => {    const weights = {
-      land: 0, troop: 0, gold: 0, win: 0, death: 0, kill: 0,
-      landEarly: 0, landLoss: 1, city: 0, factory: 0,
-      troopHold: 0, survive: 0.0002, rich: 0,
-    };
-    const late = stubGame({ opponents: {} });
-    const reward = new Reward({ weights });
-    reward.init(late.game, late.agentId);
-    late.state.ticks = 5000;
-    expect(reward.step(late.game, late.agentId, null)).toBeCloseTo(0.0002, 10);
-
-    const early = stubGame({ opponents: {} });
-    const rewardEarly = new Reward({ weights });
-    rewardEarly.init(early.game, early.agentId);
-    expect(rewardEarly.step(early.game, early.agentId, null)).toBeCloseTo(0, 10);
-  });
-
-  it("pays approaching MIRV affordability late, capped at full", () => {
-    const weights = {
-      land: 0, troop: 0, gold: 0, win: 0, death: 0, kill: 0,
-      landEarly: 0, landLoss: 1, city: 0, factory: 0,
-      troopHold: 0, survive: 0, rich: 0.5,
-    };
-    const stub = stubGame({ opponents: {}, gold: 0n, mirvCost: 10_000_000 });
-    const reward = new Reward({ weights });
-    reward.init(stub.game, stub.agentId);
-    stub.state.ticks = 5000;
-    stub.state.gold = 5_000_000n;
-    expect(reward.step(stub.game, stub.agentId, null)).toBeCloseTo(0.25, 10);
-    stub.state.gold = 50_000_000n;
-    expect(reward.step(stub.game, stub.agentId, null)).toBeCloseTo(0.25, 10);
+  it("pays the boat terms", () => {
+    const g = fakeGame([{ id: "a", tiles: 100, alive: true, structures: [] }]);
+    const r = new Reward({ survive: 0, lowTroops: 0, income: 0 });
+    r.init(g, "a");
+    expect(r.step(g, "a", null, { ...NO_EVENTS, boatsLaunched: 1, boatsLanded: 1 })).toBeCloseTo(0.25);
   });
 });

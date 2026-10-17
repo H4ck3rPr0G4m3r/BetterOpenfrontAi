@@ -1,741 +1,424 @@
-import type {
-  Game,
-  Player,
-  PlayerBuildableUnitType,
-  PlayerID,
-} from "../../OpenFrontIO/src/core/game/Game";
-import { UnitType as UnitTypeEnum } from "../../OpenFrontIO/src/core/game/Game";
+import type { Game, Player, PlayerID } from "../../OpenFrontIO/src/core/game/Game";
+import { UnitType } from "../../OpenFrontIO/src/core/game/Game";
 import type { TileRef } from "../../OpenFrontIO/src/core/game/GameMap";
 import type { Intent } from "../../OpenFrontIO/src/core/Schemas";
+import { BehaviorConfig, NormalizedBehavior, normalizeBehavior } from "./BehaviorConfig";
+import { buildCandidates } from "./BuildSites";
+import { cellGeometry, cellRect } from "./Geometry";
 import {
-  letterboxTransform,
+  IntentType,
+  MAX_BUILD_SITES,
+  Masks,
+  NUKE_INTENTS,
+  NUM_INTENTS,
+  NUM_RATIO_BUCKETS,
+  NUM_SLOTS,
   RASTER_CELLS,
-  RASTER_HEIGHT,
-  RASTER_WIDTH,
-} from "./ObservationEncoder";
+  RATIO_BUCKETS,
+  siteRow,
+  spatialRow,
+  targetRow,
+} from "./Layout";
 import { assignTargetSlots, borderingSmallIDs, slotPlayer } from "./TargetSlots";
-import type { Action, ActionCodec, MaskBuffers } from "./types";
-import {
-  BehaviorConfig,
-  NormalizedBehavior,
-  normalizeBehavior,
-} from "./BehaviorConfig";
+import type { Action } from "./types";
 
-/**
- * The five action heads (spec §5.4), with exact sizes. Head values index
- * these in order; IntentType's order is the head's order.
- */
-export enum IntentType {
-  Noop = 0,
-  Attack = 1,
-  Boat = 2,
-  BuildUnit = 3,
-  UpgradeStructure = 4,
-  MoveWarship = 5,
-  TargetPlayer = 6,
-  AllianceRequest = 7,
-  AllianceReject = 8,
-  BreakAlliance = 9,
-  Embargo = 10,
-  DonateGold = 11,
-  DonateTroops = 12,
-  CancelAttack = 13,
-}
-export const NUM_INTENT_TYPES = 14;
-
-export const NUM_TARGET_SLOTS = 17; // slot 0 = terra nullius, 1-16 = players
-
-/** Troop/gold fraction per ratio bucket: 5/10/20/30/50/70/90/100%. */
-export const RATIO_BUCKETS = [0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 0.9, 1.0];
-export const NUM_RATIO_BUCKETS = RATIO_BUCKETS.length;
-
-export const NUM_SPATIAL_CELLS = RASTER_CELLS; // 128x64, shared with encoder
-
-/** Bounded build-site candidate list (spec §11.1: dense masking rejected). */
-export const MAX_BUILD_SITES = 32;
-
-/**
- * Unit types competing for build-site slots. Structures plus Warship — the
- * economy and coastal-defense game. Nukes (Atom/Hydrogen/MIRV) are cheap to
- * query but need silos and late-game gold; TransportShip is covered by the
- * boat intent instead. Deliberate v1 scope cut, not an oversight.
- */
-export const BUILD_CANDIDATE_TYPES: PlayerBuildableUnitType[] = [
-  UnitTypeEnum.City,
-  UnitTypeEnum.DefensePost,
-  UnitTypeEnum.Port,
-  UnitTypeEnum.SAMLauncher,
-  UnitTypeEnum.MissileSilo,
-  UnitTypeEnum.Factory,
-  UnitTypeEnum.Warship,
-];
-/** How many (rotated) types each candidate site contributes. */
-const TYPES_PER_SITE = 3;
-export function createMaskBuffers(): MaskBuffers {
-  return {
-    intentType: new Uint8Array(NUM_INTENT_TYPES),
-    target: new Uint8Array(NUM_TARGET_SLOTS),
-    ratioBucket: new Uint8Array(NUM_RATIO_BUCKETS),
-    spatialCell: new Uint8Array(NUM_SPATIAL_CELLS),
-    buildSite: new Uint8Array(MAX_BUILD_SITES),
-  };
-}
-
-/** How many build-site slots are populated for this state (≤ MAX_BUILD_SITES). */
-export function countBuildCandidates(game: Game, playerID: PlayerID): number {
-  return buildCandidates(buildContext(game, playerID)).length;
-}
-
-export interface BuildCandidate {
-  tile: TileRef;
-  type: PlayerBuildableUnitType;
-}
-
-interface CodecContext {
+interface Context {
   game: Game;
   agent: Player;
   agentID: PlayerID;
-  /** Neighboring smallIDs including 0 (unowned land). */
+  /** Neighbouring smallIDs; 0 means unowned land touches our border. */
   bordering: Set<number>;
   slots: (Player | null)[];
   bySmallID: Map<number, Player>;
 }
 
-function buildContext(game: Game, playerID: PlayerID): CodecContext {
+function context(game: Game, playerID: PlayerID): Context {
   const agent = game.player(playerID);
   const bordering = borderingSmallIDs(game, agent);
-  const slots = assignTargetSlots(game, agent, bordering);
   const bySmallID = new Map<number, Player>();
   for (const p of game.players()) bySmallID.set(p.smallID(), p);
-  return { game, agent, agentID: playerID, bordering, slots, bySmallID };
+  return { game, agent, agentID: playerID, bordering, slots: assignTargetSlots(game, agent, bordering), bySmallID };
 }
 
-function checkAction(action: Action): void {
-  if (action.intentType < 0 || action.intentType >= NUM_INTENT_TYPES) {
-    throw new RangeError(`intentType ${action.intentType} out of range`);
-  }
-  if (action.target < 0 || action.target >= NUM_TARGET_SLOTS) {
-    throw new RangeError(`target ${action.target} out of range`);
-  }
-  if (action.ratioBucket < 0 || action.ratioBucket >= NUM_RATIO_BUCKETS) {
-    throw new RangeError(`ratioBucket ${action.ratioBucket} out of range`);
-  }
-  if (action.spatialCell < 0 || action.spatialCell >= NUM_SPATIAL_CELLS) {
-    throw new RangeError(`spatialCell ${action.spatialCell} out of range`);
-  }
-  if (action.buildSite < 0 || action.buildSite >= MAX_BUILD_SITES) {
-    throw new RangeError(`buildSite ${action.buildSite} out of range`);
-  }
-}
+/** Intents whose target head picks a player slot. */
+const TARGETED_INTENTS = [
+  IntentType.Attack,
+  IntentType.TargetPlayer,
+  IntentType.AllianceRequest,
+  IntentType.AllianceReject,
+  IntentType.BreakAlliance,
+  IntentType.Embargo,
+  IntentType.DonateGold,
+  IntentType.DonateTroops,
+];
 
-function checkMaskBuffers(out: MaskBuffers): void {
-  if (out.intentType.length !== NUM_INTENT_TYPES) {
-    throw new Error(`intentType mask must have length ${NUM_INTENT_TYPES}`);
-  }
-  if (out.target.length !== NUM_TARGET_SLOTS) {
-    throw new Error(`target mask must have length ${NUM_TARGET_SLOTS}`);
-  }
-  if (out.ratioBucket.length !== NUM_RATIO_BUCKETS) {
-    throw new Error(`ratioBucket mask must have length ${NUM_RATIO_BUCKETS}`);
-  }
-  if (out.spatialCell.length !== NUM_SPATIAL_CELLS) {
-    throw new Error(`spatialCell mask must have length ${NUM_SPATIAL_CELLS}`);
-  }
-  if (out.buildSite.length !== MAX_BUILD_SITES) {
-    throw new Error(`buildSite mask must have length ${MAX_BUILD_SITES}`);
+function checkAction(a: Action): void {
+  const ranges: [keyof Action, number][] = [
+    ["intentType", NUM_INTENTS],
+    ["target", NUM_SLOTS],
+    ["ratioBucket", NUM_RATIO_BUCKETS],
+    ["spatialCell", RASTER_CELLS],
+    ["buildSite", MAX_BUILD_SITES],
+  ];
+  for (const [key, size] of ranges) {
+    const v = a[key];
+    if (!Number.isInteger(v) || v < 0 || v >= size) throw new RangeError(`${key} ${v} out of range`);
   }
 }
 
 /**
- * Bounded build-site candidates (spec §5.4/§11.1): spread-sampled border
- * tiles plus a few interior sites, each contributing TYPES_PER_SITE rotated
- * unit types, truncated to MAX_BUILD_SITES. Deterministic — sorted numerics
- * throughout — so the same game state always yields the same slots.
- */
-export function buildCandidates(ctx: CodecContext): BuildCandidate[] {
-  const border = [...ctx.agent.borderTiles()].sort((a, b) => a - b);
-  const maxBorderSites = 10;
-  const borderSites: TileRef[] = [];
-  if (border.length > 0) {
-    const stride = Math.max(1, Math.floor(border.length / maxBorderSites));
-    for (let i = 0; i < border.length && borderSites.length < maxBorderSites; i += stride) {
-      borderSites.push(border[i]);
-    }
-  }
-
-  // A few interior sites for structures that want depth. One strided pass
-  // over owned tiles, no per-tile engine calls.
-  const interiorSites: TileRef[] = [];
-  const owned = ctx.agent.numTilesOwned();
-  if (owned > border.length) {
-    const borderSet = new Set<TileRef>(border);
-    const step = Math.max(1, Math.floor(owned / 4));
-    let i = 0;
-    for (const tile of ctx.agent.tiles()) {
-      if (!borderSet.has(tile) && i++ % step === 0) {
-        interiorSites.push(tile);
-        if (interiorSites.length >= 4) break;
-      }
-    }
-    interiorSites.sort((a, b) => a - b);
-  }
-
-  const sites = [...borderSites, ...interiorSites];
-  const candidates: BuildCandidate[] = [];
-  const nTypes = BUILD_CANDIDATE_TYPES.length;
-  for (let s = 0; s < sites.length && candidates.length < MAX_BUILD_SITES; s++) {
-    for (let j = 0; j < TYPES_PER_SITE && candidates.length < MAX_BUILD_SITES; j++) {
-      candidates.push({ tile: sites[s], type: BUILD_CANDIDATE_TYPES[(s + j) % nTypes] });
-    }
-  }
-  return candidates;
-}
-
-interface CellRect {
-  x0: number;
-  x1: number; // exclusive
-  y0: number;
-  y1: number; // exclusive
-}
-
-function cellRect(cell: number, w: number, h: number): CellRect {
-  const cx = cell % RASTER_WIDTH;
-  const cy = Math.floor(cell / RASTER_WIDTH);
-  const { scale, offsetX, offsetY } = letterboxTransform(w, h);
-  return {
-    x0: Math.max(0, Math.floor((cx - offsetX) * scale)),
-    x1: Math.min(w, Math.ceil((cx - offsetX + 1) * scale)),
-    y0: Math.max(0, Math.floor((cy - offsetY) * scale)),
-    y1: Math.min(h, Math.ceil((cy - offsetY + 1) * scale)),
-  };
-}
-
-/** Representative tile at a cell's centre, always a valid ref. Exported: tests
- *  and the policy use the same sampling the codec resolves from. */
-export function cellCenterTile(cell: number, w: number, h: number): TileRef {
-  const cx = cell % RASTER_WIDTH;
-  const cy = Math.floor(cell / RASTER_WIDTH);
-  const { scale, offsetX, offsetY } = letterboxTransform(w, h);
-  const x = Math.min(w - 1, Math.max(0, Math.floor((cx - offsetX + 0.5) * scale)));
-  const y = Math.min(h - 1, Math.max(0, Math.floor((cy - offsetY + 0.5) * scale)));
-  return y * w + x;
-}
-
-/** True when the cell's centre falls outside the map — letterbox padding. Exported: the policy must ignore these cells too. */
-export function isPaddingCell(cell: number, w: number, h: number): boolean {
-  const cx = cell % RASTER_WIDTH;
-  const cy = Math.floor(cell / RASTER_WIDTH);
-  const { scale, offsetX, offsetY } = letterboxTransform(w, h);
-  const x = (cx - offsetX + 0.5) * scale;
-  const y = (cy - offsetY + 0.5) * scale;
-  return x < 0 || x >= w || y < 0 || y >= h;
-}
-
-/**
- * Resolve a spatial cell to a concrete boat destination: enemy-owned land
- * first, then unowned land, else the cell centre. A bounded scan of one
- * cell's tiles (~250 on World), not a map-wide search.
- */
-function resolveBoatDst(ctx: CodecContext, cell: number): TileRef {
-  const map = ctx.game.map();
-  const w = map.width();
-  const h = map.height();
-  const r = cellRect(cell, w, h);
-  let fallback = cellCenterTile(cell, w, h);
-  let unownedFallback: TileRef | null = null;
-  for (let y = r.y0; y < r.y1; y++) {
-    for (let x = r.x0; x < r.x1; x++) {
-      const tile = y * w + x;
-      if (!map.isLand(tile) || map.isImpassable(tile)) continue;
-      const owner = map.ownerID(tile);
-      if (owner === ctx.agent.smallID()) continue;
-      if (owner === 0) {
-        unownedFallback ??= tile;
-        continue;
-      }
-      return tile;
-    }
-  }
-  return unownedFallback ?? fallback;
-}
-
-/** Resolve a spatial cell to a warship patrol tile: water first, else centre. */
-function resolveWaterDst(ctx: CodecContext, cell: number): TileRef {
-  const map = ctx.game.map();
-  const w = map.width();
-  const h = map.height();
-  const r = cellRect(cell, w, h);
-  for (let y = r.y0; y < r.y1; y++) {
-    for (let x = r.x0; x < r.x1; x++) {
-      const tile = y * w + x;
-      if (!map.isLand(tile)) return tile;
-    }
-  }
-  return cellCenterTile(cell, w, h);
-}
-
-/** Exact bigint math for the gold fraction — gold exceeds float precision. */
-function goldFraction(gold: bigint, ratio: number): bigint {
-  return (gold * BigInt(Math.round(ratio * 100))) / 100n;
-}
-
-/**
- * Decode a five-head action into engine intents (spec §5.4).
+ * Action codec, schema v2: intent-conditioned masks plus strict decoding.
  *
- * Contract: out-of-range head values throw (caller bug, fail fast), but an
- * in-range combination that is illegal in the current state returns [] — the
- * factorized heads cannot express every cross-head condition in the marginal
- * masks, so decode re-validates the specific combination and drops it rather
- * than emitting an intent the engine would no-op or, worse, half-execute
- * (attacking an ally embargoes them before the execution deactivates — that
- * must never fire from a masked-out combo).
+ * masks() writes, per intent, exactly which target slots / cells / sites
+ * that intent can use (Layout.ts). The policy samples the intent first and
+ * then each head with that intent's row, so a sampled action is legal by
+ * construction and decode() never needs to guess. v1 used marginal masks
+ * and "retargeted" any invalid attack onto the first attackable slot —
+ * which, by slot order, is the largest bordering neighbour. Random and
+ * early policies were systematically picking fights with the strongest
+ * player next door (and every attack on a nation costs -70 relation).
+ * That fallback is gone: an invalid combination decodes to [].
+ *
+ * Boat landings are the one approximate mask (a cell probe, not a
+ * pathfind); decode() runs the engine's exact launch check.
  */
-export class ActionCodecImpl implements ActionCodec {
+export class ActionCodecImpl {
   private readonly behavior: NormalizedBehavior;
 
   constructor(behavior?: BehaviorConfig) {
     this.behavior = normalizeBehavior(behavior);
   }
 
-  /**
-   * Bounded candidates minus disabled build types. Both masks() and
-   * decodeBuild() go through here so site-slot indices always agree.
-   */
-  private candidates(ctx: CodecContext): BuildCandidate[] {
-    const disabled = this.behavior.disabledBuilds;
-    if (disabled.size === 0) return buildCandidates(ctx);
-    return buildCandidates(ctx).filter((c) => !disabled.has(c.type as string));
-  }
-
   decode(action: Action, game: Game, playerID: PlayerID): Intent[] {
     checkAction(action);
-    if (action.intentType === IntentType.Noop) return [];
-    // Disabled intents never fire, even if an unmasked caller submits one.
-    if (this.behavior.disabledIntents.has(action.intentType)) return [];
-
-    const ctx = buildContext(game, playerID);
-    // The episode is over; nothing below can legally progress it.
+    const intent = action.intentType;
+    if (intent === IntentType.Noop || this.behavior.disabledIntents.has(intent)) return [];
+    const ctx = context(game, playerID);
     if (!ctx.agent.isAlive()) return [];
     const intents = this.decodeInner(action, ctx);
-    // Identity stamping: the engine resolves every intent's acting player
-    // through playerByClientID (ExecutionManager.createExec). An intent
-    // without a clientID resolves to nobody and silently becomes a noop —
-    // every action the policy ever took was dropped this way before this
-    // line existed (see phase-8 replay investigation). A human seat always
-    // carries one; anything else is a caller bug, fail fast.
+    // The engine resolves the acting player through the intent's clientID;
+    // an unstamped intent silently does nothing.
     const clientID = ctx.agent.clientID();
-    if (clientID === null) {
-      throw new Error("decode() needs a seated human player with a clientID");
-    }
-    return intents.map((intent) => ({ ...intent, clientID }));
+    if (clientID === null) throw new Error("decode() needs a seated human player with a clientID");
+    return intents.map((i) => ({ ...i, clientID }));
   }
 
-  private decodeInner(
-    action: Action,
-    ctx: CodecContext,
-  ): Intent[] {
+  private decodeInner(action: Action, ctx: Context): Intent[] {
     const ratio = RATIO_BUCKETS[action.ratioBucket];
-
-    switch (action.intentType) {
-      case IntentType.Attack:
-        return this.decodeAttack(ctx, action, ratio);
+    const intent = action.intentType;
+    if ((intent === IntentType.Attack || intent === IntentType.Boat) && !this.ratioOpen(ctx.game, ctx.agent, action.ratioBucket)) {
+      return [];
+    }
+    switch (intent) {
       case IntentType.Boat:
-        return this.decodeBoat(ctx, action, ratio);
+        return this.decodeBoat(ctx, action.spatialCell, ratio);
       case IntentType.BuildUnit:
-        return this.decodeBuild(ctx, action, false);
       case IntentType.UpgradeStructure:
-        return this.decodeBuild(ctx, action, true);
+        return this.decodeBuild(ctx, action.buildSite, intent === IntentType.UpgradeStructure);
       case IntentType.MoveWarship:
-        return this.decodeMoveWarship(ctx, action);
-      case IntentType.TargetPlayer:
-        return this.decodeTargetPlayer(ctx, action);
-      case IntentType.AllianceRequest:
-        return this.decodeDiplomacy(ctx, action, "allianceRequest");
-      case IntentType.AllianceReject:
-        return this.decodeDiplomacy(ctx, action, "allianceReject");
-      case IntentType.BreakAlliance:
-        return this.decodeDiplomacy(ctx, action, "breakAlliance");
-      case IntentType.Embargo:
-        return this.decodeDiplomacy(ctx, action, "embargo");
-      case IntentType.DonateGold:
-        return this.decodeDiplomacy(ctx, action, "donateGold", ratio);
-      case IntentType.DonateTroops:
-        return this.decodeDiplomacy(ctx, action, "donateTroops", ratio);
-      case IntentType.CancelAttack:
-        return this.decodeCancelAttack(ctx);
+        return this.decodeMoveWarship(ctx, action.spatialCell);
+      case IntentType.NukeAtom:
+      case IntentType.NukeHydrogen:
+      case IntentType.NukeMIRV:
+        return this.decodeNuke(ctx, NUKE_INTENTS.get(intent)! as UnitType, action.spatialCell);
+      case IntentType.CancelAttack: {
+        const attacks = ctx.agent.outgoingAttacks();
+        return attacks.length > 0 ? [{ type: "cancel_attack", attackID: attacks[0].id() } as Intent] : [];
+      }
       default:
-        throw new RangeError(`unknown intentType ${action.intentType}`);
+        break;
+    }
+    if (!TARGETED_INTENTS.includes(intent)) throw new RangeError(`unknown intent ${intent}`);
+    if (!this.targetValid(ctx, intent, action.target, ratio)) return [];
+    const target = action.target === 0 ? null : slotPlayer(ctx.slots, ctx.agentID, ctx.game, action.target);
+    switch (intent) {
+      case IntentType.Attack:
+        return [{ type: "attack", targetID: target?.id() ?? null, troops: ratio * ctx.agent.troops() } as Intent];
+      case IntentType.TargetPlayer:
+        return [{ type: "targetPlayer", target: target!.id() } as Intent];
+      case IntentType.AllianceRequest:
+        return [{ type: "allianceRequest", recipient: target!.id() } as Intent];
+      case IntentType.AllianceReject:
+        return [{ type: "allianceReject", requestor: target!.id() } as Intent];
+      case IntentType.BreakAlliance:
+        return [{ type: "breakAlliance", recipient: target!.id() } as Intent];
+      case IntentType.Embargo: {
+        const toggle = ctx.agent.hasEmbargoAgainst(target!) ? "stop" : "start";
+        return [{ type: "embargo", targetID: target!.id(), action: toggle } as Intent];
+      }
+      case IntentType.DonateGold:
+        return [{ type: "donate_gold", recipient: target!.id(), gold: Number(goldFraction(ctx.agent.gold(), ratio)) } as Intent];
+      case IntentType.DonateTroops:
+        return [{ type: "donate_troops", recipient: target!.id(), troops: ratio * ctx.agent.troops() } as Intent];
+      default:
+        return [];
     }
   }
 
-  private decodeAttack(ctx: CodecContext, action: Action, ratio: number): Intent[] {
-    const troops = ratio * ctx.agent.troops();
-    if (troops <= 0) return [];
-    const strike = (targetID: string | null): Intent[] =>
-      [{ type: "attack", targetID, troops } as Intent];
-    if (action.target === 0) {
-      // Terra nullius: expand into adjacent unowned land (spec §2.4/§2.7).
-      if (!ctx.bordering.has(0)) return [];
-      return strike(null);
+  /** Whether `intent` can legally use target `slot` in this state. */
+  private targetValid(ctx: Context, intent: number, slot: number, ratio = 1): boolean {
+    const agent = ctx.agent;
+    if (slot === 0) {
+      return intent === IntentType.Attack && agent.troops() > 0 && ctx.bordering.has(0);
     }
-    // Fallback retarget: the target head is shared across intents, so the
-    // sampled slot is often wrong for attacks specifically (86% of sampled
-    // attacks voided pre-fallback). Prefer the requested slot, then the
-    // first attackable one in slot order, then expansion. Guarded here, not
-    // just in the mask: attacking an ally still embargoes them and rejects
-    // alliance requests before the execution stands down, so allies never
-    // fire — canAttackPlayer excludes them from candidates too.
-    const attackable = (t: Player): boolean =>
-      ctx.agent.canAttackPlayer(t) && ctx.agent.sharesBorderWith(t);
-    const target = this.resolveTarget(ctx, action, attackable);
-    if (target !== null) return strike(target.id());
-    if (ctx.bordering.has(0)) return strike(null);
-    return [];
+    const p = slotPlayer(ctx.slots, ctx.agentID, ctx.game, slot);
+    if (p === null) return false;
+    switch (intent) {
+      case IntentType.Attack:
+        return agent.troops() > 0 && ctx.bordering.has(p.smallID()) && agent.canAttackPlayer(p);
+      case IntentType.TargetPlayer:
+        return agent.canTarget(p);
+      case IntentType.AllianceRequest:
+        return agent.canSendAllianceRequest(p);
+      case IntentType.AllianceReject:
+        return agent.incomingAllianceRequests().some((r) => r.requestor() === p);
+      case IntentType.BreakAlliance:
+        return agent.allianceWith(p) !== null;
+      case IntentType.Embargo:
+        return true;
+      case IntentType.DonateGold:
+        return agent.canDonateGold(p) && goldFraction(agent.gold(), ratio) > 0n;
+      case IntentType.DonateTroops:
+        return agent.canDonateTroops(p) && agent.troops() > 0;
+      default:
+        return false;
+    }
   }
 
-  private decodeBoat(ctx: CodecContext, action: Action, ratio: number): Intent[] {
+  private decodeBoat(ctx: Context, cell: number, ratio: number): Intent[] {
     const troops = ratio * ctx.agent.troops();
     if (troops <= 0) return [];
-    const dst = resolveBoatDst(ctx, action.spatialCell);
+    const dst = resolveBoatDst(ctx, cell);
     const map = ctx.game.map();
-    if (!map.isLand(dst) || map.isImpassable(dst)) return [];
-    const ownerID = map.ownerID(dst);
-    if (ownerID === ctx.agent.smallID()) return [];
-    if (ownerID !== 0) {
-      const owner = ctx.bySmallID.get(ownerID);
-      if (owner === undefined || !ctx.agent.canAttackPlayer(owner)) return [];
+    if (dst < 0 || !map.isLand(dst) || map.isImpassable(dst)) return [];
+    const owner = map.ownerID(dst);
+    if (owner === ctx.agent.smallID()) return [];
+    if (owner !== 0) {
+      const p = ctx.bySmallID.get(owner);
+      if (p === undefined || !ctx.agent.canAttackPlayer(p)) return [];
     }
-    // The exact predicate TransportShipExecution.init uses to stand down —
-    // covers the boat cap, gold, and shore reachability in one call.
-    if (ctx.agent.canBuild(UnitTypeEnum.TransportShip, dst) === false) return [];
+    // Same predicate TransportShipExecution uses: boat cap, gold, reachability.
+    if (ctx.agent.canBuild(UnitType.TransportShip, dst) === false) return [];
     return [{ type: "boat", troops, dst } as Intent];
   }
 
-  private decodeBuild(ctx: CodecContext, action: Action, upgrade: boolean): Intent[] {
-    const candidates = this.candidates(ctx);
-    if (action.buildSite >= candidates.length) return [];
-    const candidate = candidates[action.buildSite];
-    const query = ctx.agent.buildableUnits(candidate.tile, [candidate.type])[0];
+  private decodeBuild(ctx: Context, site: number, upgrade: boolean): Intent[] {
+    const candidates = buildCandidates(ctx.game, ctx.agent);
+    if (site >= candidates.length) return [];
+    const c = candidates[site];
+    if (this.behavior.disabledBuilds.has(c.type as string)) return [];
+    const q = ctx.agent.buildableUnits(c.tile, [c.type])[0];
     if (upgrade) {
-      if (query.canUpgrade === false) return [];
-      return [
-        { type: "upgrade_structure", unit: candidate.type, unitId: query.canUpgrade } as Intent,
-      ];
+      return q.canUpgrade === false ? [] : [{ type: "upgrade_structure", unit: c.type, unitId: q.canUpgrade } as Intent];
     }
-    // Send the engine-resolved spawn tile, not the candidate tile — the two
-    // differ when the resolver adjusts placement.
-    if (query.canBuild === false) return [];
-    return [{ type: "build_unit", unit: candidate.type, tile: query.canBuild } as Intent];
+    // The engine-resolved spawn tile, not the candidate tile.
+    return q.canBuild === false ? [] : [{ type: "build_unit", unit: c.type, tile: q.canBuild } as Intent];
   }
 
-  private decodeMoveWarship(ctx: CodecContext, action: Action): Intent[] {
-    const warships = ctx.agent.units(UnitTypeEnum.Warship).filter((u) => u.isActive());
+  private decodeMoveWarship(ctx: Context, cell: number): Intent[] {
+    const warships = ctx.agent.units(UnitType.Warship).filter((u) => u.isActive());
     if (warships.length === 0) return [];
-    const dst = resolveWaterDst(ctx, action.spatialCell);
+    const dst = resolveWaterDst(ctx, cell);
     const map = ctx.game.map();
-    if (dst < 0 || dst >= map.width() * map.height()) return [];
-    // Patrol tiles are water by definition. A land fallback would name ships
-    // that all silently ignore the order — a no-op intent decode must not
-    // emit, same contract as the attack guards above.
-    if (map.isLand(dst)) return [];
-    // Sail only the warships sharing the destination's water — others would
-    // silently ignore the order. When none match, send them all anyway: the
-    // schema needs a nonempty array and the execution skips mismatches.
+    if (dst < 0 || map.isLand(dst)) return [];
+    // Only ships sharing the destination's water can sail there.
     const component = ctx.game.getWaterComponent(dst);
-    const same =
-      component === null
-        ? []
-        : warships.filter((w) => ctx.game.hasWaterComponent(w.tile(), component));
-    const ids = (same.length > 0 ? same : warships).map((w) => w.id());
-    return [{ type: "move_warship", unitIds: ids, tile: dst } as Intent];
+    const same = component === null ? [] : warships.filter((w) => ctx.game.hasWaterComponent(w.tile(), component));
+    if (same.length === 0) return [];
+    return [{ type: "move_warship", unitIds: same.map((w) => w.id()), tile: dst } as Intent];
   }
 
-  /**
-   * Shared-slot fallback: the target head is occupancy-marginal across
-   * intents, so the sampled slot is often invalid for the sampled intent
-   * (86% of sampled attacks voided pre-fallback). Prefer the requested
-   * slot, then the first valid one in slot order. A sampled open intent
-   * therefore fires whenever ANY valid target exists — which the intent
-   * marginals already guarantee for break/reject/donate/request.
-   */
-  private resolveTarget(
-    ctx: CodecContext,
-    action: Action,
-    isValid: (target: Player) => boolean,
-  ): Player | null {
-    const direct = slotPlayer(ctx.slots, ctx.agentID, ctx.game, action.target);
-    if (direct !== null && isValid(direct)) return direct;
-    for (let i = 1; i < ctx.slots.length; i++) {
-      if (i === action.target) continue;
-      const candidate = slotPlayer(ctx.slots, ctx.agentID, ctx.game, i);
-      if (candidate !== null && isValid(candidate)) return candidate;
+  /** The target tile goes in the intent; the engine launches from the
+   *  closest ready silo itself (PlayerImpl.nukeSpawn). */
+  private decodeNuke(ctx: Context, type: UnitType, cell: number): Intent[] {
+    const dst = resolveNukeDst(ctx, cell);
+    if (dst < 0 || ctx.agent.canBuild(type, dst) === false) return [];
+    return [{ type: "build_unit", unit: type, tile: dst } as Intent];
+  }
+
+  masks(game: Game, playerID: PlayerID, out: Masks): void {
+    out.flat.fill(0);
+    out.intent[IntentType.Noop] = 1;
+    const ctx = context(game, playerID);
+    const agent = ctx.agent;
+    if (!agent.isAlive()) return;
+    const disabled = this.behavior.disabledIntents;
+    const open = (intent: number) => !disabled.has(intent);
+
+    // Target rows, one per targeted intent.
+    for (const intent of TARGETED_INTENTS) {
+      if (!open(intent)) continue;
+      const row = targetRow(out, intent);
+      let any = 0;
+      for (let slot = 0; slot < NUM_SLOTS; slot++) {
+        if (this.targetValid(ctx, intent, slot)) {
+          row[slot] = 1;
+          any = 1;
+        }
+      }
+      out.intent[intent] = any;
     }
-    return null;
-  }
+    for (let b = 0; b < NUM_RATIO_BUCKETS; b++) out.ratio[b] = this.ratioOpen(game, agent, b) ? 1 : 0;
 
-  private decodeTargetPlayer(ctx: CodecContext, action: Action): Intent[] {
-    const target = this.resolveTarget(
-      ctx,
-      action,
-      (t) => ctx.agent.canTarget(t),
-    );
-    if (target === null) return [];
-    return [{ type: "targetPlayer", target: target.id() } as Intent];
-  }
-
-  private decodeDiplomacy(
-    ctx: CodecContext,
-    action: Action,
-    kind: "allianceRequest" | "allianceReject" | "breakAlliance" | "embargo" | "donateGold" | "donateTroops",
-    ratio?: number,
-  ): Intent[] {
-    const valid = (target: Player): boolean => {
-      switch (kind) {
-        case "allianceRequest":
-          return ctx.agent.canSendAllianceRequest(target);
-        case "allianceReject":
-          return ctx.agent
-            .incomingAllianceRequests()
-            .some((r) => r.requestor() === target);
-        case "breakAlliance":
-          return ctx.agent.allianceWith(target) !== null;
-        case "embargo":
-          return true;
-        case "donateGold":
-          return (
-            ctx.agent.canDonateGold(target) &&
-            goldFraction(ctx.agent.gold(), ratio ?? 0) > 0n
-          );
-        case "donateTroops":
-          return (
-            ctx.agent.canDonateTroops(target) &&
-            (ratio ?? 0) * ctx.agent.troops() > 0
-          );
+    // Spatial rows: boat landings (row 0), warship water (row 1), nuke targets (row 2).
+    const map = game.map();
+    const geometry = cellGeometry(map.width(), map.height());
+    const boatRow = spatialRow(out, 0);
+    const waterRow = spatialRow(out, 1);
+    const nukeRow = spatialRow(out, 2);
+    const nukesOpen = [...NUKE_INTENTS.keys()].some(open);
+    let nukeProbe: TileRef = -1;
+    const hasWarships = agent.units(UnitType.Warship).some((u) => u.isActive());
+    const agentSmall = agent.smallID();
+    const boatProbes: TileRef[] = [];
+    for (let cell = 0; cell < RASTER_CELLS; cell++) {
+      const tile = geometry.centerTile[cell];
+      if (tile < 0) continue;
+      if (!map.isLand(tile)) {
+        if (hasWarships) waterRow[cell] = 1;
+        continue;
       }
-    };
-    // Every slot-taking intent resolves through fallback: a sampled open
-    // intent fires whenever ANY valid target exists. Embargo included: it
-    // toggles on any occupied slot, and firing on a live target beats
-    // voiding when the named slot went stale.
-    const target = this.resolveTarget(ctx, action, valid);
-    if (target === null) return [];
-    switch (kind) {
-      case "allianceRequest":
-        if (!ctx.agent.canSendAllianceRequest(target)) return [];
-        return [{ type: "allianceRequest", recipient: target.id() } as Intent];
-      case "allianceReject": {
-        const pending = ctx.agent
-          .incomingAllianceRequests()
-          .some((r) => r.requestor() === target);
-        if (!pending) return [];
-        return [{ type: "allianceReject", requestor: target.id() } as Intent];
+      if (map.isImpassable(tile)) continue;
+      const owner = map.ownerID(tile);
+      if (owner === agentSmall) continue;
+      if (owner !== 0) {
+        const p = ctx.bySmallID.get(owner);
+        if (nukesOpen && p !== undefined && isHostile(agent, p)) {
+          nukeRow[cell] = 1;
+          if (nukeProbe < 0) nukeProbe = tile;
+        }
+        if (p === undefined || !agent.canAttackPlayer(p)) continue;
       }
-      case "breakAlliance":
-        if (ctx.agent.allianceWith(target) === null) return [];
-        return [{ type: "breakAlliance", recipient: target.id() } as Intent];
-      case "embargo": {
-        const toggle = ctx.agent.hasEmbargoAgainst(target) ? "stop" : "start";
-        return [{ type: "embargo", targetID: target.id(), action: toggle } as Intent];
-      }
-      case "donateGold": {
-        if (!ctx.agent.canDonateGold(target)) return [];
-        const gold = goldFraction(ctx.agent.gold(), ratio ?? 0);
-        if (gold <= 0n) return [];
-        return [{ type: "donate_gold", recipient: target.id(), gold: Number(gold) } as Intent];
-      }
-      case "donateTroops": {
-        if (!ctx.agent.canDonateTroops(target)) return [];
-        const troops = (ratio ?? 0) * ctx.agent.troops();
-        if (troops <= 0) return [];
-        return [{ type: "donate_troops", recipient: target.id(), troops } as Intent];
-      }
+      boatRow[cell] = 1;
+      if (boatProbes.length < 8) boatProbes.push(tile);
     }
-  }
-
-  private decodeCancelAttack(ctx: CodecContext): Intent[] {
-    const attacks = ctx.agent.outgoingAttacks();
-    if (attacks.length === 0) return [];
-    return [{ type: "cancel_attack", attackID: attacks[0].id() } as Intent];
-  }
-
-  /**
-   * Per-head legality masks. Each head is marginal — a value is unmasked when
-   * SOME combination using it is legal — because masks() cannot see the other
-   * heads' selections. decode() re-validates the actual combination and
-   * retargets it onto the first legal target in slot order (falling back to
-   * expansion for attacks); only a combination with no legal target anywhere
-   * voids as []. An open intent therefore fires on nearly every step, which
-   * is what keeps the policy's actions connected to consequences.
-   */
-  masks(game: Game, playerID: PlayerID, out: MaskBuffers): void {
-    checkMaskBuffers(out);
-    const ctx = buildContext(game, playerID);
-    const alive = ctx.agent.isAlive();
-    const troops = ctx.agent.troops();
-
-    // Bordering players the agent can legally strike. Membership in the
-    // bordering set already implies a shared border — no per-player engine
-    // call needed for that half.
-    let anyBorderTarget = false;
-    for (const id of ctx.bordering) {
-      if (id === 0) continue;
-      const p = ctx.bySmallID.get(id);
-      if (p !== undefined && p.id() !== ctx.agentID && p.isAlive() && ctx.agent.canAttackPlayer(p)) {
-        anyBorderTarget = true;
-        break;
-      }
+    out.intent[IntentType.Boat] = open(IntentType.Boat) && this.boatUsable(ctx, boatProbes) ? 1 : 0;
+    if (out.intent[IntentType.Boat] === 0) boatRow.fill(0);
+    out.intent[IntentType.MoveWarship] = open(IntentType.MoveWarship) && hasWarships ? 1 : 0;
+    if (out.intent[IntentType.MoveWarship] === 0) waterRow.fill(0);
+    // A bomb is open when the engine would launch it at a hostile tile now:
+    // a ready silo, its price in gold, spawn immunity over (canBuild checks
+    // all of it). Every hostile cell is then a legal target.
+    let anyNuke = false;
+    for (const [intent, type] of NUKE_INTENTS) {
+      const ok = open(intent) && nukeProbe >= 0 && agent.canBuild(type as UnitType, nukeProbe) !== false;
+      out.intent[intent] = ok ? 1 : 0;
+      anyNuke ||= ok;
     }
-    const hasUnownedNeighbor = ctx.bordering.has(0);
+    if (!anyNuke) nukeRow.fill(0);
 
-    // Spatial pass first: the boat marginal needs to know a launchable cell
-    // exists, which this loop determines.
-    const boatTiles: TileRef[] = [];
-    this.maskSpatial(ctx, out.spatialCell, (tile) => {
-      if (boatTiles.length < 8) boatTiles.push(tile);
-    });
-
-    // Build pass: one single-type query per candidate; shared by the
-    // intent-type marginals and the build-site mask. Disabled build types
-    // are already excluded from the list, so the marginals agree with it.
-    const candidates = alive ? this.candidates(ctx) : [];
-    const buildable = new Array<boolean>(MAX_BUILD_SITES).fill(false);
-    const upgradeable = new Array<boolean>(MAX_BUILD_SITES).fill(false);
-    let anyBuildable = false;
-    let anyUpgradeable = false;
+    // Build sites: one single-type engine query per candidate.
+    const buildRow = siteRow(out, 0);
+    const upgradeRow = siteRow(out, 1);
+    const candidates = buildCandidates(game, agent);
     for (let i = 0; i < candidates.length; i++) {
       const c = candidates[i];
-      const q = ctx.agent.buildableUnits(c.tile, [c.type])[0];
-      if (q.canBuild !== false) {
-        buildable[i] = true;
-        anyBuildable = true;
-      }
-      if (q.canUpgrade !== false) {
-        upgradeable[i] = true;
-        anyUpgradeable = true;
-      }
+      if (this.behavior.disabledBuilds.has(c.type as string)) continue;
+      const q = agent.buildableUnits(c.tile, [c.type])[0];
+      if (q.canBuild !== false) buildRow[i] = 1;
+      if (q.canUpgrade !== false) upgradeRow[i] = 1;
     }
+    out.intent[IntentType.BuildUnit] = open(IntentType.BuildUnit) && buildRow.some((v) => v === 1) ? 1 : 0;
+    out.intent[IntentType.UpgradeStructure] = open(IntentType.UpgradeStructure) && upgradeRow.some((v) => v === 1) ? 1 : 0;
+    if (!out.intent[IntentType.BuildUnit]) buildRow.fill(0);
+    if (!out.intent[IntentType.UpgradeStructure]) upgradeRow.fill(0);
 
-    const occupied = ctx.slots
-      .map((p, i) => (i > 0 && p !== null ? p : null))
-      .filter((p): p is Player => p !== null);
-
-    const intent = out.intentType;
-    intent[IntentType.Noop] = 1;
-    intent[IntentType.Attack] =
-      alive && troops > 0 && (hasUnownedNeighbor || anyBorderTarget) ? 1 : 0;
-    intent[IntentType.Boat] = this.boatUsable(ctx, boatTiles) ? 1 : 0;
-    intent[IntentType.BuildUnit] = anyBuildable ? 1 : 0;
-    intent[IntentType.UpgradeStructure] = anyUpgradeable ? 1 : 0;
-    intent[IntentType.MoveWarship] =
-      alive && ctx.agent.units(UnitTypeEnum.Warship).some((u) => u.isActive()) ? 1 : 0;
-    intent[IntentType.TargetPlayer] = occupied.some((p) => ctx.agent.canTarget(p)) ? 1 : 0;
-    intent[IntentType.AllianceRequest] = occupied.some((p) =>
-      ctx.agent.canSendAllianceRequest(p),
-    )
-      ? 1
-      : 0;
-    intent[IntentType.AllianceReject] =
-      ctx.agent.incomingAllianceRequests().length > 0 ? 1 : 0;
-    intent[IntentType.BreakAlliance] = ctx.agent.alliances().length > 0 ? 1 : 0;
-    // Any occupied slot accepts at least an embargo toggle, so the target
-    // mask below is occupancy and this marginal matches it.
-    intent[IntentType.Embargo] = occupied.length > 0 ? 1 : 0;
-    intent[IntentType.DonateGold] = occupied.some((p) => ctx.agent.canDonateGold(p)) ? 1 : 0;
-    intent[IntentType.DonateTroops] = occupied.some((p) => ctx.agent.canDonateTroops(p))
-      ? 1
-      : 0;
-    intent[IntentType.CancelAttack] = ctx.agent.outgoingAttacks().length > 0 ? 1 : 0;
-    // Capability limits from the AI control UI: disabled intents stay shut
-    // no matter what the engine would allow. Noop is never in the set.
-    for (const disabled of this.behavior.disabledIntents) {
-      intent[disabled] = 0;
-    }
-
-    const target = out.target;
-    // Occupancy-only by design: disabling every target-consuming intent
-    // does not close slots, since the target head is don't-care for the
-    // intents that remain (noop ignores it).
-    target[0] = hasUnownedNeighbor ? 1 : 0;
-    for (let i = 1; i < NUM_TARGET_SLOTS; i++) {
-      target[i] = ctx.slots[i] !== null ? 1 : 0;
-    }
-
-    out.ratioBucket.fill(1);
-
-    const site = out.buildSite;
-    for (let i = 0; i < MAX_BUILD_SITES; i++) {
-      site[i] = i < candidates.length && (buildable[i] || upgradeable[i]) ? 1 : 0;
-    }
+    out.intent[IntentType.CancelAttack] = open(IntentType.CancelAttack) && agent.outgoingAttacks().length > 0 ? 1 : 0;
   }
 
   /**
-   * Boat marginal: troops to send, a boatable cell, launch capacity, and at
-   * least one probe tile the strict spawn query accepts. The spawn query
-   * only takes water/shore targets while the execution resolves inland
-   * targets through a shore BFS, so probes run shore-first and stop at the
-   * first pass — a bounded approximation, with decode's full `canBuild`
-   * check as the exact gate.
+   * Troop reserve: a ratio is open when sending that share of our troops
+   * still leaves `troopReserve` of max troops at home. The smallest bucket
+   * always stays open (it is the "probe" amount when we are already low).
    */
-  private boatUsable(ctx: CodecContext, boatTiles: TileRef[]): boolean {
-    if (!ctx.agent.isAlive() || ctx.agent.troops() <= 0 || boatTiles.length === 0) {
-      return false;
-    }
-    if (
-      ctx.agent.unitCount(UnitTypeEnum.TransportShip) >= ctx.game.config().boatMaxNumber()
-    ) {
-      return false;
-    }
-    const game = ctx.game;
-    const ordered = boatTiles
-      .filter((t) => game.isShore(t))
-      .concat(boatTiles.filter((t) => !game.isShore(t)));
-    for (const tile of ordered) {
-      if (ctx.agent.bestTransportShipSpawn(tile) !== false) return true;
-    }
-    return false;
+  private ratioOpen(game: Game, agent: Player, bucket: number): boolean {
+    const reserve = this.behavior.troopReserve;
+    if (bucket === 0 || reserve <= 0) return true;
+    const troops = agent.troops();
+    return troops * (1 - RATIO_BUCKETS[bucket]) >= reserve * game.config().maxTroops(agent);
   }
 
   /**
-   * Spatial-cell mask: land not owned by the agent (boat destinations) and
-   * water (warship patrol) stay open; own land, impassable terrain, and the
-   * letterbox padding stay shut. One cheap center-tile probe per cell —
-   * never a pathfinding query at this scale. Calls onBoatable once per
-   * boatable cell so the caller learns launchability without a second pass.
+   * Boat marginal: troops, launch capacity, and a probe tile the engine's
+   * spawn query accepts (shore probes first). Bounded approximation; decode
+   * runs the exact check.
    */
-  private maskSpatial(
-    ctx: CodecContext,
-    mask: Uint8Array,
-    onBoatable: (tile: TileRef) => void,
-  ): void {
-    const map = ctx.game.map();
-    const w = map.width();
-    const h = map.height();
-    const agentSmallID = ctx.agent.smallID();
-    for (let cell = 0; cell < NUM_SPATIAL_CELLS; cell++) {
-      if (isPaddingCell(cell, w, h)) {
-        mask[cell] = 0;
+  private boatUsable(ctx: Context, probes: TileRef[]): boolean {
+    const agent = ctx.agent;
+    if (agent.troops() <= 0 || probes.length === 0) return false;
+    if (agent.unitCount(UnitType.TransportShip) >= ctx.game.config().boatMaxNumber()) return false;
+    const ordered = probes.filter((t) => ctx.game.isShore(t)).concat(probes.filter((t) => !ctx.game.isShore(t)));
+    return ordered.some((t) => agent.bestTransportShipSpawn(t) !== false);
+  }
+}
+
+/** Exact bigint math for gold fractions (gold exceeds float precision). */
+function goldFraction(gold: bigint, ratio: number): bigint {
+  return (gold * BigInt(Math.round(ratio * 100))) / 100n;
+}
+
+/** Boat landing inside a cell: enemy land first, then unowned land. */
+function resolveBoatDst(ctx: Context, cell: number): TileRef {
+  const map = ctx.game.map();
+  const r = cellRect(cell, map.width(), map.height());
+  let unowned: TileRef = -1;
+  for (let y = r.y0; y < r.y1; y++) {
+    for (let x = r.x0; x < r.x1; x++) {
+      const tile = y * map.width() + x;
+      if (!map.isLand(tile) || map.isImpassable(tile)) continue;
+      const owner = map.ownerID(tile);
+      if (owner === ctx.agent.smallID()) continue;
+      if (owner === 0) {
+        if (unowned < 0) unowned = tile;
         continue;
       }
-      const tile = cellCenterTile(cell, w, h);
-      if (!map.isLand(tile)) {
-        mask[cell] = 1;
-        continue;
-      }
-      if (map.isImpassable(tile)) {
-        mask[cell] = 0;
-        continue;
-      }
-      const ownerID = map.ownerID(tile);
-      if (ownerID === agentSmallID || ownerID === 0) {
-        const open = ownerID === 0 ? 1 : 0;
-        mask[cell] = open;
-        if (open === 1) onBoatable(tile);
-        continue;
-      }
-      const owner = ctx.bySmallID.get(ownerID);
-      const open = owner !== undefined && ctx.agent.canAttackPlayer(owner) ? 1 : 0;
-      mask[cell] = open;
-      if (open === 1) onBoatable(tile);
+      return tile;
     }
   }
+  return unowned;
+}
+
+/** Not this player, not an ally or teammate: fair game for a nuke. */
+function isHostile(agent: Player, p: Player): boolean {
+  return p.smallID() !== agent.smallID() && !agent.isFriendly(p);
+}
+
+/** Nuke aim inside a cell: the hostile land tile closest to the cell's
+ *  centre, so the blast covers as much of the chosen cell as it can. */
+function resolveNukeDst(ctx: Context, cell: number): TileRef {
+  const map = ctx.game.map();
+  const r = cellRect(cell, map.width(), map.height());
+  const cx = (r.x0 + r.x1 - 1) / 2;
+  const cy = (r.y0 + r.y1 - 1) / 2;
+  let best: TileRef = -1;
+  let bestD = Infinity;
+  for (let y = r.y0; y < r.y1; y++) {
+    for (let x = r.x0; x < r.x1; x++) {
+      const tile = y * map.width() + x;
+      if (!map.isLand(tile) || map.isImpassable(tile)) continue;
+      const owner = map.ownerID(tile);
+      if (owner === 0) continue;
+      const p = ctx.bySmallID.get(owner);
+      if (p === undefined || !isHostile(ctx.agent, p)) continue;
+      const d = (x - cx) * (x - cx) + (y - cy) * (y - cy);
+      if (d < bestD) {
+        bestD = d;
+        best = tile;
+      }
+    }
+  }
+  return best;
+}
+
+/** Warship patrol tile inside a cell: its first water tile. */
+function resolveWaterDst(ctx: Context, cell: number): TileRef {
+  const map = ctx.game.map();
+  const r = cellRect(cell, map.width(), map.height());
+  for (let y = r.y0; y < r.y1; y++) {
+    for (let x = r.x0; x < r.x1; x++) {
+      const tile = y * map.width() + x;
+      if (!map.isLand(tile)) return tile;
+    }
+  }
+  return -1;
 }
