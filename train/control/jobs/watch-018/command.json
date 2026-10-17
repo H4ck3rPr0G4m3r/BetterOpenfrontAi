@@ -1,0 +1,6 @@
+[
+  "C:\\Program Files\\Python311\\python.exe",
+  "-u",
+  "watch_replay.py",
+  "replays\\main\\game5-MainRunV2-s1-u19-0-3_5-alive.json"
+]

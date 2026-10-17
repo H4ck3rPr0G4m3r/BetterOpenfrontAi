@@ -1,0 +1,28 @@
+[MainRunV3] device cuda, 763,551 params, stage 0, resuming at step 0
+[MainRunV3] upd 1 step 8,448 | return - survive - tiles - len - | vs pool - | kl 0.005 ev -0.00 | 359 sps
+[MainRunV3] upd 2 step 16,896 | return - survive - tiles - len - | vs pool - | kl 0.006 ev -0.01 | 283 sps
+[MainRunV3] upd 3 step 25,079 | return -3.06 survive 0.00 tiles 0 len 680 | vs pool - | kl 0.004 ev 0.05 | 211 sps
+[MainRunV3] upd 4 step 32,169 | return -4.07 survive 0.00 tiles 0 len 791 | vs pool - | kl 0.006 ev 0.29 | 153 sps
+[MainRunV3] upd 5 step 39,510 | return -2.68 survive 0.73 tiles 96994 len 1099 | vs pool - | kl 0.004 ev 0.78 | 163 sps
+[MainRunV3] upd 6 step 47,573 | return -2.59 survive 0.67 tiles 88911 len 1033 | vs pool - | kl 0.005 ev 0.60 | 307 sps
+[MainRunV3] upd 7 step 54,789 | return -2.30 survive 0.57 tiles 76210 len 952 | vs pool - | kl 0.005 ev 0.75 | 220 sps
+[MainRunV3] upd 8 step 60,781 | return -2.07 survive 0.52 tiles 69583 len 927 | vs pool - | kl 0.003 ev 0.83 | 164 sps
+[MainRunV3] upd 9 step 66,889 | return -1.11 survive 0.54 tiles 75189 len 937 | vs pool - | kl 0.005 ev 0.88 | 145 sps
+[MainRunV3] upd 10 step 74,374 | return 1.08 survive 0.63 tiles 85143 len 984 | vs pool - | kl 0.005 ev 0.88 | 238 sps
+[MainRunV3] upd 11 step 82,566 | return 1.04 survive 0.61 tiles 82711 len 971 | vs pool - | kl 0.005 ev 0.85 | 246 sps
+[MainRunV3] upd 12 step 90,137 | return 1.20 survive 0.59 tiles 82910 len 954 | vs pool - | kl 0.005 ev 0.81 | 167 sps
+[MainRunV3] upd 13 step 97,532 | return 1.30 survive 0.57 tiles 83452 len 940 | vs pool 0.00 | kl 0.006 ev 0.83 | 130 sps
+[MainRunV3] upd 14 step 104,364 | return 1.90 survive 0.56 tiles 83137 len 953 | vs pool 0.00 | kl 0.004 ev 0.78 | 139 sps
+[MainRunV3] upd 15 step 109,852 | return 4.29 survive 0.62 tiles 98074 len 980 | vs pool 0.00 | kl 0.005 ev 0.90 | 164 sps
+[MainRunV3] upd 16 step 114,966 | return 4.20 survive 0.60 tiles 96224 len 972 | vs pool 0.00 | kl 0.005 ev 0.91 | 121 sps
+[MainRunV3] upd 17 step 119,977 | return 4.35 survive 0.61 tiles 97588 len 975 | vs pool 0.50 | kl 0.003 ev 0.87 | 106 sps
+[MainRunV3] upd 18 step 124,716 | return 4.79 survive 0.59 tiles 102568 len 976 | vs pool 0.67 | kl 0.004 ev 0.90 | 95 sps
+[MainRunV3] upd 19 step 129,494 | return 5.18 survive 0.62 tiles 99529 len 990 | vs pool 0.67 | kl 0.005 ev 0.93 | 125 sps
+[MainRunV3] curriculum: survival 0.55 in ['close_rivals', 'crowded', 'selfplay_ffa', 'vs_bots'] over 100 episodes, promoted to stage 1
+[MainRunV3] upd 20 step 134,246 | return 4.72 survive 0.58 tiles 93542 len 938 | vs pool 0.67 | kl 0.003 ev 0.80 | 188 sps
+[MainRunV3] upd 21 step 138,816 | return 4.34 survive 0.54 tiles 87613 len 899 | vs pool 0.52 | kl 0.004 ev 0.88 | 154 sps
+[MainRunV3] upd 22 step 142,974 | return 3.90 survive 0.50 tiles 81314 len 861 | vs pool 0.48 | kl 0.003 ev 0.85 | 145 sps
+[MainRunV3] upd 23 step 147,253 | return 3.67 survive 0.48 tiles 76797 len 830 | vs pool 0.47 | kl 0.002 ev 0.87 | 172 sps
+[MainRunV3] upd 24 step 152,360 | return 3.88 survive 0.48 tiles 74611 len 827 | vs pool 0.51 | kl 0.002 ev 0.93 | 210 sps
+[MainRunV3] upd 25 step 156,607 | return 3.59 survive 0.45 tiles 70101 len 802 | vs pool 0.51 | kl 0.003 ev 0.92 | 171 sps
+[MainRunV3] upd 26 step 160,966 | return 3.47 survive 0.44 tiles 67864 len 791 | vs pool 0.56 | kl 0.003 ev 0.94 | 158 sps

@@ -1,0 +1,95 @@
+AI: selfplay_v3_latest -> http://localhost:9001 lobby PgTRgdaR
+opening http://localhost:9001/game/PgTRgdaR as 'OpenFrontAI'
+in the lobby, waiting for the game to start (answer any check in the browser window)
+game started (0 players)
+spawn at (1624, 174)
+t   325 tiles     52 troops    33042 | attack unowned land with 30% -> attack
+t   334 tiles    182 troops    26171 | attack unowned land with 5% -> attack
+t   352 tiles    485 troops    31587 | attack unowned land with 30% -> attack
+t   361 tiles    758 troops    25270 | attack unowned land with 10% -> attack
+t   398 tiles   1179 troops    37856 | attack unowned land with 5% -> attack
+t   425 tiles   1264 troops    49274 | attack unowned land with 5% -> attack
+t   434 tiles   1335 troops    51678 | cancel_attack -> cancel_attack
+t   443 tiles   1345 troops    56769 | attack unowned land with 50% -> attack
+t   452 tiles   1741 troops    32341 | cancel_attack -> cancel_attack
+t   461 tiles   1860 troops    36445 | attack unowned land with 20% -> attack
+t   470 tiles   2320 troops    33105 | cancel_attack -> cancel_attack
+t   479 tiles   2402 troops    36630 | attack unowned land with 5% -> attack
+t   533 tiles   2999 troops    62423 | attack unowned land with 5% -> attack
+t   542 tiles   3100 troops    64856 | attack unowned land with 5% -> attack
+t   551 tiles   3243 troops    67485 | attack unowned land with 5% -> attack
+t   570 tiles   3457 troops    77469 | attack unowned land with 5% -> attack
+t   579 tiles   3607 troops    80233 | cancel_attack -> cancel_attack
+t   588 tiles   3621 troops    87126 | attack unowned land with 5% -> attack
+t   652 tiles   3859 troops   137185 | attack unowned land with 20% -> attack
+t   679 tiles   5354 troops   134698 | attack unowned land with 50% -> attack
+t   688 tiles   6238 troops    74266 | attack unowned land with 5% -> attack
+t   706 tiles   8638 troops    84862 | attack unowned land with 10% -> attack
+t   715 tiles   9479 troops    83833 | attack unowned land with 5% -> attack
+t   724 tiles   9729 troops    87280 | attack unowned land with 20% -> attack
+t   742 tiles  10651 troops    84563 | attack unowned land with 5% -> attack
+t   751 tiles  10850 troops    88079 | cancel_attack -> cancel_attack
+t   770 tiles  10864 troops   105693 | attack unowned land with 10% -> attack
+t   824 tiles  11394 troops   151760 | attack unowned land with 5% -> attack
+t   833 tiles  11720 troops   154610 | attack unowned land with 5% -> attack
+t   860 tiles  12165 troops   179485 | attack unowned land with 50% -> attack
+t   869 tiles  12838 troops    98420 | attack unowned land with 5% -> attack
+t   878 tiles  13509 troops   102092 | attack unowned land with 5% -> attack
+t   887 tiles  14113 troops   105740 | attack unowned land with 5% -> attack
+t   897 tiles  14579 troops   109406 | attack unowned land with 30% -> attack
+t   906 tiles  14988 troops    85226 | attack unowned land with 5% -> attack
+t   924 tiles  15742 troops    97357 | cancel_attack -> cancel_attack
+t   933 tiles  15831 troops   106224 | attack unowned land with 5% -> attack
+t   942 tiles  16213 troops   109996 | attack unowned land with 5% -> attack
+t   969 tiles  18032 troops   133694 | attack unowned land with 5% -> attack
+t   978 tiles  18830 troops   137431 | attack unowned land with 5% -> attack
+t   996 tiles  20229 troops   152259 | attack unowned land with 10% -> attack
+t  1005 tiles  20908 troops   148040 | attack unowned land with 20% -> attack
+t  1023 tiles  22585 troops   139384 | attack unowned land with 10% -> attack
+t  1032 tiles  23300 troops   136001 | build site 2 -> build_unit
+t  1041 tiles  23399 troops   147035 | attack unowned land with 10% -> attack
+t  1050 tiles  24103 troops   143235 | attack unowned land with 5% -> attack
+t  1060 tiles  24550 troops   148425 | cancel_attack -> cancel_attack
+t  1087 tiles  24565 troops   184871 | attack unowned land with 20% -> attack
+t  1096 tiles  25473 troops   159673 | attack unowned land with 30% -> attack
+t  1114 tiles  27509 troops   132510 | cancel_attack -> cancel_attack
+t  1123 tiles  27765 troops   143559 | cancel_attack -> cancel_attack
+t  1132 tiles  27765 troops   155111 | cancel_attack -> cancel_attack
+t  1141 tiles  27693 troops   190722 | attack unowned land with 5% -> attack
+t  1150 tiles  27820 troops   192396 | cancel_attack -> cancel_attack
+t  1186 tiles  26918 troops   241843 | attack unowned land with 10% -> attack
+t  1195 tiles  27656 troops   230441 | attack unowned land with 5% -> attack
+t  1204 tiles  28246 troops   231878 | attack unowned land with 50% -> attack
+t  1214 tiles  28817 troops   125925 | attack unowned land with 5% -> attack
+t  1223 tiles  29802 troops   129385 | attack unowned land with 10% -> attack
+t  1241 tiles  32025 troops   134842 | attack unowned land with 5% -> attack
+t  1250 tiles  33191 troops   138343 | cancel_attack -> cancel_attack
+t  1268 tiles  33187 troops   161518 | attack unowned land with 5% -> attack
+t  1340 tiles  33120 troops   256030 | attack unowned land with 10% -> attack
+t  1349 tiles  34051 troops   245456 | attack unowned land with 5% -> attack
+t  1358 tiles  34868 troops   248374 | attack unowned land with 20% -> attack
+t  1367 tiles  35646 troops   212945 | cancel_attack -> cancel_attack
+t  1386 tiles  35890 troops   244299 | attack unowned land with 5% -> attack
+t  1395 tiles  36500 troops   247347 | attack unowned land with 20% -> attack
+t  1404 tiles  37202 troops   212170 | cancel_attack -> cancel_attack
+t  1431 tiles  35560 troops   311878 | attack unowned land with 20% -> attack
+t  1440 tiles  36097 troops   263713 | attack unowned land with 5% -> attack
+t  1449 tiles  36900 troops   265296 | attack unowned land with 30% -> attack
+t  1467 tiles  39077 troops   213718 | cancel_attack -> cancel_attack
+t  1476 tiles  39348 troops   228500 | attack unowned land with 20% -> attack
+t  1494 tiles  41728 troops   210862 | cancel_attack -> cancel_attack
+t  1503 tiles  42029 troops   225658 | cancel_attack -> cancel_attack
+t  1512 tiles  42029 troops   240974 | attack unowned land with 20% -> attack
+t  1521 tiles  43252 troops   207110 | attack unowned land with 5% -> attack
+t  1539 tiles  46212 troops   226115 | cancel_attack -> cancel_attack
+t  1567 tiles  46736 troops   331549 | attack unowned land with 20% -> attack
+t  1576 tiles  48117 troops   282264 | build site 7 -> build_unit
+t  1585 tiles  49758 troops   299669 | attack unowned land with 20% -> attack
+t  1603 tiles  52771 troops   272844 | attack unowned land with 5% -> attack
+t  1612 tiles  54150 troops   276161 | cancel_attack -> cancel_attack
+t  1621 tiles  54437 troops   293648 | cancel_attack -> cancel_attack
+t  1630 tiles  54437 troops   311656 | attack unowned land with 20% -> attack
+t  1657 tiles  57928 troops   300279 | cancel_attack -> cancel_attack
+t  1666 tiles  58018 troops   318631 | attack unowned land with 30% -> attack
+t  1675 tiles  59088 troops   238908 | cancel_attack -> cancel_attack
+t  1684 tiles  59552 troops   255323 | attack unowned land with 10% -> attack

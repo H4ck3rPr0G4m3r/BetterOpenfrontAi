@@ -1,0 +1,3 @@
+resuming from checkpoints\FirstSelfPlayRun1m\FirstSelfPlayRun1m_latest.pt
+[FirstSelfPlayRun1m] device cuda, 761,435 params, stage 0, resuming at step 274,660
+[FirstSelfPlayRun1m] upd 41 step 280,425 | return 3.09 survive 0.00 tiles 0 len 133 | vs pool - | kl 0.004 ev 0.94 | 276 sps

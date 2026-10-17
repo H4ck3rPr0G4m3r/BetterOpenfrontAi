@@ -1,0 +1,20 @@
+AI: selfplay_v3_latest -> http://localhost:9001 lobby zFwTrM6u
+opening http://localhost:9001/game/zFwTrM6u as 'OpenFrontAI'
+in the lobby, waiting for the game to start (answer any check in the browser window)
+game started (0 players)
+spawn at (1430, 294)
+t   307 tiles     52 troops    26669 | attack unowned land with 50% -> attack
+t   325 tiles    379 troops    18202 | attack unowned land with 5% -> attack
+t   334 tiles    514 troops    20001 | attack unowned land with 5% -> attack
+t   344 tiles    617 troops    22220 | attack unowned land with 5% -> attack
+t   353 tiles    683 troops    24187 | attack unowned land with 5% -> attack
+t   371 tiles    772 troops    29705 | cancel_attack -> cancel_attack
+t   418 tiles    780 troops    51739 | attack unowned land with 5% -> attack
+t   427 tiles    842 troops    53897 | cancel_attack -> cancel_attack
+t   436 tiles    851 troops    58824 | attack unowned land with 30% -> attack
+t   454 tiles   1526 troops    50557 | attack unowned land with 20% -> attack
+t   482 tiles   2052 troops    55806 | attack unowned land with 5% -> attack
+t   537 tiles   2169 troops    89526 | attack unowned land with 5% -> attack
+t   582 tiles   2359 troops   119365 | attack unowned land with 5% -> attack
+t   600 tiles   2607 troops   127845 | attack unowned land with 20% -> attack
+t   627 tiles   3753 troops   125114 | attack unowned land with 30% -> attack

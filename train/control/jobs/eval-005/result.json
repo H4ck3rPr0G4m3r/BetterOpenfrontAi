@@ -1,0 +1,28 @@
+{
+  "predictors": {
+    "checkpoints\\FirstSelfPlayRun1m\\FirstSelfPlayRun1m_latest.pt": {
+      "episodes": 2,
+      "survival_rate": 0.0,
+      "win_rate": 0.0,
+      "death_rate": 1.0,
+      "mean_return": -1.8835151833905002,
+      "mean_tiles": 0.0,
+      "mean_placement": 0.0,
+      "mean_kills": 0.0
+    },
+    "checkpoints\\selfplay_v6\\selfplay_v6_latest.pt": {
+      "episodes": 2,
+      "survival_rate": 0.0,
+      "win_rate": 0.0,
+      "death_rate": 1.0,
+      "mean_return": -2.0677464942709776,
+      "mean_tiles": 0.0,
+      "mean_placement": 0.0,
+      "mean_kills": 0.5
+    }
+  },
+  "head_to_head": {
+    "FirstSelfPlayRun1m_latest > selfplay_v6_latest": 0.0,
+    "selfplay_v6_latest > FirstSelfPlayRun1m_latest": 1.0
+  }
+}

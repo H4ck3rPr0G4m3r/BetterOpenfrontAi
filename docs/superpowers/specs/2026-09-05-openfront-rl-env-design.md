@@ -1,4 +1,4 @@
-# OpenFront RL Environment — Phase 1 Design
+ # OpenFront RL Environment — Phase 1 Design
 
 **Date:** 2026-09-05
 **Status:** Approved design, pending implementation plan

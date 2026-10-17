@@ -1,0 +1,13 @@
+[
+  "C:\\Program Files\\Python311\\python.exe",
+  "-u",
+  "train.py",
+  "--config",
+  "configs\\main.yaml",
+  "--set",
+  "run.name=MainRunV3",
+  "--set",
+  "run.total_steps=5000512",
+  "--set",
+  "env.workers=12"
+]

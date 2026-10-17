@@ -1,0 +1,4 @@
+game 1/1: FirstSelfPlayRun1m_latest tick_cap (75332 tiles), FirstSelfPlayRun1m_latest tick_cap (225943 tiles), FirstSelfPlayRun1m_latest tick_cap (506 tiles), FirstSelfPlayRun1m_latest death (0 tiles)
+
+predictor                      games  survive  win   return   tiles  place  kills
+FirstSelfPlayRun1m_latest          4     0.75  0.00   51.94   75445   0.46   1.50

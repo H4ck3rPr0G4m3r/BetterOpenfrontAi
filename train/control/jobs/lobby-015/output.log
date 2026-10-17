@@ -1,0 +1,154 @@
+AI: MainRunV3_5_latest -> http://localhost:9000 lobby v54Mj1RS
+opening http://localhost:9000/w0/game/v54Mj1RS as 'OpenFrontAI'
+in the lobby, waiting for the game to start (answer any check in the browser window)
+game started (100 players)
+spawn at (345, 258)
+t   311 tiles     52 troops    28037 | attack unowned land with 10% -> attack
+t   320 tiles     82 troops    28319 | attack unowned land with 10% -> attack
+t   356 tiles    263 troops    39386 | attack unowned land with 10% -> attack
+t   366 tiles    345 troops    39687 | attack unowned land with 10% -> attack
+t   375 tiles    476 troops    39649 | attack unowned land with 10% -> attack
+t   384 tiles    640 troops    39703 | attack unowned land with 10% -> attack
+t   430 tiles    963 troops    59095 | attack unowned land with 10% -> attack
+t   439 tiles   1118 troops    58221 | attack unowned land with 10% -> attack
+t   448 tiles   1335 troops    57458 | attack unowned land with 10% -> attack
+t   467 tiles   1693 troops    62871 | attack unowned land with 20% -> attack
+t   494 tiles   2262 troops    66853 | attack unowned land with 10% -> attack
+t   503 tiles   2460 troops    65974 | attack unowned land with 10% -> attack
+t   513 tiles   2736 troops    65827 | attack unowned land with 10% -> attack
+t   522 tiles   3039 troops    65131 | cancel_attack -> cancel_attack
+t   531 tiles   3074 troops    71290 | attack unowned land with 10% -> attack
+t   549 tiles   3459 troops    76799 | attack unowned land with 10% -> attack
+t   558 tiles   3729 troops    75597 | attack unowned land with 10% -> attack
+t   567 tiles   4049 troops    74481 | attack unowned land with 10% -> attack
+t   586 tiles   4515 troops    81044 | attack unowned land with 10% -> attack
+t   595 tiles   4800 troops    79775 | attack unowned land with 10% -> attack
+t   613 tiles   5256 troops    85755 | attack unowned land with 10% -> attack
+t   659 tiles   5678 troops   116682 | attack unowned land with 10% -> attack
+t   668 tiles   6035 troops   113292 | attack unowned land with 10% -> attack
+t   677 tiles   6453 troops   110160 | attack unowned land with 10% -> attack
+t   696 tiles   7186 troops   116826 | attack unowned land with 10% -> attack
+t   714 tiles   7764 troops   122567 | attack unowned land with 10% -> attack
+t   723 tiles   8107 troops   119080 | attack unowned land with 10% -> attack
+t   733 tiles   8526 troops   116875 | attack unowned land with 20% -> attack
+t   742 tiles   8891 troops   101815 | attack unowned land with 10% -> attack
+t   760 tiles   9478 troops   108386 | cancel_attack -> cancel_attack
+t   769 tiles   9560 troops   117305 | attack unowned land with 10% -> attack
+t   778 tiles   9711 troops   114493 | attack unowned land with 10% -> attack
+t   788 tiles   9917 troops   112767 | attack unowned land with 10% -> attack
+t   797 tiles  10060 troops   110225 | attack unowned land with 10% -> attack
+t   806 tiles  10203 troops   107851 | attack unowned land with 10% -> attack
+t   824 tiles  10418 troops   114520 | attack unowned land with 10% -> attack
+t   852 tiles  10594 troops   131611 | attack unowned land with 10% -> attack
+t   861 tiles  10670 troops   127931 | attack unowned land with 10% -> attack
+t   870 tiles  10738 troops   124501 | attack unowned land with 10% -> attack
+t   889 tiles  10881 troops   130914 | build site 5 -> build_unit
+t  1091 tiles  11000 troops   468283 | boat to cell (17,9) with 5% -> nothing sent
+t  1109 tiles  11000 troops   484659 | boat to cell (23,24) with 5% -> boat
+t  1127 tiles  11000 troops   476445 | boat to cell (22,24) with 5% -> boat
+t  1146 tiles  10965 troops   468510 | boat to cell (14,61) with 5% -> nothing sent
+t  1164 tiles  10870 troops   479947 | boat to cell (71,61) with 5% -> boat
+t  1247 tiles  10823 troops   517943 | boat to cell (19,7) with 5% -> boat
+t  1292 tiles  10855 troops   532932 | boat to cell (104,28) with 5% -> boat
+t  1339 tiles  10960 troops   535203 | cancel_attack -> cancel_attack
+t  1559 tiles  10575 troops   589840 | boat to cell (19,4) with 5% -> boat
+t  1632 tiles  10880 troops   584207 | cancel_attack -> cancel_attack
+t  1697 tiles  10896 troops   602834 | boat to cell (18,7) with 5% -> boat
+t  1734 tiles  11088 troops   584890 | boat to cell (24,1) with 5% -> boat
+t  1743 tiles  11153 troops   559805 | cancel_attack -> cancel_attack
+t  1789 tiles  11306 troops   592331 | cancel_attack -> cancel_attack
+t  1844 tiles  11312 troops   614846 | build site 2 -> build_unit
+t  1872 tiles  11329 troops   619116 | boat to cell (104,30) with 5% -> boat
+t  1890 tiles  11362 troops   593953 | cancel_attack -> cancel_attack
+t  1908 tiles  11365 troops   599251 | cancel_attack -> cancel_attack
+t  2653 tiles  11113 troops   635216 | boat to cell (6,6) with 5% -> boat
+t  2864 tiles  11117 troops   627355 | cancel_attack -> cancel_attack
+t  2901 tiles  11123 troops   635505 | boat to cell (23,25) with 5% -> boat
+t  2937 tiles  11141 troops   610273 | boat to cell (31,13) with 5% -> boat
+t  3084 tiles  10812 troops   599667 | build site 18 -> build_unit
+t  3222 tiles  10147 troops   687003 | boat to cell (31,14) with 5% -> boat
+t  3240 tiles  10172 troops   693342 | boat to cell (69,60) with 5% -> boat
+t  3249 tiles  10206 troops   666751 | cancel_attack -> cancel_attack
+t  3277 tiles  10218 troops   708781 | boat to cell (31,13) with 5% -> boat
+t  3295 tiles  10361 troops   724060 | boat to cell (95,10) with 5% -> nothing sent
+t  3314 tiles  10810 troops   738477 | cancel_attack -> cancel_attack
+t  3323 tiles  10965 troops   743608 | boat to cell (68,62) with 5% -> boat
+t  3341 tiles  11195 troops   735289 | boat to cell (4,7) with 5% -> boat
+t  3350 tiles  11330 troops   706347 | attack unowned land with 5% -> attack
+t  3387 tiles  11841 troops   746165 | boat to cell (68,60) with 5% -> boat
+t  3405 tiles  11896 troops   753322 | boat to cell (86,17) with 5% -> nothing sent
+t  3414 tiles  11905 troops   760289 | boat to cell (20,10) with 5% -> nothing sent
+t  3433 tiles  11878 troops   773162 | boat to cell (26,26) with 5% -> boat
+t  3515 tiles  11810 troops   792260 | boat to cell (110,11) with 5% -> boat
+t  3727 tiles  11681 troops   850943 | cancel_attack -> cancel_attack
+t  3736 tiles  11693 troops   853872 | boat to cell (61,62) with 5% -> boat
+t  3745 tiles  11686 troops   837264 | boat to cell (98,8) with 5% -> nothing sent
+t  3773 tiles  11644 troops   844138 | boat to cell (79,17) with 5% -> nothing sent
+t  3800 tiles  11603 troops   849645 | boat to cell (2,6) with 5% -> boat
+t  3809 tiles  11595 troops   810719 | boat to cell (97,28) with 5% -> boat
+t  3837 tiles  11698 troops   788599 | cancel_attack -> cancel_attack
+t  3855 tiles  11711 troops   841358 | boat to cell (13,5) with 5% -> boat
+t  3956 tiles  11780 troops   858916 | boat to cell (87,19) with 5% -> nothing sent
+t  3965 tiles  11834 troops   861316 | boat to cell (15,7) with 5% -> boat
+t  3993 tiles  12007 troops   829976 | boat to cell (97,25) with 5% -> boat
+t  4002 tiles  12063 troops   793491 | boat to cell (96,18) with 5% -> nothing sent
+t  4020 tiles  12064 troops   794546 | boat to cell (87,16) with 5% -> nothing sent
+t  4030 tiles  11710 troops   772257 | boat to cell (101,23) with 5% -> boat
+t  4057 tiles  11047 troops   631209 | boat to cell (95,32) with 5% -> boat
+t  4085 tiles  10704 troops   584969 | boat to cell (56,60) with 5% -> boat
+t  4094 tiles  10652 troops   556091 | boat to cell (106,14) with 5% -> boat
+t  4103 tiles  10642 troops   532212 | cancel_attack -> cancel_attack
+t  4213 tiles  10675 troops   576545 | boat to cell (87,10) with 5% -> nothing sent
+t  4223 tiles  10707 troops   579447 | boat to cell (20,8) with 5% -> nothing sent
+t  4232 tiles  10740 troops   581967 | boat to cell (104,33) with 5% -> boat
+t  4250 tiles  10792 troops   560436 | cancel_attack -> cancel_attack
+t  4296 tiles  10396 troops   564781 | build site 4 -> build_unit
+t  4305 tiles   9935 troops   541065 | cancel_attack -> cancel_attack
+t  4314 tiles   9536 troops   522405 | boat to cell (7,6) with 5% -> boat
+t  4324 tiles   9177 troops   482960 | boat to cell (89,22) with 5% -> nothing sent
+t  4333 tiles   8961 troops   503392 | boat to cell (91,14) with 5% -> nothing sent
+t  4342 tiles   8450 troops   478761 | boat to cell (28,12) with 5% -> boat
+t  4351 tiles   7885 troops   429736 | boat to cell (107,8) with 5% -> nothing sent
+t  4360 tiles   7405 troops   409472 | boat to cell (96,12) with 5% -> nothing sent
+t  4369 tiles   6701 troops   376965 | attack unowned land with 10% -> attack
+t  4379 tiles   5778 troops   298118 | boat to cell (87,17) with 5% -> nothing sent
+t  4397 tiles   4581 troops   245220 | attack unowned land with 10% -> attack
+t  4406 tiles   4134 troops   201799 | boat to cell (94,12) with 5% -> nothing sent
+t  4415 tiles   3752 troops   184314 | boat to cell (90,13) with 5% -> nothing sent
+t  4424 tiles   2858 troops   167815 | boat to cell (28,17) with 5% -> nothing sent
+t  4443 tiles   2733 troops   165327 | cancel_attack -> cancel_attack
+t  4452 tiles   2231 troops   171825 | cancel_attack -> cancel_attack
+t  4480 tiles   2258 troops   234239 | boat to cell (96,18) with 5% -> nothing sent
+t  4489 tiles   2252 troops   235796 | attack unowned land with 30% -> attack
+t  4507 tiles   2125 troops   162708 | boat to cell (113,6) with 5% -> nothing sent
+t  4526 tiles   1770 troops   204336 | boat to cell (106,10) with 5% -> nothing sent
+t  4544 tiles   1489 troops   180593 | boat to cell (73,19) with 5% -> boat
+t  4553 tiles   1419 troops   168394 | build site 3 -> build_unit
+t  4562 tiles   1376 troops   168227 | boat to cell (85,20) with 5% -> nothing sent
+t  4608 tiles   1327 troops   185454 | boat to cell (20,13) with 5% -> nothing sent
+t  4617 tiles   1327 troops   189437 | boat to cell (88,21) with 5% -> nothing sent
+t  4636 tiles   1327 troops   197216 | boat to cell (25,26) with 5% -> boat
+t  4718 tiles    500 troops    83009 | boat to cell (22,9) with 5% -> nothing sent
+t  4727 tiles    388 troops    65586 | boat to cell (24,13) with 5% -> nothing sent
+t  4737 tiles    409 troops    70228 | boat to cell (24,6) with 5% -> boat
+t  4746 tiles    439 troops    71914 | cancel_attack -> cancel_attack
+t  4792 tiles    320 troops    79179 | boat to cell (22,16) with 5% -> nothing sent
+t  4819 tiles    172 troops    51824 | boat to cell (53,62) with 5% -> boat
+t  4929 tiles    180 troops    96311 | boat to cell (112,3) with 5% -> boat
+t  4948 tiles    199 troops    98713 | cancel_attack -> cancel_attack
+t  5058 tiles    201 troops   128797 | build site 0 -> build_unit
+t  5067 tiles    206 troops   130511 | boat to cell (25,6) with 5% -> boat
+t  5076 tiles    221 troops   125909 | cancel_attack -> cancel_attack
+t  5122 tiles    204 troops   116039 | boat to cell (24,10) with 5% -> boat
+t  5379 tiles    207 troops   144587 | boat to cell (91,8) with 5% -> nothing sent
+t  5388 tiles    216 troops   145011 | boat to cell (25,20) with 5% -> boat
+t  5397 tiles    225 troops   138769 | cancel_attack -> cancel_attack
+t  5498 tiles    266 troops   150212 | boat to cell (24,12) with 5% -> nothing sent
+t  5516 tiles    295 troops   151603 | boat to cell (24,9) with 5% -> boat
+t  5534 tiles    321 troops   146620 | boat to cell (107,14) with 5% -> boat
+t  5553 tiles    362 troops   143281 | cancel_attack -> cancel_attack
+t  5562 tiles    379 troops   145249 | cancel_attack -> cancel_attack
+t  5801 tiles    249 troops   131138 | boat to cell (17,4) with 5% -> boat
+t  5856 tiles    299 troops   135535 | boat to cell (107,5) with 5% -> boat
+t  5874 tiles    142 troops     2710 | build site 1 -> build_unit
+eliminated; peak 12140 tiles, 148 actions {'attack': 41, 'cancel_attack': 24, 'build_unit': 7, 'boat': 45}

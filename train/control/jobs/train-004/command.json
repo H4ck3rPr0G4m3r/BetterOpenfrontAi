@@ -1,0 +1,14 @@
+[
+  "C:\\Program Files\\Python311\\python.exe",
+  "-u",
+  "train.py",
+  "--config",
+  "configs\\selfplay.yaml",
+  "--set",
+  "run.name=FirstSelfPlayRun1m",
+  "--set",
+  "run.total_steps=1000512",
+  "--set",
+  "env.workers=10",
+  "--resume"
+]

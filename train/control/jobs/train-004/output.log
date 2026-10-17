@@ -1,0 +1,2 @@
+usage: train.py [-h] [--config CONFIG] [--resume RESUME] [--set KEY=VALUE]
+train.py: error: argument --resume: expected one argument

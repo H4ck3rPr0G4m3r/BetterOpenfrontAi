@@ -1,0 +1,14 @@
+[
+  "C:\\Program Files\\Python311\\python.exe",
+  "-u",
+  "play_lobby.py",
+  "zFwTrM6u",
+  "--host",
+  "http://localhost:9001",
+  "--model",
+  "checkpoints\\selfplay_v3\\selfplay_v3_latest.pt",
+  "--name",
+  "OpenFrontAI",
+  "--profile",
+  "default"
+]

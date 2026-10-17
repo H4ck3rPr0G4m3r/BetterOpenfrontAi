@@ -1,0 +1,18 @@
+[
+  "C:\\Program Files\\Python311\\python.exe",
+  "-u",
+  "evaluate.py",
+  "--seats",
+  "checkpoints\\FirstSelfPlayRun1m\\FirstSelfPlayRun1m_latest.pt",
+  "checkpoints\\selfplay_v6\\selfplay_v6_latest.pt",
+  "--games",
+  "2",
+  "--bots",
+  "20",
+  "--tick-cap",
+  "36000",
+  "--json",
+  "C:\\Pedro\\RandomCode\\BetterOpenfrontAi\\train\\control\\jobs\\eval-005\\result.json",
+  "--replay-dir",
+  "replays/eval-005"
+]

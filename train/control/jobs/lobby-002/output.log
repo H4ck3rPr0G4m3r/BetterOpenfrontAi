@@ -1,0 +1,29 @@
+AI: FirstSelfPlayRun1m_latest -> https://openfront.io lobby cH5QoDbLY7
+Cloudflare check: click it in the browser window
+node:events:505
+    throw er; // Unhandled 'error' event
+    ^
+
+Error: EPIPE: broken pipe, write
+    at Socket._write (node:internal/net:75:18)
+    at writeOrBuffer (node:internal/streams/writable:574:12)
+    at _write (node:internal/streams/writable:503:10)
+    at Writable.write (node:internal/streams/writable:512:10)
+    at PipeTransport.send (C:\Users\Nagy Péter Zalán\AppData\Roaming\Python\Python311\site-packages\playwright\driver\package\lib\coreBundle.js:34784:25)
+    at dispatcherConnection.onmessage (C:\Users\Nagy Péter Zalán\AppData\Roaming\Python\Python311\site-packages\playwright\driver\package\lib\coreBundle.js:69946:59)
+    at DispatcherConnection.sendEvent (C:\Users\Nagy Péter Zalán\AppData\Roaming\Python\Python311\site-packages\playwright\driver\package\lib\coreBundle.js:18990:14)
+    at _BrowserContextDispatcher._dispatchEvent (C:\Users\Nagy Péter Zalán\AppData\Roaming\Python\Python311\site-packages\playwright\driver\package\lib\coreBundle.js:18912:25)
+    at CRBrowserContext.<anonymous> (C:\Users\Nagy Péter Zalán\AppData\Roaming\Python\Python311\site-packages\playwright\driver\package\lib\coreBundle.js:54268:16)
+    at CRBrowserContext.emit (node:events:514:28)
+Emitted 'error' event on Socket instance at:
+    at emitErrorNT (node:internal/streams/destroy:170:8)
+    at emitErrorCloseNT (node:internal/streams/destroy:129:3)
+    at processTicksAndRejections (node:internal/process/task_queues:90:21)
+    at runNextTicks (node:internal/process/task_queues:69:3)
+    at process.processImmediate (node:internal/timers:541:9) {
+  errno: -4047,
+  syscall: 'write',
+  code: 'EPIPE'
+}
+
+Node.js v24.21.0

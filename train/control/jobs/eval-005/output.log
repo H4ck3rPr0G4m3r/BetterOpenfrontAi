@@ -1,0 +1,8 @@
+game 1/2: FirstSelfPlayRun1m_latest death (0 tiles), selfplay_v6_latest death (0 tiles)
+game 2/2: selfplay_v6_latest death (0 tiles), FirstSelfPlayRun1m_latest death (0 tiles)
+
+predictor                      games  survive  win   return   tiles  place  kills
+FirstSelfPlayRun1m_latest          2     0.00  0.00   -1.88       0   0.00   0.00
+selfplay_v6_latest                 2     0.00  0.00   -2.07       0   0.00   0.50
+  FirstSelfPlayRun1m_latest > selfplay_v6_latest: 0.00
+  selfplay_v6_latest > FirstSelfPlayRun1m_latest: 1.00

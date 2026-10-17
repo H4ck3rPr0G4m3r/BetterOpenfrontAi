@@ -1,0 +1,271 @@
+[MainRunV3_5] device cuda, 763,551 params, stage 0, resuming at step 0
+[MainRunV3_5] upd 1 step 8,448 | return - survive - tiles - len - | vs pool - | kl 0.006 ev -0.00 | 323 sps
+[MainRunV3_5] upd 2 step 16,713 | return -3.51 survive 0.00 tiles 0 len 420 | vs pool - | kl 0.005 ev -0.04 | 270 sps
+[MainRunV3_5] upd 3 step 24,509 | return -2.47 survive 0.00 tiles 0 len 601 | vs pool - | kl 0.004 ev 0.11 | 196 sps
+[MainRunV3_5] upd 4 step 31,496 | return -5.00 survive 0.00 tiles 0 len 734 | vs pool - | kl 0.007 ev 0.37 | 155 sps
+[MainRunV3_5] upd 5 step 39,258 | return 0.70 survive 0.62 tiles 86504 len 1026 | vs pool - | kl 0.005 ev 0.70 | 202 sps
+[MainRunV3_5] upd 6 step 47,400 | return 0.46 survive 0.57 tiles 79490 len 967 | vs pool - | kl 0.004 ev 0.66 | 268 sps
+[MainRunV3_5] upd 7 step 54,904 | return 0.33 survive 0.54 tiles 75414 len 951 | vs pool - | kl 0.004 ev 0.80 | 177 sps
+[MainRunV3_5] upd 8 step 61,712 | return 0.71 survive 0.49 tiles 73774 len 916 | vs pool - | kl 0.005 ev 0.83 | 140 sps
+[MainRunV3_5] upd 9 step 67,995 | return 1.61 survive 0.52 tiles 85561 len 947 | vs pool - | kl 0.005 ev 0.82 | 146 sps
+[MainRunV3_5] upd 10 step 75,681 | return 3.13 survive 0.60 tiles 89844 len 990 | vs pool - | kl 0.003 ev 0.88 | 278 sps
+[MainRunV3_5] upd 11 step 83,400 | return 2.98 survive 0.57 tiles 84853 len 961 | vs pool - | kl 0.005 ev 0.81 | 258 sps
+[MainRunV3_5] upd 12 step 90,700 | return 2.91 survive 0.56 tiles 81647 len 957 | vs pool - | kl 0.006 ev 0.81 | 184 sps
+[MainRunV3_5] upd 13 step 97,501 | return 2.96 survive 0.54 tiles 83468 len 958 | vs pool - | kl 0.007 ev 0.83 | 127 sps
+[MainRunV3_5] upd 14 step 103,847 | return 3.65 survive 0.57 tiles 86275 len 972 | vs pool 0.50 | kl 0.005 ev 0.91 | 124 sps
+[MainRunV3_5] upd 15 step 109,668 | return 4.27 survive 0.59 tiles 93106 len 981 | vs pool 0.50 | kl 0.004 ev 0.89 | 182 sps
+[MainRunV3_5] upd 16 step 115,300 | return 4.27 survive 0.59 tiles 93106 len 981 | vs pool 0.50 | kl 0.003 ev 0.89 | 130 sps
+[MainRunV3_5] upd 17 step 120,932 | return 4.28 survive 0.58 tiles 91810 len 979 | vs pool 0.50 | kl 0.005 ev 0.87 | 88 sps
+[MainRunV3_5] upd 18 step 126,472 | return 4.92 survive 0.61 tiles 94133 len 986 | vs pool 0.67 | kl 0.005 ev 0.83 | 78 sps
+[MainRunV3_5] upd 19 step 131,707 | return 5.74 survive 0.63 tiles 98304 len 1005 | vs pool 0.67 | kl 0.003 ev 0.88 | 113 sps
+[MainRunV3_5] upd 20 step 136,827 | return 5.74 survive 0.63 tiles 98304 len 1005 | vs pool 0.67 | kl 0.005 ev 0.88 | 136 sps
+[MainRunV3_5] upd 21 step 141,947 | return 5.82 survive 0.63 tiles 99789 len 1003 | vs pool 0.67 | kl 0.003 ev 0.88 | 93 sps
+[MainRunV3_5] upd 22 step 147,041 | return 6.27 survive 0.64 tiles 102322 len 999 | vs pool 0.69 | kl 0.004 ev 0.90 | 81 sps
+[MainRunV3_5] upd 23 step 152,256 | return 6.88 survive 0.66 tiles 109868 len 1008 | vs pool 0.77 | kl 0.004 ev 0.86 | 108 sps
+[MainRunV3_5] upd 24 step 157,520 | return 7.07 survive 0.67 tiles 110854 len 1012 | vs pool 0.72 | kl 0.005 ev 0.88 | 124 sps
+[MainRunV3_5] upd 25 step 162,884 | return 7.13 survive 0.67 tiles 111495 len 1010 | vs pool 0.72 | kl 0.005 ev 0.79 | 91 sps
+[MainRunV3_5] upd 26 step 168,059 | return 7.21 survive 0.67 tiles 108301 len 1011 | vs pool 0.72 | kl 0.005 ev 0.87 | 85 sps
+[MainRunV3_5] upd 27 step 173,400 | return 7.44 survive 0.68 tiles 109020 len 1010 | vs pool 0.71 | kl 0.004 ev 0.91 | 116 sps
+[MainRunV3_5] upd 28 step 178,075 | return 7.85 survive 0.69 tiles 111269 len 1016 | vs pool 0.71 | kl 0.006 ev 0.86 | 116 sps
+[MainRunV3_5] upd 29 step 182,961 | return 7.96 survive 0.68 tiles 112368 len 1012 | vs pool 0.68 | kl 0.007 ev 0.89 | 117 sps
+[MainRunV3_5] upd 30 step 188,081 | return 8.08 survive 0.69 tiles 113464 len 1014 | vs pool 0.68 | kl 0.005 ev 0.88 | 89 sps
+[MainRunV3_5] upd 31 step 193,357 | return 8.63 survive 0.70 tiles 117105 len 1019 | vs pool 0.71 | kl 0.006 ev 0.91 | 96 sps
+[MainRunV3_5] upd 32 step 199,226 | return 8.55 survive 0.70 tiles 114504 len 1018 | vs pool 0.65 | kl 0.005 ev 0.90 | 136 sps
+[MainRunV3_5] upd 33 step 205,024 | return 8.90 survive 0.70 tiles 118142 len 1016 | vs pool 0.66 | kl 0.004 ev 0.85 | 148 sps
+[MainRunV3_5] upd 34 step 210,370 | return 8.88 survive 0.70 tiles 117994 len 1015 | vs pool 0.66 | kl 0.004 ev 0.89 | 124 sps
+[MainRunV3_5] upd 35 step 215,492 | return 8.82 survive 0.70 tiles 116792 len 1014 | vs pool 0.65 | kl 0.005 ev 0.91 | 101 sps
+[MainRunV3_5] upd 36 step 220,457 | return 9.26 survive 0.71 tiles 117575 len 1023 | vs pool 0.67 | kl 0.004 ev 0.90 | 125 sps
+[MainRunV3_5] upd 37 step 225,195 | return 9.52 survive 0.72 tiles 118615 len 1027 | vs pool 0.69 | kl 0.003 ev 0.92 | 136 sps
+[MainRunV3_5] upd 38 step 230,110 | return 9.50 survive 0.71 tiles 117680 len 1025 | vs pool 0.70 | kl 0.005 ev 0.91 | 122 sps
+[MainRunV3_5] upd 39 step 234,939 | return 9.51 survive 0.71 tiles 120857 len 1020 | vs pool 0.71 | kl 0.003 ev 0.90 | 100 sps
+[MainRunV3_5] upd 40 step 239,710 | return 9.64 survive 0.71 tiles 120511 len 1022 | vs pool 0.71 | kl 0.005 ev 0.94 | 85 sps
+[MainRunV3_5] upd 41 step 245,687 | return 10.00 survive 0.72 tiles 121166 len 1027 | vs pool 0.68 | kl 0.005 ev 0.92 | 137 sps
+[MainRunV3_5] upd 42 step 252,035 | return 9.96 survive 0.71 tiles 118018 len 1015 | vs pool 0.68 | kl 0.005 ev 0.88 | 169 sps
+[MainRunV3_5] upd 43 step 257,999 | return 9.94 survive 0.70 tiles 116960 len 1011 | vs pool 0.68 | kl 0.004 ev 0.90 | 151 sps
+[MainRunV3_5] upd 44 step 263,990 | return 9.97 survive 0.70 tiles 119644 len 1009 | vs pool 0.68 | kl 0.004 ev 0.96 | 184 sps
+[MainRunV3_5] upd 45 step 269,963 | return 10.09 survive 0.70 tiles 116077 len 1013 | vs pool 0.69 | kl 0.004 ev 0.96 | 163 sps
+[MainRunV3_5] upd 46 step 276,457 | return 10.04 survive 0.70 tiles 115630 len 1011 | vs pool 0.69 | kl 0.006 ev 0.94 | 166 sps
+[MainRunV3_5] upd 47 step 282,518 | return 10.15 survive 0.70 tiles 116547 len 1011 | vs pool 0.70 | kl 0.005 ev 0.92 | 132 sps
+[MainRunV3_5] upd 48 step 288,663 | return 10.12 survive 0.69 tiles 114791 len 1006 | vs pool 0.69 | kl 0.005 ev 0.92 | 115 sps
+[MainRunV3_5] upd 49 step 295,441 | return 10.23 survive 0.70 tiles 117391 len 1009 | vs pool 0.69 | kl 0.005 ev 0.97 | 145 sps
+[MainRunV3_5] upd 50 step 301,579 | return 10.30 survive 0.69 tiles 116247 len 1010 | vs pool 0.68 | kl 0.008 ev 0.94 | 132 sps
+[MainRunV3_5] curriculum: survival 0.66 in ['close_rivals', 'crowded', 'selfplay_ffa', 'vs_bots'] over 200 episodes, promoted to stage 1
+[MainRunV3_5] upd 51 step 306,896 | return 10.00 survive 0.68 tiles 113489 len 989 | vs pool 0.66 | kl 0.006 ev 0.82 | 197 sps
+[MainRunV3_5] upd 52 step 311,885 | return 9.81 survive 0.67 tiles 111597 len 980 | vs pool 0.62 | kl 0.003 ev 0.90 | 136 sps
+[MainRunV3_5] upd 53 step 316,201 | return 9.52 survive 0.65 tiles 109407 len 963 | vs pool 0.61 | kl 0.004 ev 0.93 | 120 sps
+[MainRunV3_5] upd 54 step 320,940 | return 9.36 survive 0.64 tiles 107676 len 954 | vs pool 0.60 | kl 0.003 ev 0.95 | 143 sps
+[MainRunV3_5] upd 55 step 326,478 | return 9.31 survive 0.63 tiles 107382 len 947 | vs pool 0.60 | kl 0.003 ev 0.96 | 175 sps
+[MainRunV3_5] upd 56 step 331,554 | return 9.15 survive 0.62 tiles 105453 len 941 | vs pool 0.60 | kl 0.006 ev 0.96 | 185 sps
+[MainRunV3_5] upd 57 step 337,036 | return 8.88 survive 0.60 tiles 102686 len 929 | vs pool 0.61 | kl 0.005 ev 0.96 | 211 sps
+[MainRunV3_5] upd 58 step 342,579 | return 8.73 survive 0.59 tiles 100752 len 919 | vs pool 0.60 | kl 0.006 ev 0.97 | 189 sps
+[MainRunV3_5] upd 59 step 347,479 | return 8.58 survive 0.58 tiles 99329 len 907 | vs pool 0.61 | kl 0.006 ev 0.96 | 162 sps
+[MainRunV3_5] upd 60 step 352,812 | return 8.49 survive 0.58 tiles 98977 len 904 | vs pool 0.60 | kl 0.004 ev 0.93 | 211 sps
+[MainRunV3_5] upd 61 step 357,672 | return 8.36 survive 0.57 tiles 97664 len 897 | vs pool 0.59 | kl 0.006 ev 0.95 | 171 sps
+[MainRunV3_5] upd 62 step 362,423 | return 8.17 survive 0.56 tiles 95387 len 888 | vs pool 0.60 | kl 0.005 ev 0.95 | 172 sps
+[MainRunV3_5] upd 63 step 366,961 | return 8.04 survive 0.55 tiles 93688 len 887 | vs pool 0.61 | kl 0.004 ev 0.94 | 159 sps
+[MainRunV3_5] upd 64 step 371,427 | return 8.00 survive 0.54 tiles 93441 len 881 | vs pool 0.60 | kl 0.004 ev 0.95 | 153 sps
+[MainRunV3_5] upd 65 step 375,854 | return 8.26 survive 0.55 tiles 95302 len 879 | vs pool 0.60 | kl 0.005 ev 0.93 | 155 sps
+[MainRunV3_5] upd 66 step 379,908 | return 8.19 survive 0.54 tiles 93924 len 872 | vs pool 0.60 | kl 0.004 ev 0.95 | 141 sps
+[MainRunV3_5] upd 67 step 384,171 | return 8.31 survive 0.54 tiles 93938 len 868 | vs pool 0.61 | kl 0.004 ev 0.96 | 122 sps
+[MainRunV3_5] upd 68 step 388,176 | return 8.28 survive 0.52 tiles 91978 len 850 | vs pool 0.61 | kl 0.004 ev 0.97 | 135 sps
+[MainRunV3_5] upd 69 step 392,695 | return 8.38 survive 0.52 tiles 93172 len 849 | vs pool 0.61 | kl 0.005 ev 0.95 | 168 sps
+[MainRunV3_5] upd 70 step 397,483 | return 8.32 survive 0.52 tiles 92225 len 847 | vs pool 0.60 | kl 0.005 ev 0.95 | 168 sps
+[MainRunV3_5] upd 71 step 402,085 | return 8.21 survive 0.51 tiles 90906 len 844 | vs pool 0.60 | kl 0.011 ev 0.91 | 131 sps
+[MainRunV3_5] upd 72 step 407,273 | return 8.18 survive 0.49 tiles 89645 len 828 | vs pool 0.59 | kl 0.004 ev 0.93 | 185 sps
+[MainRunV3_5] upd 73 step 412,834 | return 8.02 survive 0.48 tiles 88046 len 817 | vs pool 0.59 | kl 0.003 ev 0.96 | 202 sps
+[MainRunV3_5] upd 74 step 418,058 | return 8.08 survive 0.48 tiles 90258 len 818 | vs pool 0.59 | kl 0.004 ev 0.95 | 199 sps
+[MainRunV3_5] upd 75 step 422,738 | return 8.01 survive 0.48 tiles 88959 len 812 | vs pool 0.59 | kl 0.004 ev 0.97 | 169 sps
+[MainRunV3_5] upd 76 step 428,356 | return 7.88 survive 0.47 tiles 85732 len 807 | vs pool 0.59 | kl 0.005 ev 0.92 | 193 sps
+[MainRunV3_5] upd 77 step 433,590 | return 7.67 survive 0.45 tiles 83367 len 792 | vs pool 0.60 | kl 0.005 ev 0.96 | 214 sps
+[MainRunV3_5] upd 78 step 437,804 | return 7.56 survive 0.44 tiles 82083 len 787 | vs pool 0.58 | kl 0.005 ev 0.98 | 174 sps
+[MainRunV3_5] upd 79 step 444,109 | return 7.33 survive 0.42 tiles 80721 len 779 | vs pool 0.58 | kl 0.005 ev 0.94 | 215 sps
+[MainRunV3_5] upd 80 step 450,092 | return 7.13 survive 0.41 tiles 78274 len 763 | vs pool 0.58 | kl 0.006 ev 0.95 | 208 sps
+[MainRunV3_5] upd 81 step 455,236 | return 6.79 survive 0.40 tiles 74807 len 754 | vs pool 0.58 | kl 0.005 ev 0.95 | 179 sps
+[MainRunV3_5] upd 82 step 460,677 | return 6.47 survive 0.38 tiles 70065 len 741 | vs pool 0.58 | kl 0.006 ev 0.94 | 164 sps
+[MainRunV3_5] upd 83 step 465,577 | return 6.31 survive 0.37 tiles 69845 len 734 | vs pool 0.58 | kl 0.003 ev 0.95 | 167 sps
+[MainRunV3_5] upd 84 step 470,138 | return 6.05 survive 0.35 tiles 67810 len 728 | vs pool 0.58 | kl 0.004 ev 0.95 | 182 sps
+[MainRunV3_5] upd 85 step 475,376 | return 5.98 survive 0.35 tiles 67090 len 726 | vs pool 0.58 | kl 0.003 ev 0.97 | 204 sps
+[MainRunV3_5] upd 86 step 480,935 | return 5.75 survive 0.34 tiles 64941 len 718 | vs pool 0.58 | kl 0.004 ev 0.96 | 206 sps
+[MainRunV3_5] upd 87 step 486,242 | return 5.46 survive 0.33 tiles 61925 len 711 | vs pool 0.59 | kl 0.005 ev 0.89 | 177 sps
+[MainRunV3_5] upd 88 step 491,668 | return 5.42 survive 0.32 tiles 62214 len 705 | vs pool 0.59 | kl 0.007 ev 0.94 | 181 sps
+[MainRunV3_5] upd 89 step 496,565 | return 5.24 survive 0.31 tiles 59785 len 702 | vs pool 0.58 | kl 0.007 ev 0.97 | 177 sps
+[MainRunV3_5] upd 90 step 501,674 | return 4.94 survive 0.30 tiles 57919 len 696 | vs pool 0.59 | kl 0.007 ev 0.97 | 189 sps
+[MainRunV3_5] upd 91 step 507,240 | return 4.62 survive 0.28 tiles 56790 len 684 | vs pool 0.59 | kl 0.005 ev 0.96 | 164 sps
+[MainRunV3_5] upd 92 step 512,924 | return 4.45 survive 0.27 tiles 54177 len 677 | vs pool 0.59 | kl 0.005 ev 0.95 | 149 sps
+[MainRunV3_5] upd 93 step 517,494 | return 4.37 survive 0.27 tiles 53770 len 673 | vs pool 0.59 | kl 0.009 ev 0.98 | 143 sps
+[MainRunV3_5] upd 94 step 521,709 | return 4.10 survive 0.25 tiles 52277 len 670 | vs pool 0.59 | kl 0.008 ev 0.97 | 161 sps
+[MainRunV3_5] upd 95 step 526,056 | return 3.91 survive 0.25 tiles 51581 len 664 | vs pool 0.60 | kl 0.004 ev 0.93 | 161 sps
+[MainRunV3_5] upd 96 step 530,982 | return 3.88 survive 0.25 tiles 51440 len 664 | vs pool 0.60 | kl 0.004 ev 0.95 | 171 sps
+[MainRunV3_5] upd 97 step 536,439 | return 3.66 survive 0.24 tiles 49214 len 652 | vs pool 0.60 | kl 0.005 ev 0.93 | 163 sps
+[MainRunV3_5] upd 98 step 542,108 | return 3.50 survive 0.23 tiles 49762 len 647 | vs pool 0.60 | kl 0.004 ev 0.95 | 162 sps
+[MainRunV3_5] upd 99 step 546,718 | return 3.35 survive 0.22 tiles 48941 len 640 | vs pool 0.60 | kl 0.004 ev 0.95 | 169 sps
+[MainRunV3_5] upd 100 step 550,988 | return 3.29 survive 0.22 tiles 48938 len 642 | vs pool 0.60 | kl 0.006 ev 0.95 | 148 sps
+[MainRunV3_5] upd 101 step 555,743 | return 3.29 survive 0.22 tiles 48674 len 637 | vs pool 0.60 | kl 0.006 ev 0.94 | 130 sps
+[MainRunV3_5] upd 102 step 560,928 | return 3.26 survive 0.22 tiles 48375 len 636 | vs pool 0.60 | kl 0.006 ev 0.94 | 137 sps
+[MainRunV3_5] upd 103 step 565,842 | return 3.29 survive 0.21 tiles 49171 len 639 | vs pool 0.60 | kl 0.005 ev 0.96 | 145 sps
+[MainRunV3_5] upd 104 step 570,623 | return 3.33 survive 0.21 tiles 49171 len 645 | vs pool 0.61 | kl 0.003 ev 0.97 | 160 sps
+[MainRunV3_5] upd 105 step 575,569 | return 3.35 survive 0.21 tiles 49171 len 647 | vs pool 0.60 | kl 0.004 ev 0.95 | 117 sps
+[MainRunV3_5] upd 106 step 580,544 | return 3.65 survive 0.22 tiles 51316 len 658 | vs pool 0.60 | kl 0.005 ev 0.95 | 117 sps
+[MainRunV3_5] upd 107 step 585,529 | return 3.67 survive 0.22 tiles 51316 len 658 | vs pool 0.60 | kl 0.004 ev 0.96 | 115 sps
+[MainRunV3_5] upd 108 step 590,263 | return 3.77 survive 0.23 tiles 52281 len 665 | vs pool 0.61 | kl 0.005 ev 0.94 | 115 sps
+[MainRunV3_5] upd 109 step 595,430 | return 3.76 survive 0.23 tiles 51246 len 666 | vs pool 0.61 | kl 0.003 ev 0.95 | 173 sps
+[MainRunV3_5] upd 110 step 600,452 | return 3.80 survive 0.23 tiles 52577 len 669 | vs pool 0.61 | kl 0.007 ev 0.96 | 177 sps
+[MainRunV3_5] upd 111 step 605,325 | return 3.84 survive 0.24 tiles 52698 len 670 | vs pool 0.61 | kl 0.005 ev 0.94 | 144 sps
+[MainRunV3_5] upd 112 step 609,682 | return 3.84 survive 0.24 tiles 52698 len 671 | vs pool 0.61 | kl 0.004 ev 0.97 | 135 sps
+[MainRunV3_5] upd 113 step 614,069 | return 4.04 survive 0.25 tiles 53668 len 682 | vs pool 0.61 | kl 0.006 ev 0.94 | 170 sps
+[MainRunV3_5] upd 114 step 619,330 | return 4.05 survive 0.25 tiles 53668 len 683 | vs pool 0.62 | kl 0.004 ev 0.97 | 174 sps
+[MainRunV3_5] upd 115 step 624,982 | return 4.03 survive 0.25 tiles 52843 len 686 | vs pool 0.61 | kl 0.006 ev 0.95 | 166 sps
+[MainRunV3_5] upd 116 step 630,233 | return 3.99 survive 0.24 tiles 51896 len 682 | vs pool 0.61 | kl 0.006 ev 0.97 | 147 sps
+[MainRunV3_5] upd 117 step 634,646 | return 4.15 survive 0.25 tiles 53036 len 692 | vs pool 0.61 | kl 0.005 ev 0.97 | 145 sps
+[MainRunV3_5] upd 118 step 639,774 | return 4.21 survive 0.26 tiles 53180 len 696 | vs pool 0.61 | kl 0.005 ev 0.98 | 171 sps
+[MainRunV3_5] upd 119 step 645,400 | return 4.34 survive 0.27 tiles 53998 len 704 | vs pool 0.62 | kl 0.004 ev 0.96 | 170 sps
+[MainRunV3_5] upd 120 step 651,151 | return 4.52 survive 0.27 tiles 55725 len 707 | vs pool 0.62 | kl 0.009 ev 0.93 | 177 sps
+[MainRunV3_5] upd 121 step 655,899 | return 4.49 survive 0.27 tiles 55424 len 710 | vs pool 0.61 | kl 0.004 ev 0.95 | 151 sps
+[MainRunV3_5] upd 122 step 660,331 | return 4.40 survive 0.27 tiles 54898 len 709 | vs pool 0.62 | kl 0.005 ev 0.95 | 165 sps
+[MainRunV3_5] upd 123 step 664,489 | return 4.45 survive 0.27 tiles 55989 len 712 | vs pool 0.62 | kl 0.006 ev 0.96 | 124 sps
+[MainRunV3_5] upd 124 step 668,851 | return 4.54 survive 0.28 tiles 56437 len 714 | vs pool 0.61 | kl 0.007 ev 0.94 | 124 sps
+[MainRunV3_5] upd 125 step 673,992 | return 4.52 survive 0.27 tiles 55453 len 714 | vs pool 0.61 | kl 0.004 ev 0.97 | 123 sps
+[MainRunV3_5] upd 126 step 678,908 | return 4.41 survive 0.27 tiles 54565 len 712 | vs pool 0.61 | kl 0.007 ev 0.97 | 120 sps
+[MainRunV3_5] upd 127 step 684,203 | return 4.32 survive 0.27 tiles 52362 len 710 | vs pool 0.60 | kl 0.005 ev 0.95 | 152 sps
+[MainRunV3_5] upd 128 step 688,718 | return 4.55 survive 0.28 tiles 54496 len 718 | vs pool 0.60 | kl 0.005 ev 0.98 | 166 sps
+[MainRunV3_5] upd 129 step 693,716 | return 4.65 survive 0.28 tiles 53556 len 721 | vs pool 0.61 | kl 0.005 ev 0.96 | 183 sps
+[MainRunV3_5] upd 130 step 698,991 | return 4.62 survive 0.28 tiles 53087 len 722 | vs pool 0.61 | kl 0.005 ev 0.96 | 199 sps
+[MainRunV3_5] upd 131 step 703,637 | return 4.70 survive 0.28 tiles 53282 len 729 | vs pool 0.61 | kl 0.005 ev 0.94 | 149 sps
+[MainRunV3_5] upd 132 step 708,796 | return 4.68 survive 0.28 tiles 52196 len 727 | vs pool 0.61 | kl 0.008 ev 0.95 | 148 sps
+[MainRunV3_5] upd 133 step 714,092 | return 4.88 survive 0.28 tiles 54482 len 731 | vs pool 0.61 | kl 0.006 ev 0.97 | 157 sps
+[MainRunV3_5] upd 134 step 719,526 | return 5.10 survive 0.29 tiles 55901 len 739 | vs pool 0.60 | kl 0.006 ev 0.97 | 150 sps
+[MainRunV3_5] upd 135 step 725,097 | return 5.14 survive 0.29 tiles 57052 len 735 | vs pool 0.61 | kl 0.007 ev 0.95 | 131 sps
+[MainRunV3_5] upd 136 step 729,622 | return 5.26 survive 0.30 tiles 57130 len 741 | vs pool 0.61 | kl 0.005 ev 0.94 | 107 sps
+[MainRunV3_5] upd 137 step 734,280 | return 5.39 survive 0.30 tiles 58322 len 745 | vs pool 0.61 | kl 0.005 ev 0.95 | 163 sps
+[MainRunV3_5] upd 138 step 738,630 | return 5.31 survive 0.30 tiles 56950 len 742 | vs pool 0.61 | kl 0.006 ev 0.97 | 127 sps
+[MainRunV3_5] upd 139 step 743,061 | return 5.36 survive 0.30 tiles 57010 len 745 | vs pool 0.60 | kl 0.004 ev 0.96 | 133 sps
+[MainRunV3_5] upd 140 step 748,213 | return 5.35 survive 0.30 tiles 58306 len 746 | vs pool 0.60 | kl 0.005 ev 0.97 | 184 sps
+[MainRunV3_5] upd 141 step 753,450 | return 5.44 survive 0.31 tiles 58706 len 752 | vs pool 0.60 | kl 0.007 ev 0.97 | 148 sps
+[MainRunV3_5] upd 142 step 758,665 | return 5.46 survive 0.30 tiles 58825 len 753 | vs pool 0.60 | kl 0.006 ev 0.96 | 159 sps
+[MainRunV3_5] upd 143 step 764,104 | return 5.48 survive 0.31 tiles 58857 len 757 | vs pool 0.60 | kl 0.004 ev 0.96 | 171 sps
+[MainRunV3_5] upd 144 step 770,220 | return 5.69 survive 0.32 tiles 59058 len 766 | vs pool 0.60 | kl 0.004 ev 0.94 | 187 sps
+[MainRunV3_5] upd 145 step 775,814 | return 5.75 survive 0.32 tiles 59242 len 764 | vs pool 0.60 | kl 0.007 ev 0.95 | 163 sps
+[MainRunV3_5] upd 146 step 780,671 | return 5.79 survive 0.32 tiles 60521 len 766 | vs pool 0.60 | kl 0.006 ev 0.96 | 127 sps
+[MainRunV3_5] upd 147 step 785,028 | return 5.84 survive 0.32 tiles 59735 len 770 | vs pool 0.60 | kl 0.006 ev 0.97 | 112 sps
+[MainRunV3_5] upd 148 step 789,673 | return 5.93 survive 0.32 tiles 60988 len 773 | vs pool 0.60 | kl 0.005 ev 0.94 | 120 sps
+[MainRunV3_5] upd 149 step 794,581 | return 6.08 survive 0.33 tiles 62784 len 775 | vs pool 0.59 | kl 0.006 ev 0.95 | 144 sps
+[MainRunV3_5] upd 150 step 799,340 | return 6.07 survive 0.32 tiles 62990 len 775 | vs pool 0.59 | kl 0.005 ev 0.97 | 166 sps
+[MainRunV3_5] upd 151 step 804,768 | return 6.00 survive 0.32 tiles 62008 len 777 | vs pool 0.59 | kl 0.005 ev 0.97 | 172 sps
+[MainRunV3_5] upd 152 step 810,448 | return 6.01 survive 0.32 tiles 62156 len 776 | vs pool 0.59 | kl 0.006 ev 0.97 | 167 sps
+[MainRunV3_5] upd 153 step 816,288 | return 6.46 survive 0.34 tiles 65450 len 780 | vs pool 0.59 | kl 0.005 ev 0.96 | 180 sps
+[MainRunV3_5] upd 154 step 822,228 | return 6.54 survive 0.34 tiles 65695 len 783 | vs pool 0.59 | kl 0.006 ev 0.96 | 210 sps
+[MainRunV3_5] upd 155 step 827,582 | return 6.64 survive 0.34 tiles 64979 len 787 | vs pool 0.59 | kl 0.003 ev 0.95 | 153 sps
+[MainRunV3_5] upd 156 step 832,375 | return 6.63 survive 0.34 tiles 64161 len 789 | vs pool 0.60 | kl 0.007 ev 0.96 | 151 sps
+[MainRunV3_5] upd 157 step 837,294 | return 6.64 survive 0.34 tiles 65275 len 784 | vs pool 0.59 | kl 0.006 ev 0.98 | 152 sps
+[MainRunV3_5] upd 158 step 843,170 | return 6.87 survive 0.35 tiles 66905 len 790 | vs pool 0.59 | kl 0.004 ev 0.96 | 165 sps
+[MainRunV3_5] upd 159 step 848,714 | return 6.89 survive 0.35 tiles 66820 len 793 | vs pool 0.59 | kl 0.007 ev 0.94 | 143 sps
+[MainRunV3_5] upd 160 step 854,064 | return 6.86 survive 0.34 tiles 66715 len 794 | vs pool 0.59 | kl 0.007 ev 0.97 | 150 sps
+[MainRunV3_5] upd 161 step 860,103 | return 7.00 survive 0.34 tiles 66423 len 797 | vs pool 0.58 | kl 0.004 ev 0.97 | 170 sps
+[MainRunV3_5] upd 162 step 865,804 | return 7.16 survive 0.35 tiles 66827 len 800 | vs pool 0.58 | kl 0.004 ev 0.97 | 188 sps
+[MainRunV3_5] upd 163 step 870,799 | return 7.16 survive 0.35 tiles 66092 len 801 | vs pool 0.58 | kl 0.004 ev 0.96 | 161 sps
+[MainRunV3_5] upd 164 step 875,829 | return 7.33 survive 0.35 tiles 66265 len 804 | vs pool 0.58 | kl 0.007 ev 0.90 | 155 sps
+[MainRunV3_5] upd 165 step 881,195 | return 7.27 survive 0.35 tiles 63357 len 803 | vs pool 0.59 | kl 0.004 ev 0.95 | 159 sps
+[MainRunV3_5] upd 166 step 887,124 | return 7.28 survive 0.35 tiles 63171 len 805 | vs pool 0.59 | kl 0.005 ev 0.97 | 142 sps
+[MainRunV3_5] upd 167 step 892,816 | return 7.28 survive 0.35 tiles 63160 len 802 | vs pool 0.59 | kl 0.006 ev 0.97 | 151 sps
+[MainRunV3_5] upd 168 step 898,549 | return 7.38 survive 0.36 tiles 63982 len 807 | vs pool 0.58 | kl 0.005 ev 0.98 | 189 sps
+[MainRunV3_5] upd 169 step 904,373 | return 7.37 survive 0.36 tiles 64251 len 808 | vs pool 0.58 | kl 0.008 ev 0.95 | 179 sps
+[MainRunV3_5] upd 170 step 910,073 | return 7.32 survive 0.36 tiles 61260 len 813 | vs pool 0.58 | kl 0.007 ev 0.94 | 169 sps
+[MainRunV3_5] upd 171 step 915,493 | return 7.35 survive 0.37 tiles 60987 len 814 | vs pool 0.58 | kl 0.006 ev 0.97 | 160 sps
+[MainRunV3_5] upd 172 step 920,442 | return 7.38 survive 0.37 tiles 61858 len 811 | vs pool 0.58 | kl 0.005 ev 0.95 | 111 sps
+[MainRunV3_5] upd 173 step 925,495 | return 7.43 survive 0.36 tiles 61002 len 813 | vs pool 0.59 | kl 0.008 ev 0.90 | 128 sps
+[MainRunV3_5] upd 174 step 931,533 | return 7.55 survive 0.37 tiles 62159 len 812 | vs pool 0.59 | kl 0.004 ev 0.95 | 161 sps
+[MainRunV3_5] upd 175 step 936,670 | return 7.75 survive 0.37 tiles 63354 len 815 | vs pool 0.59 | kl 0.004 ev 0.96 | 133 sps
+[MainRunV3_5] upd 176 step 941,546 | return 7.92 survive 0.38 tiles 64719 len 816 | vs pool 0.60 | kl 0.005 ev 0.96 | 124 sps
+[MainRunV3_5] upd 177 step 946,354 | return 7.95 survive 0.38 tiles 64719 len 818 | vs pool 0.60 | kl 0.005 ev 0.96 | 116 sps
+[MainRunV3_5] upd 178 step 951,484 | return 7.89 survive 0.37 tiles 64109 len 817 | vs pool 0.60 | kl 0.006 ev 0.96 | 128 sps
+[MainRunV3_5] upd 179 step 957,482 | return 7.86 survive 0.37 tiles 63957 len 814 | vs pool 0.60 | kl 0.004 ev 0.94 | 173 sps
+[MainRunV3_5] upd 180 step 962,796 | return 8.01 survive 0.38 tiles 64911 len 816 | vs pool 0.60 | kl 0.005 ev 0.95 | 144 sps
+[MainRunV3_5] upd 181 step 967,481 | return 7.86 survive 0.36 tiles 64528 len 810 | vs pool 0.60 | kl 0.006 ev 0.96 | 156 sps
+[MainRunV3_5] upd 182 step 971,937 | return 7.83 survive 0.36 tiles 64120 len 810 | vs pool 0.60 | kl 0.005 ev 0.97 | 152 sps
+[MainRunV3_5] upd 183 step 976,488 | return 7.87 survive 0.37 tiles 63652 len 811 | vs pool 0.60 | kl 0.006 ev 0.96 | 133 sps
+[MainRunV3_5] upd 184 step 981,535 | return 7.86 survive 0.36 tiles 63421 len 805 | vs pool 0.60 | kl 0.005 ev 0.96 | 131 sps
+[MainRunV3_5] upd 185 step 986,565 | return 8.00 survive 0.37 tiles 64879 len 808 | vs pool 0.60 | kl 0.005 ev 0.97 | 166 sps
+[MainRunV3_5] upd 186 step 992,087 | return 7.90 survive 0.36 tiles 62712 len 806 | vs pool 0.60 | kl 0.007 ev 0.96 | 213 sps
+[MainRunV3_5] upd 187 step 997,142 | return 8.00 survive 0.37 tiles 64189 len 805 | vs pool 0.60 | kl 0.005 ev 0.97 | 178 sps
+[MainRunV3_5] upd 188 step 1,002,026 | return 8.02 survive 0.37 tiles 64189 len 809 | vs pool 0.61 | kl 0.007 ev 0.95 | 161 sps
+[MainRunV3_5] upd 189 step 1,006,960 | return 8.29 survive 0.38 tiles 66204 len 815 | vs pool 0.61 | kl 0.005 ev 0.96 | 159 sps
+[MainRunV3_5] upd 190 step 1,011,888 | return 8.60 survive 0.39 tiles 67655 len 820 | vs pool 0.61 | kl 0.007 ev 0.96 | 143 sps
+[MainRunV3_5] upd 191 step 1,016,088 | return 8.51 survive 0.38 tiles 65733 len 817 | vs pool 0.61 | kl 0.007 ev 0.93 | 122 sps
+[MainRunV3_5] upd 192 step 1,020,322 | return 8.56 survive 0.38 tiles 67323 len 817 | vs pool 0.61 | kl 0.005 ev 0.96 | 142 sps
+[MainRunV3_5] upd 193 step 1,025,211 | return 8.51 survive 0.38 tiles 66516 len 816 | vs pool 0.60 | kl 0.004 ev 0.95 | 126 sps
+[MainRunV3_5] upd 194 step 1,031,029 | return 8.82 survive 0.39 tiles 68944 len 820 | vs pool 0.61 | kl 0.004 ev 0.96 | 183 sps
+[MainRunV3_5] upd 195 step 1,036,578 | return 8.71 survive 0.38 tiles 68182 len 817 | vs pool 0.60 | kl 0.007 ev 0.96 | 188 sps
+[MainRunV3_5] upd 196 step 1,041,474 | return 8.48 survive 0.37 tiles 65435 len 812 | vs pool 0.60 | kl 0.005 ev 0.94 | 189 sps
+[MainRunV3_5] upd 197 step 1,046,543 | return 8.49 survive 0.37 tiles 65311 len 810 | vs pool 0.60 | kl 0.004 ev 0.91 | 180 sps
+[MainRunV3_5] upd 198 step 1,051,010 | return 8.43 survive 0.37 tiles 64323 len 810 | vs pool 0.60 | kl 0.004 ev 0.93 | 145 sps
+[MainRunV3_5] upd 199 step 1,055,866 | return 8.39 survive 0.37 tiles 63733 len 806 | vs pool 0.60 | kl 0.005 ev 0.97 | 136 sps
+[MainRunV3_5] upd 200 step 1,060,558 | return 8.40 survive 0.37 tiles 63750 len 810 | vs pool 0.60 | kl 0.006 ev 0.97 | 114 sps
+[MainRunV3_5] upd 201 step 1,065,402 | return 8.60 survive 0.38 tiles 66112 len 812 | vs pool 0.60 | kl 0.004 ev 0.95 | 148 sps
+[MainRunV3_5] upd 202 step 1,070,079 | return 8.61 survive 0.38 tiles 66112 len 813 | vs pool 0.60 | kl 0.004 ev 0.97 | 143 sps
+[MainRunV3_5] upd 203 step 1,075,048 | return 8.67 survive 0.39 tiles 66027 len 813 | vs pool 0.61 | kl 0.006 ev 0.95 | 162 sps
+[MainRunV3_5] upd 204 step 1,079,908 | return 8.59 survive 0.38 tiles 65661 len 808 | vs pool 0.61 | kl 0.005 ev 0.94 | 144 sps
+[MainRunV3_5] upd 205 step 1,084,052 | return 8.57 survive 0.38 tiles 66831 len 803 | vs pool 0.61 | kl 0.006 ev 0.96 | 109 sps
+[MainRunV3_5] upd 206 step 1,089,084 | return 8.65 survive 0.38 tiles 68033 len 801 | vs pool 0.61 | kl 0.006 ev 0.94 | 136 sps
+[MainRunV3_5] upd 207 step 1,093,896 | return 8.58 survive 0.37 tiles 67744 len 800 | vs pool 0.61 | kl 0.006 ev 0.96 | 123 sps
+[MainRunV3_5] upd 208 step 1,098,852 | return 8.76 survive 0.38 tiles 67478 len 803 | vs pool 0.61 | kl 0.006 ev 0.95 | 127 sps
+[MainRunV3_5] upd 209 step 1,103,426 | return 8.75 survive 0.38 tiles 68419 len 801 | vs pool 0.61 | kl 0.005 ev 0.96 | 112 sps
+[MainRunV3_5] upd 210 step 1,107,541 | return 8.43 survive 0.37 tiles 65841 len 795 | vs pool 0.62 | kl 0.004 ev 0.95 | 113 sps
+[MainRunV3_5] upd 211 step 1,112,814 | return 8.27 survive 0.36 tiles 63271 len 795 | vs pool 0.61 | kl 0.003 ev 0.92 | 157 sps
+[MainRunV3_5] upd 212 step 1,117,979 | return 8.36 survive 0.36 tiles 64241 len 797 | vs pool 0.61 | kl 0.004 ev 0.95 | 168 sps
+[MainRunV3_5] upd 213 step 1,122,833 | return 8.48 survive 0.37 tiles 64761 len 796 | vs pool 0.61 | kl 0.008 ev 0.97 | 139 sps
+[MainRunV3_5] upd 214 step 1,127,652 | return 8.48 survive 0.36 tiles 64336 len 798 | vs pool 0.61 | kl 0.007 ev 0.97 | 125 sps
+[MainRunV3_5] upd 215 step 1,131,873 | return 8.44 survive 0.36 tiles 62300 len 799 | vs pool 0.62 | kl 0.004 ev 0.96 | 131 sps
+[MainRunV3_5] upd 216 step 1,136,941 | return 8.47 survive 0.36 tiles 62559 len 799 | vs pool 0.62 | kl 0.005 ev 0.97 | 185 sps
+[MainRunV3_5] upd 217 step 1,142,093 | return 8.43 survive 0.36 tiles 63536 len 797 | vs pool 0.61 | kl 0.006 ev 0.97 | 155 sps
+[MainRunV3_5] upd 218 step 1,146,606 | return 8.39 survive 0.36 tiles 63185 len 795 | vs pool 0.62 | kl 0.005 ev 0.97 | 127 sps
+[MainRunV3_5] upd 219 step 1,150,761 | return 8.46 survive 0.36 tiles 63913 len 798 | vs pool 0.62 | kl 0.006 ev 0.97 | 120 sps
+[MainRunV3_5] upd 220 step 1,155,347 | return 8.70 survive 0.38 tiles 65010 len 804 | vs pool 0.62 | kl 0.005 ev 0.97 | 137 sps
+[MainRunV3_5] upd 221 step 1,160,129 | return 8.61 survive 0.37 tiles 64526 len 800 | vs pool 0.62 | kl 0.007 ev 0.98 | 139 sps
+[MainRunV3_5] upd 222 step 1,164,768 | return 8.56 survive 0.37 tiles 63786 len 798 | vs pool 0.62 | kl 0.005 ev 0.96 | 119 sps
+[MainRunV3_5] upd 223 step 1,169,217 | return 8.59 survive 0.37 tiles 63878 len 799 | vs pool 0.61 | kl 0.003 ev 0.95 | 102 sps
+[MainRunV3_5] upd 224 step 1,173,474 | return 8.50 survive 0.37 tiles 63878 len 795 | vs pool 0.62 | kl 0.005 ev 0.98 | 109 sps
+[MainRunV3_5] upd 225 step 1,177,792 | return 8.34 survive 0.37 tiles 63184 len 791 | vs pool 0.62 | kl 0.004 ev 0.98 | 109 sps
+[MainRunV3_5] upd 226 step 1,182,691 | return 8.46 survive 0.37 tiles 64353 len 796 | vs pool 0.62 | kl 0.005 ev 0.97 | 145 sps
+[MainRunV3_5] upd 227 step 1,187,695 | return 8.34 survive 0.37 tiles 63938 len 791 | vs pool 0.62 | kl 0.006 ev 0.96 | 147 sps
+[MainRunV3_5] upd 228 step 1,192,549 | return 8.38 survive 0.37 tiles 65987 len 792 | vs pool 0.62 | kl 0.007 ev 0.96 | 115 sps
+[MainRunV3_5] upd 229 step 1,197,106 | return 8.38 survive 0.37 tiles 66009 len 793 | vs pool 0.62 | kl 0.006 ev 0.95 | 118 sps
+[MainRunV3_5] upd 230 step 1,202,221 | return 8.47 survive 0.37 tiles 66750 len 796 | vs pool 0.62 | kl 0.003 ev 0.98 | 132 sps
+[MainRunV3_5] upd 231 step 1,207,360 | return 8.37 survive 0.36 tiles 65815 len 793 | vs pool 0.62 | kl 0.006 ev 0.96 | 124 sps
+[MainRunV3_5] upd 232 step 1,213,155 | return 8.32 survive 0.36 tiles 64998 len 793 | vs pool 0.62 | kl 0.005 ev 0.97 | 143 sps
+[MainRunV3_5] upd 233 step 1,219,093 | return 8.40 survive 0.36 tiles 66010 len 792 | vs pool 0.62 | kl 0.007 ev 0.98 | 159 sps
+[MainRunV3_5] stop requested
+{
+  "checkpoint": "checkpoints\\MainRunV3_5\\MainRunV3_5_final.pt",
+  "global_step": 1219093,
+  "updates": 233,
+  "rollout/ep_rew_mean": 8.398101735107085,
+  "rollout/ep_len_mean": 792.03,
+  "rollout/survival_rate": 0.36,
+  "rollout/final_tiles": 66010.12,
+  "rollout/kills": 3.11,
+  "rollout/placement": 0.2772575692087412,
+  "scenario/close_rivals/survival_rate": 0.3333333333333333,
+  "scenario/close_rivals/ep_rew_mean": 9.265369753524011,
+  "scenario/close_rivals/final_tiles": 74563.53333333334,
+  "scenario/crowded/survival_rate": 0.2032520325203252,
+  "scenario/crowded/ep_rew_mean": 4.684069904774194,
+  "scenario/crowded/final_tiles": 16785.455284552845,
+  "scenario/easy/survival_rate": 0.9534883720930233,
+  "scenario/easy/ep_rew_mean": 19.26512152701866,
+  "scenario/easy/final_tiles": 219034.13953488372,
+  "scenario/selfplay_ffa/survival_rate": 0.3185840707964602,
+  "scenario/selfplay_ffa/ep_rew_mean": 7.824319810952519,
+  "scenario/selfplay_ffa/final_tiles": 39554.94690265487,
+  "scenario/vs_bots/survival_rate": 0.36065573770491804,
+  "scenario/vs_bots/ep_rew_mean": 8.436549938438205,
+  "scenario/vs_bots/final_tiles": 97990.95081967213,
+  "difficulty/Easy/survival_rate": 0.7794117647058824,
+  "difficulty/Medium/survival_rate": 0.17301038062283736,
+  "terminals/win": 0.0425,
+  "terminals/death": 0.64,
+  "terminals/tick_cap": 0.3175,
+  "terminals/sim_error": 0.0,
+  "terminals/aborted": 0.0,
+  "terminals/worker_death": 0.0,
+  "selfplay/learner_beats_pool": 0.625
+}

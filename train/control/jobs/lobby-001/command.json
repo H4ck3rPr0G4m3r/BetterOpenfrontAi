@@ -1,0 +1,14 @@
+[
+  "C:\\Program Files\\Python311\\python.exe",
+  "-u",
+  "play_lobby.py",
+  "cH5QoDbLY7",
+  "--host",
+  "https://openfront.io",
+  "--model",
+  "checkpoints\\FirstSelfPlayRun1m\\FirstSelfPlayRun1m_latest.pt",
+  "--name",
+  "OpenFrontAI",
+  "--profile",
+  "default"
+]

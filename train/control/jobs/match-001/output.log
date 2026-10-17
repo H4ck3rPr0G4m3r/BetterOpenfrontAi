@@ -1,0 +1,4 @@
+game 1/1: MainRunV2_latest tick_cap (9467 tiles)
+
+predictor                      games  survive  win   return   tiles  place  kills
+MainRunV2_latest                   1     1.00  0.00    4.67    9467   0.81   0.00
