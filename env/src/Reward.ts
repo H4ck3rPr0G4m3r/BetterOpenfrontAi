@@ -1,4 +1,4 @@
-import type { Game, Player, PlayerID, Unit } from "../../OpenFrontIO/src/core/game/Game";
+import type { Game, Player, PlayerID, TerraNullius, Unit } from "../../OpenFrontIO/src/core/game/Game";
 import { Structures, UnitType } from "../../OpenFrontIO/src/core/game/Game";
 import type { TileRef } from "../../OpenFrontIO/src/core/game/GameMap";
 import { GOLD_INDEX_WORK } from "../../OpenFrontIO/src/core/StatsSchemas";
@@ -373,8 +373,10 @@ export function nukeDamage(game: Game, player: Player, tile: TileRef, type: Unit
   const friendly = (smallID: number): boolean => {
     let f = friendlyByOwner.get(smallID);
     if (f === undefined) {
-      const p = game.playerBySmallID(smallID);
-      f = smallID === player.smallID() || (p.isPlayer() && player.isFriendly(p as Player));
+      // A dangling ownerID (no registered player, see TargetSlots) has no
+      // player behind it; count its tiles as hostile.
+      const p = game.playerBySmallID(smallID) as Player | TerraNullius | undefined;
+      f = smallID === player.smallID() || (p !== undefined && p.isPlayer() && player.isFriendly(p as Player));
       friendlyByOwner.set(smallID, f);
     }
     return f;
